@@ -19,6 +19,10 @@ public final class EarthMap {
         this.signedDistancePixels = signedDistancePixels;
     }
 
+    public int width() { return width; }
+
+    public int height() { return height; }
+
     public static EarthMap from(BufferedImage image) {
         Objects.requireNonNull(image, "image");
         int width = image.getWidth();

@@ -1,6 +1,7 @@
 package io.github.earthshape.mixin;
 
 import io.github.earthshape.EarthShape;
+import io.github.earthshape.worldgen.EarthShapeCompatibility;
 import io.github.earthshape.worldgen.EarthShapeNoiseRouter;
 import net.minecraft.core.Holder;
 import net.minecraft.world.level.StructureManager;
@@ -33,11 +34,8 @@ abstract class NoiseBasedChunkGeneratorMixin {
             RandomState random,
             CallbackInfoReturnable<NoiseChunk> callback
     ) {
-        if (settings.is(NoiseGeneratorSettings.OVERWORLD)
-                || settings.is(NoiseGeneratorSettings.LARGE_BIOMES)
-                || settings.is(NoiseGeneratorSettings.AMPLIFIED)) {
-            RandomStateAccessor accessor = (RandomStateAccessor) (Object) random;
-            accessor.earthshape$setRouter(EarthShapeNoiseRouter.wrap(random.router()));
+        if (EarthShapeCompatibility.supports(settings)) {
+            EarthShapeNoiseRouter.install(random);
             if (INSTALLED_LOGGED.compareAndSet(false, true)) {
                 EarthShape.LOGGER.info("[EarthShape] Live Overworld router installed; generating chunk {}.", chunk.getPos());
             }

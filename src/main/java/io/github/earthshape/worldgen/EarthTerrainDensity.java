@@ -5,14 +5,15 @@ import com.mojang.serialization.codecs.RecordCodecBuilder;
 import io.github.earthshape.EarthShapeConfig;
 import io.github.earthshape.EarthShape;
 import io.github.earthshape.map.EarthMapService;
+import io.github.earthshape.map.EarthEnvironmentSignal;
 import net.minecraft.util.KeyDispatchDataCodec;
 import net.minecraft.world.level.levelgen.DensityFunction;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
- * Adds a smooth, Y-limited land/ocean bias to the original final density.
- * The original density is evaluated first, so caves, aquifers and every pack-provided detail
- * remain part of the final terrain rather than being replaced by a heightmap.
+ * Converts the Earth SDF into a target surface. This guarantees that map ocean cannot retain
+ * vanilla mountains and that map land remains connected above sea level. The original final
+ * density is retained only as bounded local detail, rather than being allowed to move a coast.
  */
 public record EarthTerrainDensity(DensityFunction original) implements DensityFunction {
     private static final AtomicBoolean FIRST_COMPUTE_LOGGED = new AtomicBoolean();
@@ -35,13 +36,40 @@ public record EarthTerrainDensity(DensityFunction original) implements DensityFu
         if (FIRST_SAMPLE_LOGGED.compareAndSet(false, true)) {
             EarthShape.LOGGER.info("[EarthShape] Terrain density active; first sample at {}, {}, {}.", context.blockX(), context.blockY(), context.blockZ());
         }
-        // Below the seabed and far above normal terrain, leave vanilla density alone.
-        double lower = smootherstep(18.0D, 54.0D, context.blockY());
-        double upper = 1.0D - smootherstep(128.0D, 192.0D, context.blockY());
-        double verticalWindow = lower * upper;
-        // Ocean: remove marginal terrain above the seafloor. Land: lift it above sea level.
-        double shapeBias = -1.15D + land * 1.90D;
-        return base + shapeBias * verticalWindow * EarthShapeConfig.CONTROL_STRENGTH.get();
+        double oceanFloor = EarthShapeConfig.OCEAN_FLOOR_Y.get();
+        double landBase = EarthShapeConfig.LAND_BASE_Y.get();
+        // With the defaults, land=0.5 maps to Y=63, exactly the Overworld sea level.
+        double targetSurface = oceanFloor + (landBase - oceanFloor) * land;
+        EarthEnvironmentSignal environment = EarthMapService.INSTANCE.sampleEnvironment(context.blockX(), context.blockZ());
+        if (environment.active()) {
+            double mappedHeight = EarthShapeConfig.HEIGHTMAP_MIN_Y.get()
+                    + environment.height() * (EarthShapeConfig.HEIGHTMAP_MAX_Y.get() - EarthShapeConfig.HEIGHTMAP_MIN_Y.get());
+            // Preserve the SDF-controlled shoreline; heightmap influence begins inside solid land.
+            double inland = smootherstep(0.55D, 0.85D, land);
+            targetSurface += (mappedHeight - landBase) * inland;
+        }
+        double shape = (targetSurface - context.blockY()) / EarthShapeConfig.SHAPE_VERTICAL_SCALE.get();
+
+        // Limit vanilla/mod noise so it makes local hills, valleys and caves but cannot create
+        // islands in mapped ocean or erase a mapped continent.
+        // The map, not the vanilla density, owns the macro terrain. This narrow cap keeps only
+        // sub-block-to-small-hill detail and prevents the original router from making noisy ridges.
+        double boundedDetail = Math.max(-0.40D, Math.min(0.40D, base));
+        // Do not let old config files reintroduce noisy vanilla macro-density. A maximum 0.05
+        // strength leaves subtle texture only (roughly one block at the default vertical scale).
+        double detailStrength = Math.min(EarthShapeConfig.TERRAIN_DETAIL_STRENGTH.get(), 0.05D);
+        double result = shape + boundedDetail * detailStrength;
+
+        if (EarthShapeConfig.STRICT_OCEAN_MASK.get()) {
+            // A smooth but absolute ceiling for mapped ocean. Without this, rare positive vanilla
+            // density spikes can become large islands even where the PNG is completely black.
+            double oceanWeight = 1.0D - smootherstep(0.45D, 0.55D, land);
+            double seaLevel = 63.0D;
+            double oceanCeiling = (seaLevel - 2.0D - context.blockY()) / EarthShapeConfig.SHAPE_VERTICAL_SCALE.get();
+            double capped = Math.min(result, oceanCeiling);
+            result = result + (capped - result) * oceanWeight;
+        }
+        return result;
     }
 
     @Override
@@ -59,12 +87,12 @@ public record EarthTerrainDensity(DensityFunction original) implements DensityFu
 
     @Override
     public double minValue() {
-        return original.minValue() - 1.2D;
+        return -1000000.0D;
     }
 
     @Override
     public double maxValue() {
-        return original.maxValue() + 1.2D;
+        return 1000000.0D;
     }
 
     @Override

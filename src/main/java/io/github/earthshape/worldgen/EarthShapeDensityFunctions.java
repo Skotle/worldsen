@@ -15,6 +15,7 @@ public final class EarthShapeDensityFunctions {
     static {
         TYPES.register("continentalness", () -> EarthContinentalnessDensity.CODEC.codec());
         TYPES.register("terrain_mask", () -> EarthTerrainDensity.CODEC.codec());
+        TYPES.register("climate", () -> EarthClimateDensity.CODEC.codec());
     }
 
     private EarthShapeDensityFunctions() {}
