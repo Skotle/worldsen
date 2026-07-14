@@ -1,6 +1,7 @@
 package io.github.earthshape.map;
 
 import java.awt.image.BufferedImage;
+import java.util.ArrayDeque;
 import java.util.Objects;
 
 /**
@@ -12,18 +13,24 @@ public final class EarthMap {
     private final int width;
     private final int height;
     private final float[] signedDistancePixels;
+    private final int removedLandComponents;
+    private final int removedLandPixels;
 
-    private EarthMap(int width, int height, float[] signedDistancePixels) {
+    private EarthMap(int width, int height, float[] signedDistancePixels, int removedLandComponents, int removedLandPixels) {
         this.width = width;
         this.height = height;
         this.signedDistancePixels = signedDistancePixels;
+        this.removedLandComponents = removedLandComponents;
+        this.removedLandPixels = removedLandPixels;
     }
 
     public int width() { return width; }
 
     public int height() { return height; }
+    public int removedLandComponents() { return removedLandComponents; }
+    public int removedLandPixels() { return removedLandPixels; }
 
-    public static EarthMap from(BufferedImage image) {
+    public static EarthMap from(BufferedImage image, int minimumLandComponentPixels) {
         Objects.requireNonNull(image, "image");
         int width = image.getWidth();
         int height = image.getHeight();
@@ -33,11 +40,70 @@ public final class EarthMap {
             int gray = (((rgb >>> 16) & 255) * 30 + ((rgb >>> 8) & 255) * 59 + (rgb & 255) * 11) / 100;
             land[y * width + x] = gray >= 128;
         }
+        FilterResult filtered = discardSmallLandComponents(land, width, height, minimumLandComponentPixels);
+        land = filtered.land();
         float[] toLand = chamferDistance(land, width, height, true);
         float[] toOcean = chamferDistance(land, width, height, false);
         float[] sdf = new float[land.length];
         for (int i = 0; i < sdf.length; i++) sdf[i] = land[i] ? toOcean[i] : -toLand[i];
-        return new EarthMap(width, height, sdf);
+        return new EarthMap(width, height, sdf, filtered.removedComponents(), filtered.removedPixels());
+    }
+
+    /**
+     * The source map is intentionally allowed to contain real islands.  Raster conversion also
+     * produces isolated one-to-few-pixel flecks, though; once scaled to blocks those become very
+     * visible artificial islands.  Treat only disconnected, tiny components as ocean.
+     */
+    private static FilterResult discardSmallLandComponents(boolean[] source, int width, int height, int minimumPixels) {
+        if (minimumPixels <= 0) return new FilterResult(source, 0, 0);
+        boolean[] kept = new boolean[source.length];
+        boolean[] visited = new boolean[source.length];
+        int removedComponents = 0;
+        int removedPixels = 0;
+        ArrayDeque<Integer> queue = new ArrayDeque<>();
+        for (int start = 0; start < source.length; start++) {
+            if (!source[start] || visited[start]) continue;
+            queue.clear();
+            queue.add(start);
+            visited[start] = true;
+            // Retain indices only until the configured threshold is proven.  Components bigger
+            // than that can be written directly into the output while their flood fill continues.
+            int[] component = new int[minimumPixels];
+            int componentSize = 0;
+            boolean retain = false;
+            while (!queue.isEmpty()) {
+                int current = queue.removeFirst();
+                if (!retain) {
+                    if (componentSize == component.length) {
+                        retain = true;
+                        for (int pixel : component) kept[pixel] = true;
+                    } else {
+                        component[componentSize] = current;
+                    }
+                }
+                componentSize++;
+                if (retain) kept[current] = true;
+                int x = current % width;
+                int y = current / width;
+                for (int dy = -1; dy <= 1; dy++) for (int dx = -1; dx <= 1; dx++) {
+                    if (dx == 0 && dy == 0) continue;
+                    int nx = x + dx, ny = y + dy;
+                    if (nx < 0 || ny < 0 || nx >= width || ny >= height) continue;
+                    int next = ny * width + nx;
+                    if (source[next] && !visited[next]) {
+                        visited[next] = true;
+                        queue.addLast(next);
+                    }
+                }
+            }
+            if (componentSize >= minimumPixels) {
+                if (!retain) for (int index = 0; index < componentSize; index++) kept[component[index]] = true;
+            } else {
+                removedComponents++;
+                removedPixels += componentSize;
+            }
+        }
+        return new FilterResult(kept, removedComponents, removedPixels);
     }
 
     /** Positive inside land; negative in ocean. World coordinates map to a finite centered image. */
@@ -67,4 +133,5 @@ public final class EarthMap {
     }
     private static void check(float[] d, int w, int h, int here, int x, int y, float cost) { if (x >= 0 && y >= 0 && x < w && y < h) d[here] = Math.min(d[here], d[y * w + x] + cost); }
     private static double lerp(double a, double b, double t) { return a + (b - a) * t; }
+    private record FilterResult(boolean[] land, int removedComponents, int removedPixels) {}
 }

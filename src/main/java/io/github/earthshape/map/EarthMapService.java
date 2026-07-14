@@ -102,8 +102,11 @@ public final class EarthMapService {
             }
             BufferedImage image = ImageIO.read(target.toFile());
             if (image == null) throw new IOException("not a readable image");
-            EarthShape.LOGGER.info("[EarthShape] Map loaded: {} ({}x{} pixels).", target, image.getWidth(), image.getHeight());
-            return EarthMap.from(image);
+            EarthMap loaded = EarthMap.from(image, EarthShapeConfig.MINIMUM_LAND_COMPONENT_PIXELS.get());
+            EarthShape.LOGGER.info("[EarthShape] Map loaded: {} ({}x{} pixels, removed {} isolated land fragments / {} pixels; min component={} px).",
+                    target, image.getWidth(), image.getHeight(), loaded.removedLandComponents(), loaded.removedLandPixels(),
+                    EarthShapeConfig.MINIMUM_LAND_COMPONENT_PIXELS.get());
+            return loaded;
         } catch (IOException ex) {
             throw new IllegalStateException("EarthShape could not load " + target, ex);
         }

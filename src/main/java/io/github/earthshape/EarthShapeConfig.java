@@ -21,6 +21,7 @@ public final class EarthShapeConfig {
     public static final ModConfigSpec.DoubleValue REAL_CLIMATE_STRENGTH;
     public static final ModConfigSpec.IntValue WARP_STRENGTH_BLOCKS;
     public static final ModConfigSpec.IntValue WARP_SCALE_BLOCKS;
+    public static final ModConfigSpec.IntValue MINIMUM_LAND_COMPONENT_PIXELS;
 
     static {
         ModConfigSpec.Builder b = new ModConfigSpec.Builder();
@@ -57,6 +58,8 @@ public final class EarthShapeConfig {
                 .defineInRange("warpStrengthBlocks", 16, 0, 512);
         WARP_SCALE_BLOCKS = b.comment("Low-frequency domain warp wavelength.")
                 .defineInRange("warpScaleBlocks", 1536, 64, 16384);
+        MINIMUM_LAND_COMPONENT_PIXELS = b.comment("Discard disconnected land fragments smaller than this many source-map pixels. This removes raster speckles, not normal coasts.")
+                .defineInRange("minimumLandComponentPixels", 24, 0, 100000);
         b.pop();
         SPEC = b.build();
     }
