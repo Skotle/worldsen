@@ -1,0 +1,10 @@
+{
+  "required": false,
+  "package": "io.github.earthshape.mixin",
+  "compatibilityLevel": "JAVA_21",
+  "mixins": [
+    "NoiseBasedChunkGeneratorMixin",
+    "RandomStateAccessor"
+  ],
+  "injectors": { "defaultRequire": 1 }
+}
