@@ -14,13 +14,41 @@ final class EarthLayer {
         this.values = values;
     }
 
-    static EarthLayer from(BufferedImage image) {
+    static EarthLayer fromHeightmap(BufferedImage image) {
+        return from(image, 83, 239, Mode.GRAYSCALE);
+    }
+
+    static EarthLayer fromRivers(BufferedImage image) {
+        return from(image, 0, 1, Mode.RIVERS);
+    }
+
+    static EarthLayer fromTrees(BufferedImage image) {
+        return from(image, 0, 1, Mode.TREES);
+    }
+
+    static EarthLayer fromNormal(BufferedImage image) {
+        return from(image, 0, 1, Mode.NORMAL);
+    }
+
+    private static EarthLayer from(BufferedImage image, int minimum, int maximum, Mode mode) {
         int width = image.getWidth();
         int height = image.getHeight();
         float[] values = new float[width * height];
         for (int y = 0; y < height; y++) for (int x = 0; x < width; x++) {
             int rgb = image.getRGB(x, y);
-            values[y * width + x] = (((rgb >>> 16) & 255) * 30 + ((rgb >>> 8) & 255) * 59 + (rgb & 255) * 11) / 25500.0F;
+            int red = (rgb >>> 16) & 255, green = (rgb >>> 8) & 255, blue = rgb & 255;
+            int gray = (red * 30 + green * 59 + blue * 11) / 100;
+            values[y * width + x] = switch (mode) {
+                // HOI4 reserves most of its heightmap range for ordinary continental relief.
+                // A curve keeps that relief near sea level while preserving the highest mountain pixels.
+                case GRAYSCALE -> {
+                    float normalized = Math.max(0F, Math.min(1F, (gray - 89) / 150.0F));
+                    yield (float) Math.pow(normalized, 2.2D);
+                }
+                case RIVERS -> (red == 255 && green == 255 && blue == 255) || (red == 122 && green == 122 && blue == 122) ? 0F : 1F;
+                case TREES -> red == 0 && green == 0 && blue == 0 ? 0F : 1F;
+                case NORMAL -> 1F - blue / 255.0F;
+            };
         }
         return new EarthLayer(width, height, values);
     }
@@ -28,9 +56,9 @@ final class EarthLayer {
     int width() { return width; }
     int height() { return height; }
 
-    double sample(double worldX, double worldZ, int blocksPerPixel) {
-        double px = worldX / blocksPerPixel + width * 0.5D;
-        double py = worldZ / blocksPerPixel + height * 0.5D;
+    double sample(double worldX, double worldZ, int blocksPerPixel, int referenceWidth, int referenceHeight) {
+        double px = (worldX / blocksPerPixel / referenceWidth + 0.5D) * width;
+        double py = (worldZ / blocksPerPixel / referenceHeight + 0.5D) * height;
         if (px < 0 || py < 0 || px >= width - 1 || py >= height - 1) return 0.5D;
         int x0 = (int) Math.floor(px), y0 = (int) Math.floor(py);
         double tx = px - x0, ty = py - y0;
@@ -40,4 +68,5 @@ final class EarthLayer {
     }
 
     private static double lerp(double a, double b, double t) { return a + (b - a) * t; }
+    private enum Mode { GRAYSCALE, RIVERS, TREES, NORMAL }
 }

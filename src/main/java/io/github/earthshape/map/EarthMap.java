@@ -49,6 +49,28 @@ public final class EarthMap {
         return new EarthMap(width, height, sdf, filtered.removedComponents(), filtered.removedPixels());
     }
 
+    /** Builds a land mask from HOI4 terrain.bmp, whose ocean palette entry is RGB 8, 31, 130. */
+    public static EarthMap fromHoi4Terrain(BufferedImage image, int minimumLandComponentPixels) {
+        Objects.requireNonNull(image, "image");
+        int width = image.getWidth();
+        int height = image.getHeight();
+        boolean[] land = new boolean[width * height];
+        for (int y = 0; y < height; y++) for (int x = 0; x < width; x++) {
+            int rgb = image.getRGB(x, y);
+            int red = (rgb >>> 16) & 255;
+            int green = (rgb >>> 8) & 255;
+            int blue = rgb & 255;
+            land[y * width + x] = red != 8 || green != 31 || blue != 130;
+        }
+        FilterResult filtered = discardSmallLandComponents(land, width, height, minimumLandComponentPixels);
+        land = filtered.land();
+        float[] toLand = chamferDistance(land, width, height, true);
+        float[] toOcean = chamferDistance(land, width, height, false);
+        float[] sdf = new float[land.length];
+        for (int i = 0; i < sdf.length; i++) sdf[i] = land[i] ? toOcean[i] : -toLand[i];
+        return new EarthMap(width, height, sdf, filtered.removedComponents(), filtered.removedPixels());
+    }
+
     /**
      * The source map is intentionally allowed to contain real islands.  Raster conversion also
      * produces isolated one-to-few-pixel flecks, though; once scaled to blocks those become very

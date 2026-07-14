@@ -11,7 +11,7 @@ Nether and End routers are never modified.
 
 ## Included map
 
-`src/main/resources/earthshape/earth_continentalness.png` is a 2:1 grayscale Earth silhouette. At first launch it is copied to `config/earthshape/earth_continentalness.png`; edit that copy, not the JAR. White represents land and black represents ocean. Map coordinates outside the image are ocean.
+The project uses `map/terrain.bmp` directly at build time, retaining its native `5632x2048` (2.75:1) ratio. The exact BMP is packaged into the JAR and read directly at runtime; no map is copied to the config directory. The HOI4 ocean palette color (`8, 31, 130`) is ocean and every other terrain color is land. Map coordinates outside the image are ocean. The default `blocksPerPixel=20` produces a map approximately 112,640 blocks wide.
 
 The service builds a signed-distance field, samples it bilinearly, applies a low-frequency domain warp, and converts it through `smootherstep`. The map's warp is deliberately independent of the world seed so the requested continental silhouette remains fixed; biome and terrain detail still use Minecraft's normal seeded noise. No calculation uses chunk-local coordinates or per-chunk random state, preventing chunk-border seams.
 
@@ -29,12 +29,10 @@ With `strictOceanMask=true` (the default), EarthShape disables coastline domain 
 
 ## Optional real-world height and climate layers
 
-Set `realWorldLayersEnabled=true` in `config/earthshape-common.toml` only after supplying all three grayscale PNG files below in `config/earthshape/`. Each must be exactly the same size as `earth_continentalness.png` (the bundled map is `1774x887`).
+`realWorldLayersEnabled` is enabled by default and loads packaged HOI4 layers directly: `heightmap.bmp` supplies terrain height, `trees.bmp` supplies the humidity/vegetation signal, and `world_normal.bmp` adds steep-slope relief. `rivers.bmp` remains packaged as source data but does not carve forced river channels; rivers and their biomes are generated naturally by Minecraft. The `trees.bmp` and normal map may use a different resolution but must retain the terrain map's 2.75:1 aspect ratio.
 
 ```text
-earth_height.png       black = heightmapMinY, white = heightmapMaxY
-earth_temperature.png  black = cold, white = hot
-earth_humidity.png     black = dry, white = wet
+heightmap.bmp          black = heightmapMinY, white = heightmapMaxY
 ```
 
 Height-map influence begins inside land so the SDF coastline stays at sea level. Temperature and humidity blend with—not replace—the original `BiomeSource` climate using `realClimateStrength`; this keeps normal biome-addition mods in their own configured biome pools. If a layer is missing or the wrong dimensions, EarthShape logs one warning and falls back to seed-only height and climate.

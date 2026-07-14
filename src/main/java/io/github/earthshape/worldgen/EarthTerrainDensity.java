@@ -5,6 +5,7 @@ import com.mojang.serialization.codecs.RecordCodecBuilder;
 import io.github.earthshape.EarthShapeConfig;
 import io.github.earthshape.EarthShape;
 import io.github.earthshape.map.EarthMapService;
+import io.github.earthshape.map.EarthSignal;
 import io.github.earthshape.map.EarthEnvironmentSignal;
 import net.minecraft.util.KeyDispatchDataCodec;
 import net.minecraft.world.level.levelgen.DensityFunction;
@@ -32,44 +33,19 @@ public record EarthTerrainDensity(DensityFunction original) implements DensityFu
         double base = original.compute(context);
         if (!EarthShapeConfig.ENABLED.get()) return base;
 
-        double land = EarthMapService.INSTANCE.sample(0L, context.blockX(), context.blockZ()).landFactor();
+        EarthSignal mapSignal = EarthMapService.INSTANCE.sample(0L, context.blockX(), context.blockZ());
+        // Biome continentalness may use a broad transition, but the physical shoreline must
+        // follow the raster closely rather than becoming a hundreds-of-blocks-wide mush.
+        double land = smootherstep(-24.0D, 24.0D, mapSignal.signedDistanceBlocks());
         if (FIRST_SAMPLE_LOGGED.compareAndSet(false, true)) {
             EarthShape.LOGGER.info("[EarthShape] Terrain density active; first sample at {}, {}, {}.", context.blockX(), context.blockY(), context.blockZ());
         }
-        double oceanFloor = EarthShapeConfig.OCEAN_FLOOR_Y.get();
-        double landBase = EarthShapeConfig.LAND_BASE_Y.get();
-        // With the defaults, land=0.5 maps to Y=63, exactly the Overworld sea level.
-        double targetSurface = oceanFloor + (landBase - oceanFloor) * land;
-        EarthEnvironmentSignal environment = EarthMapService.INSTANCE.sampleEnvironment(context.blockX(), context.blockZ());
-        if (environment.active()) {
-            double mappedHeight = EarthShapeConfig.HEIGHTMAP_MIN_Y.get()
-                    + environment.height() * (EarthShapeConfig.HEIGHTMAP_MAX_Y.get() - EarthShapeConfig.HEIGHTMAP_MIN_Y.get());
-            // Preserve the SDF-controlled shoreline; heightmap influence begins inside solid land.
-            double inland = smootherstep(0.55D, 0.85D, land);
-            targetSurface += (mappedHeight - landBase) * inland;
-        }
-        double shape = (targetSurface - context.blockY()) / EarthShapeConfig.SHAPE_VERTICAL_SCALE.get();
-
-        // Limit vanilla/mod noise so it makes local hills, valleys and caves but cannot create
-        // islands in mapped ocean or erase a mapped continent.
-        // The map, not the vanilla density, owns the macro terrain. This narrow cap keeps only
-        // sub-block-to-small-hill detail and prevents the original router from making noisy ridges.
-        double boundedDetail = Math.max(-0.40D, Math.min(0.40D, base));
-        // Do not let old config files reintroduce noisy vanilla macro-density. A maximum 0.05
-        // strength leaves subtle texture only (roughly one block at the default vertical scale).
-        double detailStrength = Math.min(EarthShapeConfig.TERRAIN_DETAIL_STRENGTH.get(), 0.05D);
-        double result = shape + boundedDetail * detailStrength;
-
-        if (EarthShapeConfig.STRICT_OCEAN_MASK.get()) {
-            // A smooth but absolute ceiling for mapped ocean. Without this, rare positive vanilla
-            // density spikes can become large islands even where the PNG is completely black.
-            double oceanWeight = 1.0D - smootherstep(0.45D, 0.55D, land);
-            double seaLevel = 63.0D;
-            double oceanCeiling = (seaLevel - 2.0D - context.blockY()) / EarthShapeConfig.SHAPE_VERTICAL_SCALE.get();
-            double capped = Math.min(result, oceanCeiling);
-            result = result + (capped - result) * oceanWeight;
-        }
-        return result;
+        // Vanilla owns all land density; it has coherent mountains, caves, and surface rules.
+        // The map only replaces ocean density with one continuous floor, blending at the coast.
+        double oceanFloorShape = (EarthShapeConfig.OCEAN_FLOOR_Y.get() - context.blockY())
+                / EarthShapeConfig.SHAPE_VERTICAL_SCALE.get();
+        double shoreline = smootherstep(0.25D, 0.75D, land);
+        return oceanFloorShape + (base - oceanFloorShape) * shoreline;
     }
 
     @Override

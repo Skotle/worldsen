@@ -13,11 +13,11 @@ public final class EarthShapeNoiseRouter {
             return router;
         }
         return new NoiseRouter(
-                router.barrierNoise(), router.fluidLevelFloodednessNoise(), router.fluidLevelSpreadNoise(), router.lavaNoise(),
+                router.barrierNoise(), new EarthOceanFloodednessDensity(router.fluidLevelFloodednessNoise()), router.fluidLevelSpreadNoise(), router.lavaNoise(),
                 new EarthClimateDensity(router.temperature(), EarthClimateDensity.Channel.TEMPERATURE),
                 new EarthClimateDensity(router.vegetation(), EarthClimateDensity.Channel.HUMIDITY),
                 new EarthContinentalnessDensity(router.continents()),
-                router.erosion(), router.depth(), router.ridges(), router.initialDensityWithoutJaggedness(),
+                router.erosion(), new EarthSurfaceDepthDensity(router.depth()), router.ridges(), router.initialDensityWithoutJaggedness(),
                 new EarthTerrainDensity(router.finalDensity()), router.veinToggle(), router.veinRidged(), router.veinGap()
         );
     }

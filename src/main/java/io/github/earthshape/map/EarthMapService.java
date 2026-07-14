@@ -5,12 +5,9 @@ import io.github.earthshape.EarthShapeConfig;
 import java.awt.image.BufferedImage;
 import java.io.IOException;
 import java.io.InputStream;
-import java.nio.file.Files;
-import java.nio.file.Path;
 import java.util.concurrent.atomic.AtomicLong;
 import javax.imageio.ImageIO;
 import net.neoforged.bus.api.Event;
-import net.neoforged.fml.loading.FMLPaths;
 
 /** Loads the override map once and exposes a pure absolute-coordinate sampling API to integrations. */
 public final class EarthMapService {
@@ -36,7 +33,7 @@ public final class EarthMapService {
         int wavelength = EarthShapeConfig.WARP_SCALE_BLOCKS.get();
         // Strict coastline mode intentionally has no domain warp: the source PNG is authoritative.
         int strength = EarthShapeConfig.STRICT_OCEAN_MASK.get() ? 0 : EarthShapeConfig.WARP_STRENGTH_BLOCKS.get();
-        double coast = Math.min(EarthShapeConfig.COAST_WIDTH_BLOCKS.get(), 96.0D);
+        double coast = EarthShapeConfig.COAST_WIDTH_BLOCKS.get();
         long currentRevision = revision.get();
         SampleCache cached = sampleCache.get();
         if (cached.matches(currentRevision, worldSeed, blockX, blockZ, scale, wavelength, strength, coast)) {
@@ -56,7 +53,7 @@ public final class EarthMapService {
     public EarthEnvironmentSignal sampleEnvironment(int blockX, int blockZ) {
         if (!EarthShapeConfig.REAL_WORLD_LAYERS_ENABLED.get()) return EarthEnvironmentSignal.INACTIVE;
         EnvironmentLayers loaded = getEnvironmentLayers();
-        if (!loaded.active) return EarthEnvironmentSignal.INACTIVE;
+        if (!loaded.heightActive && !loaded.climateActive) return EarthEnvironmentSignal.INACTIVE;
 
         int scale = EarthShapeConfig.BLOCKS_PER_PIXEL.get();
         int wavelength = EarthShapeConfig.WARP_SCALE_BLOCKS.get();
@@ -66,10 +63,14 @@ public final class EarthMapService {
         if (cached.matches(currentRevision, blockX, blockZ, scale, wavelength, strength)) return cached.signal;
         double warpedX = blockX + smoothValueNoise(0x31A54A91L, blockX / (double) wavelength, blockZ / (double) wavelength) * strength;
         double warpedZ = blockZ + smoothValueNoise(0x7F4A7C15L, blockX / (double) wavelength, blockZ / (double) wavelength) * strength;
-        EarthEnvironmentSignal signal = new EarthEnvironmentSignal(true,
-                loaded.height.sample(warpedX, warpedZ, scale),
-                loaded.temperature.sample(warpedX, warpedZ, scale),
-                loaded.humidity.sample(warpedX, warpedZ, scale));
+        EarthMap landMap = getMap();
+        double trees = loaded.trees.sample(warpedX, warpedZ, scale, landMap.width(), landMap.height());
+        EarthEnvironmentSignal signal = new EarthEnvironmentSignal(loaded.heightActive, loaded.climateActive,
+                loaded.heightActive ? loaded.height.sample(warpedX, warpedZ, scale, landMap.width(), landMap.height()) : 0.5D,
+                0.5D,
+                0.25D + trees * 0.60D,
+                loaded.rivers.sample(warpedX, warpedZ, scale, landMap.width(), landMap.height()),
+                loaded.normal.sample(warpedX, warpedZ, scale, landMap.width(), landMap.height()));
         cached.store(currentRevision, blockX, blockZ, scale, wavelength, strength, signal);
         return signal;
     }
@@ -93,49 +94,50 @@ public final class EarthMapService {
     }
 
     private EarthMap load() {
-        Path target = FMLPaths.CONFIGDIR.get().resolve("earthshape/earth_continentalness.png");
-        try {
-            Files.createDirectories(target.getParent());
-            if (!Files.exists(target)) try (InputStream in = EarthShape.class.getResourceAsStream("/earthshape/earth_continentalness.png")) {
-                if (in == null) throw new IOException("bundled earth map is missing");
-                Files.copy(in, target);
-            }
-            BufferedImage image = ImageIO.read(target.toFile());
+        try (InputStream in = EarthShape.class.getResourceAsStream("/earthshape/hoi4/terrain.bmp")) {
+            if (in == null) throw new IOException("bundled HOI4 terrain map is missing");
+            BufferedImage image = ImageIO.read(in);
             if (image == null) throw new IOException("not a readable image");
-            EarthMap loaded = EarthMap.from(image, EarthShapeConfig.MINIMUM_LAND_COMPONENT_PIXELS.get());
-            EarthShape.LOGGER.info("[EarthShape] Map loaded: {} ({}x{} pixels, removed {} isolated land fragments / {} pixels; min component={} px).",
-                    target, image.getWidth(), image.getHeight(), loaded.removedLandComponents(), loaded.removedLandPixels(),
+            EarthMap loaded = EarthMap.fromHoi4Terrain(image, EarthShapeConfig.MINIMUM_LAND_COMPONENT_PIXELS.get());
+            EarthShape.LOGGER.info("[EarthShape] Bundled HOI4 terrain map loaded ({}x{} pixels, removed {} isolated land fragments / {} pixels; min component={} px).",
+                    image.getWidth(), image.getHeight(), loaded.removedLandComponents(), loaded.removedLandPixels(),
                     EarthShapeConfig.MINIMUM_LAND_COMPONENT_PIXELS.get());
             return loaded;
         } catch (IOException ex) {
-            throw new IllegalStateException("EarthShape could not load " + target, ex);
+            throw new IllegalStateException("EarthShape could not load bundled HOI4 terrain.bmp", ex);
         }
     }
 
     private EnvironmentLayers loadEnvironmentLayers() {
-        Path directory = FMLPaths.CONFIGDIR.get().resolve("earthshape");
         try {
             EarthMap landMap = getMap();
-            EarthLayer height = loadLayer(directory.resolve("earth_height.png"), landMap);
-            EarthLayer temperature = loadLayer(directory.resolve("earth_temperature.png"), landMap);
-            EarthLayer humidity = loadLayer(directory.resolve("earth_humidity.png"), landMap);
-            EarthShape.LOGGER.info("[EarthShape] Real-world height and climate layers loaded.");
-            return new EnvironmentLayers(true, height, temperature, humidity);
+            EarthLayer height = loadBundledLayer("/earthshape/hoi4/heightmap.bmp", landMap, LayerType.HEIGHT);
+            EarthLayer rivers = loadBundledLayer("/earthshape/hoi4/rivers.bmp", landMap, LayerType.RIVERS);
+            EarthLayer trees = loadBundledLayer("/earthshape/hoi4/trees.bmp", landMap, LayerType.TREES);
+            EarthLayer normal = loadBundledLayer("/earthshape/hoi4/world_normal.bmp", landMap, LayerType.NORMAL);
+            EarthShape.LOGGER.info("[EarthShape] Bundled HOI4 heightmap, rivers, trees and normal map loaded.");
+            return new EnvironmentLayers(true, height, true, rivers, trees, normal);
         } catch (IOException | IllegalArgumentException ex) {
             EarthShape.LOGGER.warn("[EarthShape] Real-world layers are enabled but unavailable; using seed-only height and climate. {}", ex.getMessage());
             return EnvironmentLayers.INACTIVE;
         }
     }
 
-    private static EarthLayer loadLayer(Path path, EarthMap landMap) throws IOException {
-        if (!Files.isRegularFile(path)) throw new IOException("missing " + path.getFileName());
-        BufferedImage image = ImageIO.read(path.toFile());
-        if (image == null) throw new IOException("unreadable " + path.getFileName());
-        EarthLayer layer = EarthLayer.from(image);
-        if (layer.width() != landMap.width() || layer.height() != landMap.height()) {
-            throw new IllegalArgumentException(path.getFileName() + " must be " + landMap.width() + "x" + landMap.height());
+    private static EarthLayer loadBundledLayer(String resource, EarthMap landMap, LayerType type) throws IOException {
+        try (InputStream in = EarthShape.class.getResourceAsStream(resource)) {
+            if (in == null) throw new IOException("missing bundled resource " + resource);
+            BufferedImage image = ImageIO.read(in);
+            if (image == null) throw new IOException("unreadable bundled resource " + resource);
+            if (image.getWidth() * landMap.height() != image.getHeight() * landMap.width()) {
+                throw new IllegalArgumentException(resource + " must use the terrain map's aspect ratio");
+            }
+            return switch (type) {
+                case HEIGHT -> EarthLayer.fromHeightmap(image);
+                case RIVERS -> EarthLayer.fromRivers(image);
+                case TREES -> EarthLayer.fromTrees(image);
+                case NORMAL -> EarthLayer.fromNormal(image);
+            };
         }
-        return layer;
     }
 
     private static double smoothValueNoise(long salt, double x, double z) {
@@ -169,9 +171,11 @@ public final class EarthMapService {
         }
     }
 
-    private record EnvironmentLayers(boolean active, EarthLayer height, EarthLayer temperature, EarthLayer humidity) {
-        private static final EnvironmentLayers INACTIVE = new EnvironmentLayers(false, null, null, null);
+    private record EnvironmentLayers(boolean heightActive, EarthLayer height, boolean climateActive, EarthLayer rivers, EarthLayer trees, EarthLayer normal) {
+        private static final EnvironmentLayers INACTIVE = new EnvironmentLayers(false, null, false, null, null, null);
     }
+
+    private enum LayerType { HEIGHT, RIVERS, TREES, NORMAL }
 
     /** Shares an environment lookup among height, temperature and humidity density functions on one worker. */
     private static final class EnvironmentCache {

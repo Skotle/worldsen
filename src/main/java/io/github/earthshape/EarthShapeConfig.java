@@ -28,30 +28,30 @@ public final class EarthShapeConfig {
         b.push("earthshape");
         ENABLED = b.comment("Enable EarthShape's Overworld continentalness and terrain-density wrappers.")
                 .define("enabled", true);
-        BLOCKS_PER_PIXEL = b.comment("Horizontal scale of earth_continentalness.png.")
-                .defineInRange("blocksPerPixel", 16, 1, 4096);
+        BLOCKS_PER_PIXEL = b.comment("Horizontal scale of the bundled HOI4 terrain.bmp map.")
+                .defineInRange("blocksPerPixel", 20, 1, 4096);
         COAST_WIDTH_BLOCKS = b.comment("Width of the smooth coast transition, in blocks.")
-                .defineInRange("coastWidthBlocks", 256, 16, 4096);
+                .defineInRange("coastWidthBlocks", 96, 16, 4096);
         CONTROL_STRENGTH = b.comment("Blend weight for EarthShape continentalness and terrain masking.")
                 .defineInRange("controlStrength", 0.80D, 0.0D, 1.0D);
         OCEAN_FLOOR_Y = b.comment("Target seafloor height. Together with landBaseY it places the map shoreline at sea level.")
                 .defineInRange("oceanFloorY", 36, -64, 62);
-        LAND_BASE_Y = b.comment("Minimum target surface height for solid land inside the map mask.")
-                .defineInRange("landBaseY", 90, 64, 200);
+        LAND_BASE_Y = b.comment("Default height for flat mapped land; keep near sea level for broad plains.")
+                .defineInRange("landBaseY", 65, 64, 200);
         SHAPE_VERTICAL_SCALE = b.comment("Smaller values enforce the map coastline more strongly.")
                 .defineInRange("shapeVerticalScale", 14.0D, 4.0D, 64.0D);
-        TERRAIN_DETAIL_STRENGTH = b.comment("How much of the original final density remains as local terrain and cave detail. Keep low for a clean map silhouette.")
+        TERRAIN_DETAIL_STRENGTH = b.comment("How much of the original final density remains as local terrain and cave detail.")
                 .defineInRange("terrainDetailStrength", 0.08D, 0.0D, 0.50D);
         APPLY_TO_COMPATIBLE_OVERWORLD_SETTINGS = b.comment("Also apply to non-vanilla NoiseBasedChunkGenerator settings that look like a standard Overworld. Disable for a pack's bespoke dimension settings.")
                 .define("applyToCompatibleOverworldSettings", true);
         STRICT_OCEAN_MASK = b.comment("Forbid terrain above sea level where the Earth map is ocean. Keep enabled to preserve coastlines.")
                 .define("strictOceanMask", true);
-        REAL_WORLD_LAYERS_ENABLED = b.comment("Enable optional earth_height.png, earth_temperature.png and earth_humidity.png layers from config/earthshape. All three PNGs must match the land-mask dimensions.")
-                .define("realWorldLayersEnabled", false);
+        REAL_WORLD_LAYERS_ENABLED = b.comment("Enable the bundled HOI4 heightmap. Optional earth_temperature.png and earth_humidity.png in config/earthshape must both match the terrain-map dimensions.")
+                .define("realWorldLayersEnabled", true);
         HEIGHTMAP_MIN_Y = b.comment("Y represented by black in earth_height.png.")
                 .defineInRange("heightmapMinY", 64, -64, 319);
-        HEIGHTMAP_MAX_Y = b.comment("Y represented by white in earth_height.png.")
-                .defineInRange("heightmapMaxY", 220, -64, 319);
+        HEIGHTMAP_MAX_Y = b.comment("Y represented by white in the HOI4 heightmap.")
+                .defineInRange("heightmapMaxY", 260, -64, 319);
         REAL_CLIMATE_STRENGTH = b.comment("Blend amount for temperature and humidity map layers; original biome-source climate remains the remainder.")
                 .defineInRange("realClimateStrength", 0.75D, 0.0D, 1.0D);
         WARP_STRENGTH_BLOCKS = b.comment("Maximum deterministic coastline domain warp. Set to 0 for the closest PNG coastline match.")

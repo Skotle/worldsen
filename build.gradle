@@ -132,6 +132,12 @@ dependencies {
 // When "copyIdeResources" is enabled, this will also run before the game launches in IDE environments.
 // See https://docs.gradle.org/current/dsl/org.gradle.language.jvm.tasks.ProcessResources.html
 tasks.withType(ProcessResources).configureEach {
+    // Package the project-owned HOI4 source BMPs without maintaining duplicate copies.
+    from('map') {
+        include 'terrain.bmp', 'heightmap.bmp', 'rivers.bmp', 'trees.bmp', 'world_normal.bmp'
+        into 'earthshape/hoi4'
+    }
+
     var replaceProperties = [
             minecraft_version      : minecraft_version,
             minecraft_version_range: minecraft_version_range,
