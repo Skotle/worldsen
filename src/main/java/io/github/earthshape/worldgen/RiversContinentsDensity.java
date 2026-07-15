@@ -12,7 +12,7 @@ public final class RiversContinentsDensity implements DensityFunction {
 
     @Override
     public double compute(FunctionContext context) {
-        double land = RiversMask.INSTANCE.sampleLand(context.blockX(), context.blockZ());
+        double land = RiversMask.INSTANCE.sampleCoastLand(context.blockX(), context.blockZ());
         // Vanilla's continentalness range: negative values form ocean, modest positive values
         // form ordinary inland terrain. The source bitmap controls only continent placement;
         // vanilla retains its own terrain, cave, biome and structure generation.

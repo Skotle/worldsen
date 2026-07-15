@@ -20,6 +20,26 @@ public final class RiversMask {
     /** Returns a bilinear land value: 0 for open sea and 1 for land. */
     public double sampleLand(int blockX, int blockZ) {
         Data loaded = data();
+        return sampleLand(loaded, blockX, blockZ);
+    }
+
+    /**
+     * Coast-only low-pass filtering for density functions.  The original layer remains the
+     * source of truth, but one 20-block binary BMP edge is too narrow for vanilla's vertical
+     * terrain response and produces a cliff.  This spreads only the density transition.
+     */
+    public double sampleCoastLand(int blockX, int blockZ) {
+        Data loaded = data();
+        int radius = Math.max(32, blocksPerPixel() * 3);
+        double centre = sampleLand(loaded, blockX, blockZ) * 4.0D;
+        double sides = sampleLand(loaded, blockX - radius, blockZ)
+                + sampleLand(loaded, blockX + radius, blockZ)
+                + sampleLand(loaded, blockX, blockZ - radius)
+                + sampleLand(loaded, blockX, blockZ + radius);
+        return (centre + sides) / 8.0D;
+    }
+
+    private double sampleLand(Data loaded, int blockX, int blockZ) {
         int blocksPerPixel = blocksPerPixel();
         double imageX = blockX / (double) blocksPerPixel + loaded.width * 0.5D;
         double imageZ = blockZ / (double) blocksPerPixel + loaded.height * 0.5D;

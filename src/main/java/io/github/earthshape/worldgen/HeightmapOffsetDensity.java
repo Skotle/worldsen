@@ -13,7 +13,7 @@ public final class HeightmapOffsetDensity implements DensityFunction {
 
     @Override
     public double compute(FunctionContext context) {
-        double land = RiversMask.INSTANCE.sampleLand(context.blockX(), context.blockZ());
+        double land = RiversMask.INSTANCE.sampleCoastLand(context.blockX(), context.blockZ());
         double elevation = HeightmapLayer.INSTANCE.sample(context.blockX(), context.blockZ());
         // Keep the layer conservative: vanilla still supplies local terrain shape, while the
         // source raster raises sustained highland and lowers broad lowland before density forms.
