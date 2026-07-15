@@ -8,6 +8,8 @@ public final class EarthShapeConfig {
     public static final ModConfigSpec.BooleanValue ENABLED;
     public static final ModConfigSpec.IntValue BLOCKS_PER_PIXEL;
     public static final ModConfigSpec.IntValue COAST_WIDTH_BLOCKS;
+    public static final ModConfigSpec.IntValue TERRAIN_COAST_WIDTH_BLOCKS;
+    public static final ModConfigSpec.IntValue OCEAN_INSET_BLOCKS;
     public static final ModConfigSpec.DoubleValue CONTROL_STRENGTH;
     public static final ModConfigSpec.IntValue OCEAN_FLOOR_Y;
     public static final ModConfigSpec.IntValue LAND_BASE_Y;
@@ -32,6 +34,10 @@ public final class EarthShapeConfig {
                 .defineInRange("blocksPerPixel", 20, 1, 4096);
         COAST_WIDTH_BLOCKS = b.comment("Width of the smooth coast transition, in blocks.")
                 .defineInRange("coastWidthBlocks", 96, 16, 4096);
+        TERRAIN_COAST_WIDTH_BLOCKS = b.comment("Physical terrain transition at the shoreline. Keep this narrow so map straits remain open; coastWidthBlocks still controls biome blending.")
+                .defineInRange("terrainCoastWidthBlocks", 8, 1, 128);
+        OCEAN_INSET_BLOCKS = b.comment("Expand mapped ocean by this many blocks before shaping terrain. A small inset keeps narrow straits open.")
+                .defineInRange("oceanInsetBlocks", 4, 0, 64);
         CONTROL_STRENGTH = b.comment("Blend weight for EarthShape continentalness and terrain masking.")
                 .defineInRange("controlStrength", 0.80D, 0.0D, 1.0D);
         OCEAN_FLOOR_Y = b.comment("Target seafloor height. Together with landBaseY it places the map shoreline at sea level.")
@@ -59,7 +65,7 @@ public final class EarthShapeConfig {
         WARP_SCALE_BLOCKS = b.comment("Low-frequency domain warp wavelength.")
                 .defineInRange("warpScaleBlocks", 1536, 64, 16384);
         MINIMUM_LAND_COMPONENT_PIXELS = b.comment("Discard disconnected land fragments smaller than this many source-map pixels. This removes raster speckles, not normal coasts.")
-                .defineInRange("minimumLandComponentPixels", 24, 0, 100000);
+                .defineInRange("minimumLandComponentPixels", 128, 0, 100000);
         b.pop();
         SPEC = b.build();
     }

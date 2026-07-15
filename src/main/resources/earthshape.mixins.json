@@ -3,7 +3,9 @@
   "package": "io.github.earthshape.mixin",
   "compatibilityLevel": "JAVA_21",
   "mixins": [
+    "ChunkGeneratorMixin",
     "NoiseBasedChunkGeneratorMixin",
+    "NoiseBasedChunkGeneratorAccessor",
     "RandomStateAccessor"
   ],
   "injectors": { "defaultRequire": 1 }

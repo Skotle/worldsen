@@ -26,14 +26,10 @@ public record EarthContinentalnessDensity(DensityFunction original) implements D
         var signal = EarthMapService.INSTANCE.sample(0L, context.blockX(), context.blockZ());
         double earth = signal.continentalness();
         double strength = EarthShapeConfig.CONTROL_STRENGTH.get();
-        double blended = base + (earth - base) * strength;
-        // Once the terrain mask is unambiguously land, never leave an ocean/deep-ocean
-        // continentalness value behind for the biome source to select on the surface.
-        if (signal.signedDistanceBlocks() >= 24.0D) return Math.max(blended, 0.25D);
-        // A definite ocean climate prevents land-only structures such as villages from being
-        // selected in a mapped sea, even when the original seed's climate was continental.
-        if (signal.signedDistanceBlocks() <= -24.0D) return Math.min(blended, -0.70D);
-        return blended;
+        // Do not clamp the coast into one fixed continentalness value.  Let the normal
+        // multi-noise biome source choose beaches, shores and coastal variants from the blended
+        // climate signal; physical ocean and structure placement are handled separately.
+        return base + (earth - base) * strength;
     }
 
     @Override

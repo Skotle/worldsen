@@ -39,15 +39,18 @@ final class EarthLayer {
             int red = (rgb >>> 16) & 255, green = (rgb >>> 8) & 255, blue = rgb & 255;
             int gray = (red * 30 + green * 59 + blue * 11) / 100;
             values[y * width + x] = switch (mode) {
-                // HOI4 reserves most of its heightmap range for ordinary continental relief.
-                // A curve keeps that relief near sea level while preserving the highest mountain pixels.
+                // HOI4 reserves the low end for sea level (89).  The previous 2.2 exponent
+                // compressed ordinary land values such as 100-130 to almost zero, effectively
+                // disabling the heightmap except on the very highest mountains.
                 case GRAYSCALE -> {
                     float normalized = Math.max(0F, Math.min(1F, (gray - 89) / 150.0F));
-                    yield (float) Math.pow(normalized, 2.2D);
+                    yield normalized * 0.82F + (float) Math.pow(normalized, 2.2D) * 0.18F;
                 }
                 case RIVERS -> (red == 255 && green == 255 && blue == 255) || (red == 122 && green == 122 && blue == 122) ? 0F : 1F;
                 case TREES -> red == 0 && green == 0 && blue == 0 ? 0F : 1F;
-                case NORMAL -> 1F - blue / 255.0F;
+                // Terrain normal maps encode slope in X/Y and height-facing direction in Z.
+                // Z alone is near 255 even on gentle hills, so it discarded almost all relief.
+                case NORMAL -> Math.min(1F, (float) Math.hypot(red - 128.0D, green - 128.0D) / 96.0F);
             };
         }
         return new EarthLayer(width, height, values);

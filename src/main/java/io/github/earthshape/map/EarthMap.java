@@ -12,13 +12,15 @@ public final class EarthMap {
     private static final float INF = 1.0e20F;
     private final int width;
     private final int height;
+    private final boolean[] landPixels;
     private final float[] signedDistancePixels;
     private final int removedLandComponents;
     private final int removedLandPixels;
 
-    private EarthMap(int width, int height, float[] signedDistancePixels, int removedLandComponents, int removedLandPixels) {
+    private EarthMap(int width, int height, boolean[] landPixels, float[] signedDistancePixels, int removedLandComponents, int removedLandPixels) {
         this.width = width;
         this.height = height;
+        this.landPixels = landPixels;
         this.signedDistancePixels = signedDistancePixels;
         this.removedLandComponents = removedLandComponents;
         this.removedLandPixels = removedLandPixels;
@@ -46,7 +48,7 @@ public final class EarthMap {
         float[] toOcean = chamferDistance(land, width, height, false);
         float[] sdf = new float[land.length];
         for (int i = 0; i < sdf.length; i++) sdf[i] = land[i] ? toOcean[i] : -toLand[i];
-        return new EarthMap(width, height, sdf, filtered.removedComponents(), filtered.removedPixels());
+        return new EarthMap(width, height, land, sdf, filtered.removedComponents(), filtered.removedPixels());
     }
 
     /** Builds a land mask from HOI4 terrain.bmp, whose ocean palette entry is RGB 8, 31, 130. */
@@ -68,7 +70,32 @@ public final class EarthMap {
         float[] toOcean = chamferDistance(land, width, height, false);
         float[] sdf = new float[land.length];
         for (int i = 0; i < sdf.length; i++) sdf[i] = land[i] ? toOcean[i] : -toLand[i];
-        return new EarthMap(width, height, sdf, filtered.removedComponents(), filtered.removedPixels());
+        return new EarthMap(width, height, land, sdf, filtered.removedComponents(), filtered.removedPixels());
+    }
+
+    /**
+     * Builds a temporary coastline mask from HOI4 rivers.bmp. Its open ocean is the neutral
+     * gray RGB 122,122,122; white is land and coloured pixels are river markings on land.
+     */
+    public static EarthMap fromHoi4Rivers(BufferedImage image, int minimumLandComponentPixels) {
+        Objects.requireNonNull(image, "image");
+        int width = image.getWidth();
+        int height = image.getHeight();
+        boolean[] land = new boolean[width * height];
+        for (int y = 0; y < height; y++) for (int x = 0; x < width; x++) {
+            int rgb = image.getRGB(x, y);
+            int red = (rgb >>> 16) & 255;
+            int green = (rgb >>> 8) & 255;
+            int blue = rgb & 255;
+            land[y * width + x] = red != 122 || green != 122 || blue != 122;
+        }
+        FilterResult filtered = discardSmallLandComponents(land, width, height, minimumLandComponentPixels);
+        land = filtered.land();
+        float[] toLand = chamferDistance(land, width, height, true);
+        float[] toOcean = chamferDistance(land, width, height, false);
+        float[] sdf = new float[land.length];
+        for (int i = 0; i < sdf.length; i++) sdf[i] = land[i] ? toOcean[i] : -toLand[i];
+        return new EarthMap(width, height, land, sdf, filtered.removedComponents(), filtered.removedPixels());
     }
 
     /**
@@ -135,9 +162,33 @@ public final class EarthMap {
         if (px < 0 || py < 0 || px >= width - 1 || py >= height - 1) return -Math.max(width, height) * blocksPerPixel;
         int x0 = (int) Math.floor(px), y0 = (int) Math.floor(py);
         double tx = px - x0, ty = py - y0;
+        // Ease the interpolation inside each source cell without overshooting the neighbouring
+        // SDF values. Cubic interpolation produced artificial land/water flecks in open ocean.
+        tx = smooth(tx);
+        ty = smooth(ty);
         double a = lerp(signedDistancePixels[y0 * width + x0], signedDistancePixels[y0 * width + x0 + 1], tx);
         double b = lerp(signedDistancePixels[(y0 + 1) * width + x0], signedDistancePixels[(y0 + 1) * width + x0 + 1], tx);
         return lerp(a, b, ty) * blocksPerPixel;
+    }
+
+    /**
+     * Samples the filtered source pixel directly.  SDF interpolation is useful for a smooth
+     * height transition, but it must never turn a source-water pixel into land and close a
+     * narrow strait.
+     */
+    public boolean sampleLandPixel(double worldX, double worldZ, int blocksPerPixel) {
+        int x = (int) Math.floor(worldX / blocksPerPixel + width * 0.5D);
+        int y = (int) Math.floor(worldZ / blocksPerPixel + height * 0.5D);
+        return x >= 0 && y >= 0 && x < width && y < height && landPixels[y * width + x];
+    }
+
+    /** Keeps the centre of a one-pixel-wide strait as water while the surrounding SDF is rounded. */
+    public boolean isNarrowWaterPassage(double worldX, double worldZ, int blocksPerPixel) {
+        int x = (int) Math.floor(worldX / blocksPerPixel + width * 0.5D);
+        int y = (int) Math.floor(worldZ / blocksPerPixel + height * 0.5D);
+        if (x <= 0 || y <= 0 || x >= width - 1 || y >= height - 1 || landPixels[y * width + x]) return false;
+        return (landPixels[y * width + x - 1] && landPixels[y * width + x + 1])
+                || (landPixels[(y - 1) * width + x] && landPixels[(y + 1) * width + x]);
     }
 
     private static float[] chamferDistance(boolean[] land, int w, int h, boolean targetLand) {
@@ -155,5 +206,6 @@ public final class EarthMap {
     }
     private static void check(float[] d, int w, int h, int here, int x, int y, float cost) { if (x >= 0 && y >= 0 && x < w && y < h) d[here] = Math.min(d[here], d[y * w + x] + cost); }
     private static double lerp(double a, double b, double t) { return a + (b - a) * t; }
+    private static double smooth(double t) { return t * t * (3.0D - 2.0D * t); }
     private record FilterResult(boolean[] land, int removedComponents, int removedPixels) {}
 }

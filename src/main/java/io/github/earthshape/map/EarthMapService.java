@@ -43,10 +43,26 @@ public final class EarthMapService {
         double warpedZ = blockZ + smoothValueNoise(worldSeed ^ 0x7F4A7C15L, blockX / (double) wavelength, blockZ / (double) wavelength) * strength;
         double distance = loaded.sampleSignedDistance(warpedX, warpedZ, scale);
         double land = smootherstep(-coast, coast, distance);
-        // The -1..1 range can be blended with a pack's original continentalness without selecting biomes directly.
-        EarthSignal signal = new EarthSignal(distance, land, land * 2.0D - 1.0D);
+        // A land mask is geometry, not a mountain-height signal.  Feeding +1.0 to vanilla
+        // continentalness made every map interior fall into its far-inland peak/stony biome
+        // bands even though EarthTerrainDensity deliberately keeps it flat.  Keep the full
+        // smooth shoreline ramp, but map it to vanilla's ocean -> mid-inland climate range so
+        // normal plains, forests and coast variants can be selected from the remaining noises.
+        double continentalness = -0.70D + land * 0.90D;
+        EarthSignal signal = new EarthSignal(distance, land, continentalness);
         cached.store(currentRevision, worldSeed, blockX, blockZ, scale, wavelength, strength, coast, signal);
         return signal;
+    }
+
+    /** True only for a retained source-map land pixel; use this for topology-sensitive checks. */
+    public boolean isLandPixel(int blockX, int blockZ) {
+        if (!EarthShapeConfig.ENABLED.get()) return true;
+        return getMap().sampleLandPixel(blockX, blockZ, EarthShapeConfig.BLOCKS_PER_PIXEL.get());
+    }
+
+    public boolean isNarrowWaterPassage(int blockX, int blockZ) {
+        if (!EarthShapeConfig.ENABLED.get()) return false;
+        return getMap().isNarrowWaterPassage(blockX, blockZ, EarthShapeConfig.BLOCKS_PER_PIXEL.get());
     }
 
     /** Samples optional real-world height, temperature and humidity maps. */
@@ -65,12 +81,21 @@ public final class EarthMapService {
         double warpedZ = blockZ + smoothValueNoise(0x7F4A7C15L, blockX / (double) wavelength, blockZ / (double) wavelength) * strength;
         EarthMap landMap = getMap();
         double trees = loaded.trees.sample(warpedX, warpedZ, scale, landMap.width(), landMap.height());
+        double height = loaded.heightActive ? loaded.height.sample(warpedX, warpedZ, scale, landMap.width(), landMap.height()) : 0.5D;
+        double rivers = loaded.rivers.sample(warpedX, warpedZ, scale, landMap.width(), landMap.height());
+        double steepness = loaded.normal.sample(warpedX, warpedZ, scale, landMap.width(), landMap.height());
+
+        // HOI4 does not ship separate temperature/humidity rasters.  Its map projection,
+        // tree cover and river layer are nevertheless stable real-world climate inputs: latitude
+        // establishes the warm-to-cold belt, altitude cools it, and trees/rivers establish
+        // humidity.  They are then blended with the pack's existing multi-noise climate.
+        double latitude = Math.max(0.0D, Math.min(1.0D,
+                warpedZ / (scale * (double) landMap.height()) + 0.5D));
+        double equatorWeight = 1.0D - Math.abs(latitude * 2.0D - 1.0D);
+        double temperature = clamp(0.16D + 0.80D * Math.pow(equatorWeight, 0.70D) - height * 0.20D);
+        double humidity = clamp(0.15D + trees * 0.58D + rivers * 0.18D + equatorWeight * 0.09D);
         EarthEnvironmentSignal signal = new EarthEnvironmentSignal(loaded.heightActive, loaded.climateActive,
-                loaded.heightActive ? loaded.height.sample(warpedX, warpedZ, scale, landMap.width(), landMap.height()) : 0.5D,
-                0.5D,
-                0.25D + trees * 0.60D,
-                loaded.rivers.sample(warpedX, warpedZ, scale, landMap.width(), landMap.height()),
-                loaded.normal.sample(warpedX, warpedZ, scale, landMap.width(), landMap.height()));
+                height, temperature, humidity, rivers, steepness);
         cached.store(currentRevision, blockX, blockZ, scale, wavelength, strength, signal);
         return signal;
     }
@@ -94,17 +119,17 @@ public final class EarthMapService {
     }
 
     private EarthMap load() {
-        try (InputStream in = EarthShape.class.getResourceAsStream("/earthshape/hoi4/terrain.bmp")) {
-            if (in == null) throw new IOException("bundled HOI4 terrain map is missing");
+        try (InputStream in = EarthShape.class.getResourceAsStream("/earthshape/hoi4/rivers.bmp")) {
+            if (in == null) throw new IOException("bundled HOI4 rivers map is missing");
             BufferedImage image = ImageIO.read(in);
             if (image == null) throw new IOException("not a readable image");
-            EarthMap loaded = EarthMap.fromHoi4Terrain(image, EarthShapeConfig.MINIMUM_LAND_COMPONENT_PIXELS.get());
-            EarthShape.LOGGER.info("[EarthShape] Bundled HOI4 terrain map loaded ({}x{} pixels, removed {} isolated land fragments / {} pixels; min component={} px).",
+            EarthMap loaded = EarthMap.fromHoi4Rivers(image, EarthShapeConfig.MINIMUM_LAND_COMPONENT_PIXELS.get());
+            EarthShape.LOGGER.info("[EarthShape] Bundled HOI4 rivers map loaded as the temporary coastline mask ({}x{} pixels, removed {} isolated land fragments / {} pixels; min component={} px).",
                     image.getWidth(), image.getHeight(), loaded.removedLandComponents(), loaded.removedLandPixels(),
                     EarthShapeConfig.MINIMUM_LAND_COMPONENT_PIXELS.get());
             return loaded;
         } catch (IOException ex) {
-            throw new IllegalStateException("EarthShape could not load bundled HOI4 terrain.bmp", ex);
+            throw new IllegalStateException("EarthShape could not load bundled HOI4 rivers.bmp", ex);
         }
     }
 
@@ -151,6 +176,7 @@ public final class EarthMapService {
     private static double smooth(double t) { return t * t * (3.0D - 2.0D * t); }
     private static double smootherstep(double min, double max, double value) { double t = Math.max(0, Math.min(1, (value - min) / (max - min))); return t * t * t * (t * (t * 6 - 15) + 10); }
     private static double lerp(double a, double b, double t) { return a + (b - a) * t; }
+    private static double clamp(double value) { return Math.max(0.0D, Math.min(1.0D, value)); }
 
     /** One-entry, per-worker cache: density is normally evaluated repeatedly at the same X/Z over Y. */
     private static final class SampleCache {

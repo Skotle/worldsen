@@ -21,9 +21,9 @@ public record EarthClimateDensity(DensityFunction original, Channel channel) imp
     @Override
     public double compute(FunctionContext context) {
         double base = original.compute(context);
+        if (!EarthShapeConfig.ENABLED.get()) return base;
         EarthEnvironmentSignal environment = EarthMapService.INSTANCE.sampleEnvironment(context.blockX(), context.blockZ());
-        // HOI4 supplies tree cover but not a temperature raster; keep the vanilla temperature signal.
-        if (channel == Channel.TEMPERATURE || !environment.climateActive()) return base;
+        if (!environment.climateActive()) return base;
         double mapValue = (channel == Channel.TEMPERATURE ? environment.temperature() : environment.humidity()) * 2.0D - 1.0D;
         double strength = EarthShapeConfig.REAL_CLIMATE_STRENGTH.get();
         return base + (mapValue - base) * strength;

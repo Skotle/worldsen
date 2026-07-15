@@ -19,7 +19,8 @@ public record EarthOceanFloodednessDensity(DensityFunction original) implements 
             var signal = EarthMapService.INSTANCE.sample(0L, context.blockX(), context.blockZ());
             // Fill only the open-ocean column between its mapped floor and sea level.  Applying
             // this to coast/underground cells made every nearby cave an ocean aquifer.
-            if (signal.signedDistanceBlocks() < 0.0D
+            if ((!EarthMapService.INSTANCE.isLandPixel(context.blockX(), context.blockZ())
+                    || signal.signedDistanceBlocks() < EarthShapeConfig.OCEAN_INSET_BLOCKS.get())
                     && context.blockY() >= EarthShapeConfig.OCEAN_FLOOR_Y.get()
                     && context.blockY() <= 63) return 1.0D;
         }

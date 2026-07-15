@@ -36,16 +36,57 @@ public record EarthTerrainDensity(DensityFunction original) implements DensityFu
         EarthSignal mapSignal = EarthMapService.INSTANCE.sample(0L, context.blockX(), context.blockZ());
         // Biome continentalness may use a broad transition, but the physical shoreline must
         // follow the raster closely rather than becoming a hundreds-of-blocks-wide mush.
-        double land = smootherstep(-24.0D, 24.0D, mapSignal.signedDistanceBlocks());
+        // Keep physical terrain transitions much narrower than the biome transition.  A broad
+        // density blend from both shores can otherwise raise the centre of a one-pixel strait
+        // above sea level and close it.
+        double terrainCoastWidth = EarthShapeConfig.TERRAIN_COAST_WIDTH_BLOCKS.get();
+        double terrainDistance = mapSignal.signedDistanceBlocks() - EarthShapeConfig.OCEAN_INSET_BLOCKS.get();
+        double land = EarthMapService.INSTANCE.isNarrowWaterPassage(context.blockX(), context.blockZ())
+                ? 0.0D
+                : smootherstep(-terrainCoastWidth, terrainCoastWidth, terrainDistance);
         if (FIRST_SAMPLE_LOGGED.compareAndSet(false, true)) {
             EarthShape.LOGGER.info("[EarthShape] Terrain density active; first sample at {}, {}, {}.", context.blockX(), context.blockY(), context.blockZ());
         }
-        // Vanilla owns all land density; it has coherent mountains, caves, and surface rules.
-        // The map only replaces ocean density with one continuous floor, blending at the coast.
-        double oceanFloorShape = (EarthShapeConfig.OCEAN_FLOOR_Y.get() - context.blockY())
-                / EarthShapeConfig.SHAPE_VERTICAL_SCALE.get();
-        double shoreline = smootherstep(0.25D, 0.75D, land);
-        return oceanFloorShape + (base - oceanFloorShape) * shoreline;
+        // 0.3.4's map-controlled surface: both land and ocean come from the SDF rather than
+        // handing land back to vanilla continentalness.
+        double oceanFloorY = EarthShapeConfig.OCEAN_FLOOR_Y.get();
+        double landBaseY = EarthShapeConfig.LAND_BASE_Y.get();
+        double shoreline = smootherstep(0.0D, 0.5D, land);
+        double targetSurfaceY = oceanFloorY + (landBaseY - oceanFloorY) * shoreline;
+
+        EarthEnvironmentSignal environment = EarthMapService.INSTANCE.sampleEnvironment(context.blockX(), context.blockZ());
+        if (environment.heightActive()) {
+            double mappedHeightY = EarthShapeConfig.HEIGHTMAP_MIN_Y.get()
+                    + environment.height() * (EarthShapeConfig.HEIGHTMAP_MAX_Y.get() - EarthShapeConfig.HEIGHTMAP_MIN_Y.get());
+            double inlandWeight = smootherstep(0.55D, 0.85D, land)
+                    * smootherstep(160.0D, 640.0D, mapSignal.signedDistanceBlocks());
+            targetSurfaceY += (mappedHeightY - landBaseY) * inlandWeight;
+            targetSurfaceY += environment.normalSteepness() * 8.0D * inlandWeight;
+        }
+
+        double targetShape = (targetSurfaceY - context.blockY()) / EarthShapeConfig.SHAPE_VERTICAL_SCALE.get();
+        double boundedDetail = Math.max(-0.4D, Math.min(0.4D, base));
+        double detailStrength = Math.min(EarthShapeConfig.TERRAIN_DETAIL_STRENGTH.get(), 0.08D);
+        double shaped = targetShape + boundedDetail * detailStrength;
+
+        // 0.3.4 limited the retained vanilla density to less than half a block of vertical
+        // movement, so all non-mountain map pixels became featureless plains.  Reuse the same
+        // seeded vanilla density as a larger, strictly inland surface offset: it adds rolling
+        // hills without allowing the detail to shift a coastline or raise mapped ocean.
+        double hillWeight = smootherstep(0.60D, 0.90D, land)
+                * smootherstep(96.0D, 384.0D, mapSignal.signedDistanceBlocks());
+        double hillDetail = Math.max(-1.6D, Math.min(1.6D, base));
+        shaped += hillDetail * 0.45D * hillWeight;
+        if (land <= 0.5D) shaped = targetShape;
+
+        if (EarthShapeConfig.STRICT_OCEAN_MASK.get()) {
+            double oceanWeight = 1.0D - smootherstep(0.45D, 0.5D, land);
+            double seaLevel = 63.0D;
+            double seaLevelCeiling = (seaLevel - 2.0D - context.blockY()) / EarthShapeConfig.SHAPE_VERTICAL_SCALE.get();
+            double capped = Math.min(shaped, seaLevelCeiling);
+            shaped += (capped - shaped) * oceanWeight;
+        }
+        return shaped;
     }
 
     @Override
