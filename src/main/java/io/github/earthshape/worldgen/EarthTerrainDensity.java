@@ -72,11 +72,6 @@ public record EarthTerrainDensity(DensityFunction original) implements DensityFu
             double mountainHeight = smootherstep(0.14D, 0.42D, environment.height());
             double mountainSlope = smootherstep(0.03D, 0.22D, environment.normalSteepness());
             targetSurfaceY += 72.0D * mountainHeight * (0.35D + 0.65D * mountainSlope) * inlandWeight;
-            // The actual North China Plain is a broad alluvial basin.  Preserve a little of
-            // the raster relief near its edge but pull the interior toward a low, buildable
-            // surface rather than letting the seed turn it into rolling hills.
-            double northChinaPlainY = landBaseY + 8.0D;
-            targetSurfaceY += (northChinaPlainY - targetSurfaceY) * environment.northChinaPlainStrength() * 0.82D;
         }
 
         double targetShape = (targetSurfaceY - context.blockY()) / EarthShapeConfig.SHAPE_VERTICAL_SCALE.get();
@@ -90,7 +85,6 @@ public record EarthTerrainDensity(DensityFunction original) implements DensityFu
         // hills without allowing the detail to shift a coastline or raise mapped ocean.
         double hillWeight = smootherstep(0.60D, 0.90D, land)
                 * smootherstep(96.0D, 384.0D, mapSignal.signedDistanceBlocks());
-        hillWeight *= 1.0D - environment.northChinaPlainStrength() * 0.92D;
         double hillDetail = Math.max(-1.6D, Math.min(1.6D, base));
         shaped += hillDetail * 0.45D * hillWeight;
         if (land <= 0.5D) shaped = targetShape;

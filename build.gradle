@@ -134,7 +134,7 @@ dependencies {
 tasks.withType(ProcessResources).configureEach {
     // Package the project-owned HOI4 source BMPs without maintaining duplicate copies.
     from('map') {
-        include 'terrain.bmp', 'heightmap.bmp', 'rivers.bmp', 'trees.bmp', 'world_normal.bmp'
+        include 'terrain.bmp', 'heightmap.bmp', 'rivers.bmp', 'trees.bmp', 'world_normal.bmp', 'earth_temperature.png'
         into 'earthshape/hoi4'
     }
 

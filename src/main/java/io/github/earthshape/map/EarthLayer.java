@@ -1,6 +1,7 @@
 package io.github.earthshape.map;
 
 import java.awt.image.BufferedImage;
+import java.awt.Color;
 
 /** Immutable grayscale map layer using the same centered, bilinear coordinate mapping as EarthMap. */
 final class EarthLayer {
@@ -34,6 +35,10 @@ final class EarthLayer {
         return from(image, 0, 1, Mode.TERRAIN);
     }
 
+    static EarthLayer fromTemperature(BufferedImage image) {
+        return from(image, 0, 1, Mode.TEMPERATURE);
+    }
+
     private static EarthLayer from(BufferedImage image, int minimum, int maximum, Mode mode) {
         int width = image.getWidth();
         int height = image.getHeight();
@@ -55,8 +60,13 @@ final class EarthLayer {
                 // Terrain normal maps encode slope in X/Y and height-facing direction in Z.
                 // Z alone is near 255 even on gentle hills, so it discarded almost all relief.
                 case NORMAL -> Math.min(1F, (float) Math.hypot(red - 128.0D, green - 128.0D) / 96.0F);
-                // HOI4 uses this saturated yellow for the Sahara and Arabian deserts.
-                case TERRAIN -> red >= 220 && green >= 220 && blue <= 64 ? 1F : 0F;
+                // Use the exact HOI4 desert palette.  A broad "yellow" test misclassified
+                // unrelated East Asian terrain colours as desert.
+                case TERRAIN -> red == 252 && green == 255 && blue == 0 ? 1F : 0F;
+                // The supplied climate raster uses blue/purple for cold, green for temperate,
+                // yellow/orange for warm and red for hot.  Decode its continuous palette into
+                // the normalized multi-noise temperature coordinate.
+                case TEMPERATURE -> temperatureFromPalette(red, green, blue);
             };
         }
         return new EarthLayer(width, height, values);
@@ -77,5 +87,13 @@ final class EarthLayer {
     }
 
     private static double lerp(double a, double b, double t) { return a + (b - a) * t; }
-    private enum Mode { GRAYSCALE, RIVERS, TREES, NORMAL, TERRAIN }
+    private static float temperatureFromPalette(int red, int green, int blue) {
+        if (blue >= red && blue >= green) return 0.08F + 0.12F * green / 255.0F;
+        float hue = Color.RGBtoHSB(red, green, blue, null)[0];
+        if (hue >= 0.25F && hue < 0.50F) return 0.42F;
+        if (hue >= 0.12F) return 0.62F;
+        if (hue >= 0.045F) return 0.80F;
+        return 0.95F;
+    }
+    private enum Mode { GRAYSCALE, RIVERS, TREES, NORMAL, TERRAIN, TEMPERATURE }
 }

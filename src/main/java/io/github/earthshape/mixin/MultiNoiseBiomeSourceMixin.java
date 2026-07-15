@@ -1,10 +1,12 @@
 package io.github.earthshape.mixin;
 
 import io.github.earthshape.EarthShapeConfig;
+import io.github.earthshape.map.EarthMapService;
 import io.github.earthshape.worldgen.EarthSurfaceDepthDensity;
 import io.github.earthshape.worldgen.TerralithIntegration;
 import net.minecraft.core.Holder;
 import net.minecraft.world.level.biome.Biome;
+import net.minecraft.world.level.biome.Biomes;
 import net.minecraft.world.level.biome.Climate;
 import net.minecraft.world.level.biome.MultiNoiseBiomeSource;
 import org.spongepowered.asm.mixin.Mixin;
@@ -19,6 +21,7 @@ abstract class MultiNoiseBiomeSourceMixin {
     private static final float[] SURFACE_DEPTH_RETRIES = {0.05F, -0.05F, -0.15F, 0.10F, -0.30F};
 
     @Shadow public abstract Holder<Biome> getNoiseBiome(Climate.TargetPoint targetPoint);
+    @Shadow public abstract java.util.Set<Holder<Biome>> possibleBiomes();
 
     @Inject(method = "getNoiseBiome(IIILnet/minecraft/world/level/biome/Climate$Sampler;)Lnet/minecraft/core/Holder;", at = @At("RETURN"), cancellable = true)
     private void earthshape$replaceSurfaceCaveBiome(
@@ -33,7 +36,20 @@ abstract class MultiNoiseBiomeSourceMixin {
         int blockY = quartY << 2;
         int blockZ = quartZ << 2;
         double surfaceY = EarthSurfaceDepthDensity.mappedSurfaceY(blockX, blockZ);
-        if (blockY < surfaceY - 24.0D || blockY > surfaceY + 24.0D || !earthshape$isCave(callback.getReturnValue())) return;
+        if (blockY < surfaceY - 24.0D || blockY > surfaceY + 24.0D) return;
+
+        Holder<Biome> selected = callback.getReturnValue();
+        if (EarthMapService.INSTANCE.sampleEnvironment(blockX, blockZ).desertStrength() >= 0.5D
+                && earthshape$isMesa(selected)) {
+            // The map's exact desert palette represents desert, not Terralith's erosion-driven
+            // badlands/mesa variant.  Keep this decision layer-based and only at the surface.
+            java.util.Optional<Holder<Biome>> desert = possibleBiomes().stream().filter(biome -> biome.is(Biomes.DESERT)).findFirst();
+            if (desert.isPresent()) {
+                callback.setReturnValue(desert.get());
+                return;
+            }
+        }
+        if (!earthshape$isCave(selected)) return;
 
         Climate.TargetPoint point = sampler.sample(quartX, quartY, quartZ);
         // Terralith's surface table is centred on zero, while cave entries occupy several
@@ -53,5 +69,12 @@ abstract class MultiNoiseBiomeSourceMixin {
 
     private static boolean earthshape$isCave(Holder<Biome> biome) {
         return biome.unwrapKey().map(key -> key.location().getPath().contains("cave")).orElse(false);
+    }
+
+    private static boolean earthshape$isMesa(Holder<Biome> biome) {
+        return biome.unwrapKey().map(key -> {
+            String path = key.location().getPath();
+            return path.contains("badlands") || path.contains("mesa");
+        }).orElse(false);
     }
 }
