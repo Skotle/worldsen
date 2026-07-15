@@ -15,6 +15,7 @@ public final class EarthShapeCompatibility {
                 || settings.is(NoiseGeneratorSettings.AMPLIFIED)) {
             return true;
         }
+        if (TerralithIntegration.supports(settings)) return true;
         if (!EarthShapeConfig.APPLY_TO_COMPATIBLE_OVERWORLD_SETTINGS.get()) return false;
 
         NoiseGeneratorSettings value = settings.value();

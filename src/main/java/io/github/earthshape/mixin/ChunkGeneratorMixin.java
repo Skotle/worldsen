@@ -8,6 +8,7 @@ import net.minecraft.core.RegistryAccess;
 import net.minecraft.world.level.StructureManager;
 import net.minecraft.world.level.WorldGenLevel;
 import net.minecraft.world.level.block.Blocks;
+import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.core.BlockPos;
 import net.minecraft.world.level.chunk.ChunkAccess;
 import net.minecraft.world.level.chunk.ChunkGenerator;
@@ -37,14 +38,17 @@ abstract class ChunkGeneratorMixin {
         EarthShapeNoiseRouter.install(structureState.randomState());
         int centerX = chunk.getPos().getMinBlockX() + 8;
         int centerZ = chunk.getPos().getMinBlockZ() + 8;
-        if (EarthMapService.INSTANCE.sample(0L, centerX, centerZ).signedDistanceBlocks() < -24.0D) callback.cancel();
+        // A distance-only check left the source map's narrow coastal water cells eligible for
+        // Terralith's large structures, which could then spill a whole stone/cave complex into
+        // open sea.  Structure starts must respect the discrete source-water topology.
+        if (!EarthMapService.INSTANCE.isLandPixel(centerX, centerZ)) callback.cancel();
     }
 
     /**
      * Features are placed after density filling.  A few underwater features can otherwise
      * leave blocks and vegetation at the water surface, which map renderers show as scattered
-     * blue islands.  Seal only open sea after decoration; coasts and straits keep vanilla
-     * decoration and biome variation.
+     * blue islands.  Source-water cells are authoritative: clear any generated blocks above
+     * sea level as well, so a Terralith structure started just inland cannot spill into sea.
      */
     @Inject(method = "applyBiomeDecoration", at = @At("TAIL"))
     private void earthshape$sealDecoratedOpenOcean(
@@ -62,12 +66,26 @@ abstract class ChunkGeneratorMixin {
         BlockPos.MutableBlockPos position = new BlockPos.MutableBlockPos();
         for (int x = minX; x < minX + 16; x++) {
             for (int z = minZ; z < minZ + 16; z++) {
-                if (EarthMapService.INSTANCE.sample(0L, x, z).signedDistanceBlocks() >= -24.0D) continue;
+                if (EarthMapService.INSTANCE.isLandPixel(x, z)) continue;
                 for (int y = floorY + 1; y <= 63; y++) {
                     position.set(x, y, z);
-                    chunk.setBlockState(position, Blocks.WATER.defaultBlockState(), false);
+                    earthshape$replaceBlock(chunk, position, Blocks.WATER.defaultBlockState());
+                }
+                for (int y = 64; y < level.getMaxBuildHeight(); y++) {
+                    position.set(x, y, z);
+                    if (!chunk.getBlockState(position).isAir()) {
+                        earthshape$replaceBlock(chunk, position, Blocks.AIR.defaultBlockState());
+                    }
                 }
             }
         }
+    }
+
+    /** ChunkAccess#setBlockState does not discard pending structure block-entity NBT by itself. */
+    private static void earthshape$replaceBlock(ChunkAccess chunk, BlockPos position, BlockState state) {
+        if (chunk.getBlockState(position).hasBlockEntity() || chunk.getBlockEntityNbt(position) != null) {
+            chunk.removeBlockEntity(position);
+        }
+        chunk.setBlockState(position, state, false);
     }
 }

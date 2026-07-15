@@ -5,6 +5,7 @@ import io.github.earthshape.EarthShapeConfig;
 import io.github.earthshape.map.EarthMapService;
 import io.github.earthshape.worldgen.EarthShapeCompatibility;
 import io.github.earthshape.worldgen.EarthShapeNoiseRouter;
+import io.github.earthshape.worldgen.TerralithIntegration;
 import net.minecraft.core.Holder;
 import net.minecraft.core.BlockPos;
 import net.minecraft.world.level.StructureManager;
@@ -44,6 +45,7 @@ abstract class NoiseBasedChunkGeneratorMixin {
     ) {
         if (EarthShapeCompatibility.supports(settings)) {
             EarthShapeNoiseRouter.install(random);
+            TerralithIntegration.logApplied();
             if (INSTALLED_LOGGED.compareAndSet(false, true)) {
                 EarthShape.LOGGER.info("[EarthShape] Live Overworld router installed; generating chunk {}.", chunk.getPos());
             }

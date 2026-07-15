@@ -30,6 +30,10 @@ final class EarthLayer {
         return from(image, 0, 1, Mode.NORMAL);
     }
 
+    static EarthLayer fromTerrain(BufferedImage image) {
+        return from(image, 0, 1, Mode.TERRAIN);
+    }
+
     private static EarthLayer from(BufferedImage image, int minimum, int maximum, Mode mode) {
         int width = image.getWidth();
         int height = image.getHeight();
@@ -51,6 +55,8 @@ final class EarthLayer {
                 // Terrain normal maps encode slope in X/Y and height-facing direction in Z.
                 // Z alone is near 255 even on gentle hills, so it discarded almost all relief.
                 case NORMAL -> Math.min(1F, (float) Math.hypot(red - 128.0D, green - 128.0D) / 96.0F);
+                // HOI4 uses this saturated yellow for the Sahara and Arabian deserts.
+                case TERRAIN -> red >= 220 && green >= 220 && blue <= 64 ? 1F : 0F;
             };
         }
         return new EarthLayer(width, height, values);
@@ -71,5 +77,5 @@ final class EarthLayer {
     }
 
     private static double lerp(double a, double b, double t) { return a + (b - a) * t; }
-    private enum Mode { GRAYSCALE, RIVERS, TREES, NORMAL }
+    private enum Mode { GRAYSCALE, RIVERS, TREES, NORMAL, TERRAIN }
 }

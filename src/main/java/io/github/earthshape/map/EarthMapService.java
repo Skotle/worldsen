@@ -82,6 +82,7 @@ public final class EarthMapService {
         EarthMap landMap = getMap();
         double trees = loaded.trees.sample(warpedX, warpedZ, scale, landMap.width(), landMap.height());
         double height = loaded.heightActive ? loaded.height.sample(warpedX, warpedZ, scale, landMap.width(), landMap.height()) : 0.5D;
+        double desert = loaded.terrain.sample(warpedX, warpedZ, scale, landMap.width(), landMap.height());
         double rivers = loaded.rivers.sample(warpedX, warpedZ, scale, landMap.width(), landMap.height());
         double steepness = loaded.normal.sample(warpedX, warpedZ, scale, landMap.width(), landMap.height());
 
@@ -91,11 +92,20 @@ public final class EarthMapService {
         // humidity.  They are then blended with the pack's existing multi-noise climate.
         double latitude = Math.max(0.0D, Math.min(1.0D,
                 warpedZ / (scale * (double) landMap.height()) + 0.5D));
+        // Geographic mask for the actual North China Plain in the bundled world raster.  Its
+        // boundary is softly feathered so the Taihang/Yanshan foothills transition naturally.
+        double sourceX = warpedX / scale + landMap.width() * 0.5D;
+        double sourceY = warpedZ / scale + landMap.height() * 0.5D;
+        double northChinaPlain = ellipseMask(sourceX, sourceY, 4_550.0D, 800.0D, 245.0D, 145.0D);
         double equatorWeight = 1.0D - Math.abs(latitude * 2.0D - 1.0D);
         double temperature = clamp(0.16D + 0.80D * Math.pow(equatorWeight, 0.70D) - height * 0.20D);
         double humidity = clamp(0.15D + trees * 0.58D + rivers * 0.18D + equatorWeight * 0.09D);
+        // Explicit terrain desert palette overrides incidental river/latitude moisture.  This
+        // keeps the Sahara hot and dry independently of the procedural world seed.
+        temperature = Math.max(temperature, 0.86D * desert);
+        humidity = humidity * (1.0D - desert) + 0.04D * desert;
         EarthEnvironmentSignal signal = new EarthEnvironmentSignal(loaded.heightActive, loaded.climateActive,
-                height, temperature, humidity, rivers, steepness);
+                height, temperature, humidity, rivers, steepness, desert, northChinaPlain);
         cached.store(currentRevision, blockX, blockZ, scale, wavelength, strength, signal);
         return signal;
     }
@@ -137,11 +147,12 @@ public final class EarthMapService {
         try {
             EarthMap landMap = getMap();
             EarthLayer height = loadBundledLayer("/earthshape/hoi4/heightmap.bmp", landMap, LayerType.HEIGHT);
+            EarthLayer terrain = loadBundledLayer("/earthshape/hoi4/terrain.bmp", landMap, LayerType.TERRAIN);
             EarthLayer rivers = loadBundledLayer("/earthshape/hoi4/rivers.bmp", landMap, LayerType.RIVERS);
             EarthLayer trees = loadBundledLayer("/earthshape/hoi4/trees.bmp", landMap, LayerType.TREES);
             EarthLayer normal = loadBundledLayer("/earthshape/hoi4/world_normal.bmp", landMap, LayerType.NORMAL);
-            EarthShape.LOGGER.info("[EarthShape] Bundled HOI4 heightmap, rivers, trees and normal map loaded.");
-            return new EnvironmentLayers(true, height, true, rivers, trees, normal);
+            EarthShape.LOGGER.info("[EarthShape] Bundled HOI4 heightmap, terrain climate, rivers, trees and normal map loaded.");
+            return new EnvironmentLayers(true, height, true, terrain, rivers, trees, normal);
         } catch (IOException | IllegalArgumentException ex) {
             EarthShape.LOGGER.warn("[EarthShape] Real-world layers are enabled but unavailable; using seed-only height and climate. {}", ex.getMessage());
             return EnvironmentLayers.INACTIVE;
@@ -161,6 +172,7 @@ public final class EarthMapService {
                 case RIVERS -> EarthLayer.fromRivers(image);
                 case TREES -> EarthLayer.fromTrees(image);
                 case NORMAL -> EarthLayer.fromNormal(image);
+                case TERRAIN -> EarthLayer.fromTerrain(image);
             };
         }
     }
@@ -177,6 +189,10 @@ public final class EarthMapService {
     private static double smootherstep(double min, double max, double value) { double t = Math.max(0, Math.min(1, (value - min) / (max - min))); return t * t * t * (t * (t * 6 - 15) + 10); }
     private static double lerp(double a, double b, double t) { return a + (b - a) * t; }
     private static double clamp(double value) { return Math.max(0.0D, Math.min(1.0D, value)); }
+    private static double ellipseMask(double x, double y, double centerX, double centerY, double radiusX, double radiusY) {
+        double distance = Math.hypot((x - centerX) / radiusX, (y - centerY) / radiusY);
+        return smootherstep(1.15D, 0.75D, distance);
+    }
 
     /** One-entry, per-worker cache: density is normally evaluated repeatedly at the same X/Z over Y. */
     private static final class SampleCache {
@@ -197,11 +213,11 @@ public final class EarthMapService {
         }
     }
 
-    private record EnvironmentLayers(boolean heightActive, EarthLayer height, boolean climateActive, EarthLayer rivers, EarthLayer trees, EarthLayer normal) {
-        private static final EnvironmentLayers INACTIVE = new EnvironmentLayers(false, null, false, null, null, null);
+    private record EnvironmentLayers(boolean heightActive, EarthLayer height, boolean climateActive, EarthLayer terrain, EarthLayer rivers, EarthLayer trees, EarthLayer normal) {
+        private static final EnvironmentLayers INACTIVE = new EnvironmentLayers(false, null, false, null, null, null, null);
     }
 
-    private enum LayerType { HEIGHT, RIVERS, TREES, NORMAL }
+    private enum LayerType { HEIGHT, TERRAIN, RIVERS, TREES, NORMAL }
 
     /** Shares an environment lookup among height, temperature and humidity density functions on one worker. */
     private static final class EnvironmentCache {

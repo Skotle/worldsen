@@ -16,6 +16,7 @@ public final class EarthShapeConfig {
     public static final ModConfigSpec.DoubleValue SHAPE_VERTICAL_SCALE;
     public static final ModConfigSpec.DoubleValue TERRAIN_DETAIL_STRENGTH;
     public static final ModConfigSpec.BooleanValue APPLY_TO_COMPATIBLE_OVERWORLD_SETTINGS;
+    public static final ModConfigSpec.BooleanValue TERRALITH_COMPATIBILITY;
     public static final ModConfigSpec.BooleanValue STRICT_OCEAN_MASK;
     public static final ModConfigSpec.BooleanValue REAL_WORLD_LAYERS_ENABLED;
     public static final ModConfigSpec.IntValue HEIGHTMAP_MIN_Y;
@@ -50,6 +51,8 @@ public final class EarthShapeConfig {
                 .defineInRange("terrainDetailStrength", 0.08D, 0.0D, 0.50D);
         APPLY_TO_COMPATIBLE_OVERWORLD_SETTINGS = b.comment("Also apply to non-vanilla NoiseBasedChunkGenerator settings that look like a standard Overworld. Disable for a pack's bespoke dimension settings.")
                 .define("applyToCompatibleOverworldSettings", true);
+        TERRALITH_COMPATIBILITY = b.comment("When Terralith is installed, recognize its overworld data-pack generator and preserve its multi-noise biome source while applying EarthShape's map, height and climate layers.")
+                .define("terralithCompatibility", true);
         STRICT_OCEAN_MASK = b.comment("Forbid terrain above sea level where the Earth map is ocean. Keep enabled to preserve coastlines.")
                 .define("strictOceanMask", true);
         REAL_WORLD_LAYERS_ENABLED = b.comment("Enable the bundled HOI4 heightmap. Optional earth_temperature.png and earth_humidity.png in config/earthshape must both match the terrain-map dimensions.")

@@ -61,7 +61,22 @@ public record EarthTerrainDensity(DensityFunction original) implements DensityFu
             double inlandWeight = smootherstep(0.55D, 0.85D, land)
                     * smootherstep(160.0D, 640.0D, mapSignal.signedDistanceBlocks());
             targetSurfaceY += (mappedHeightY - landBaseY) * inlandWeight;
-            targetSurfaceY += environment.normalSteepness() * 8.0D * inlandWeight;
+            // High-altitude, steep pixels such as the Alps keep pronounced ridgelines rather
+            // than being flattened into the generic inland surface.
+            double alpineWeight = smootherstep(0.32D, 0.62D, environment.height())
+                    * smootherstep(0.08D, 0.30D, environment.normalSteepness());
+            targetSurfaceY += environment.normalSteepness() * (8.0D + 24.0D * alpineWeight) * inlandWeight;
+            // The raw heightmap's continental mountain values otherwise map to only broad
+            // Minecraft hills.  Promote sustained high elevation plus raster slope into a
+            // proper ridge lift, preserving low-elevation plains and isolated gentle hills.
+            double mountainHeight = smootherstep(0.14D, 0.42D, environment.height());
+            double mountainSlope = smootherstep(0.03D, 0.22D, environment.normalSteepness());
+            targetSurfaceY += 72.0D * mountainHeight * (0.35D + 0.65D * mountainSlope) * inlandWeight;
+            // The actual North China Plain is a broad alluvial basin.  Preserve a little of
+            // the raster relief near its edge but pull the interior toward a low, buildable
+            // surface rather than letting the seed turn it into rolling hills.
+            double northChinaPlainY = landBaseY + 8.0D;
+            targetSurfaceY += (northChinaPlainY - targetSurfaceY) * environment.northChinaPlainStrength() * 0.82D;
         }
 
         double targetShape = (targetSurfaceY - context.blockY()) / EarthShapeConfig.SHAPE_VERTICAL_SCALE.get();
@@ -75,6 +90,7 @@ public record EarthTerrainDensity(DensityFunction original) implements DensityFu
         // hills without allowing the detail to shift a coastline or raise mapped ocean.
         double hillWeight = smootherstep(0.60D, 0.90D, land)
                 * smootherstep(96.0D, 384.0D, mapSignal.signedDistanceBlocks());
+        hillWeight *= 1.0D - environment.northChinaPlainStrength() * 0.92D;
         double hillDetail = Math.max(-1.6D, Math.min(1.6D, base));
         shaped += hillDetail * 0.45D * hillWeight;
         if (land <= 0.5D) shaped = targetShape;

@@ -4,6 +4,7 @@
   "compatibilityLevel": "JAVA_21",
   "mixins": [
     "ChunkGeneratorMixin",
+    "MultiNoiseBiomeSourceMixin",
     "NoiseBasedChunkGeneratorMixin",
     "NoiseBasedChunkGeneratorAccessor",
     "RandomStateAccessor"

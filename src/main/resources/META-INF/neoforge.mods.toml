@@ -23,5 +23,12 @@ versionRange="${minecraft_version_range}"
 ordering="NONE"
 side="BOTH"
 
+[[dependencies.${mod_id}]]
+modId="terralith"
+type="optional"
+versionRange="[2.6.2,)"
+ordering="AFTER"
+side="BOTH"
+
 [[mixins]]
 config="earthshape.mixins.json"

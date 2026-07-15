@@ -24,17 +24,31 @@ public record EarthSurfaceDepthDensity(DensityFunction original) implements Dens
         // Returning 0 everywhere therefore selected cave biomes all the way to open air.
         // Exclude a generous band below the *mapped* surface, then retain vanilla's depth
         // signal in truly underground space so caves can still receive cave biomes.
-        EarthSignal mapSignal = EarthMapService.INSTANCE.sample(0L, context.blockX(), context.blockZ());
+        double surfaceY = mappedSurfaceY(context.blockX(), context.blockZ());
+        if (context.blockY() >= surfaceY - 32.0D) {
+            // Terralith 2.6.2 registers its *surface* biome table at depth -0.005..0.0,
+            // while its custom cave biomes begin at +0.15.  The generic -1 guard therefore
+            // made every Terralith surface candidate miss and the multi-noise resolver picked
+            // a distant rocky fallback.  Keep its surface coordinate at zero; it remains below
+            // the custom cave ranges and is only enabled when the optional integration is live.
+            return TerralithIntegration.isActive() ? 0.0D : -1.0D;
+        }
+        return original.compute(context);
+    }
+
+    /** Shared with the Terralith biome-source filter; it must match EarthTerrainDensity's surface. */
+    public static double mappedSurfaceY(int blockX, int blockZ) {
+        EarthSignal mapSignal = EarthMapService.INSTANCE.sample(0L, blockX, blockZ);
         double coastWidth = EarthShapeConfig.TERRAIN_COAST_WIDTH_BLOCKS.get();
         double distance = mapSignal.signedDistanceBlocks() - EarthShapeConfig.OCEAN_INSET_BLOCKS.get();
-        double land = EarthMapService.INSTANCE.isNarrowWaterPassage(context.blockX(), context.blockZ())
+        double land = EarthMapService.INSTANCE.isNarrowWaterPassage(blockX, blockZ)
                 ? 0.0D
                 : smootherstep(-coastWidth, coastWidth, distance);
         double shoreline = smootherstep(0.0D, 0.5D, land);
         double surfaceY = EarthShapeConfig.OCEAN_FLOOR_Y.get()
                 + (EarthShapeConfig.LAND_BASE_Y.get() - EarthShapeConfig.OCEAN_FLOOR_Y.get()) * shoreline;
 
-        EarthEnvironmentSignal environment = EarthMapService.INSTANCE.sampleEnvironment(context.blockX(), context.blockZ());
+        EarthEnvironmentSignal environment = EarthMapService.INSTANCE.sampleEnvironment(blockX, blockZ);
         if (environment.heightActive()) {
             double mappedHeightY = EarthShapeConfig.HEIGHTMAP_MIN_Y.get()
                     + environment.height() * (EarthShapeConfig.HEIGHTMAP_MAX_Y.get() - EarthShapeConfig.HEIGHTMAP_MIN_Y.get());
@@ -43,9 +57,7 @@ public record EarthSurfaceDepthDensity(DensityFunction original) implements Dens
             surfaceY += (mappedHeightY - EarthShapeConfig.LAND_BASE_Y.get()) * inlandWeight;
             surfaceY += environment.normalSteepness() * 8.0D * inlandWeight;
         }
-
-        if (context.blockY() >= surfaceY - 32.0D) return -1.0D;
-        return original.compute(context);
+        return surfaceY;
     }
 
     @Override public void fillArray(double[] values, ContextProvider provider) { provider.fillAllDirectly(values, this); }
