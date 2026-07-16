@@ -15,6 +15,7 @@ public final class EarthShape {
     public static final Logger LOGGER = LogUtils.getLogger();
 
     public EarthShape(IEventBus modBus, ModContainer container) {
+        WorldgenCompatibilityGuard.verify();
         container.registerConfig(ModConfig.Type.SERVER, EarthShapeServerConfig.SPEC);
         EarthShapeDensityFunctions.register(modBus);
         LOGGER.info("[EarthShape] rivers.bmp continentalness rewrite loaded for NeoForge 1.21.1.");

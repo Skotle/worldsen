@@ -30,7 +30,8 @@ public final class RiversMask {
      */
     public double sampleCoastLand(int blockX, int blockZ) {
         Data loaded = data();
-        int radius = Math.max(32, blocksPerPixel() * 3);
+        int radius = EarthShapeServerConfig.COAST_SMOOTHING_RADIUS_BLOCKS.get();
+        if (radius == 0) return sampleLand(loaded, blockX, blockZ);
         double centre = sampleLand(loaded, blockX, blockZ) * 4.0D;
         double sides = sampleLand(loaded, blockX - radius, blockZ)
                 + sampleLand(loaded, blockX + radius, blockZ)
