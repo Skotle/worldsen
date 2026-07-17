@@ -7,7 +7,7 @@ import net.minecraft.world.level.levelgen.DensityFunction;
 import net.neoforged.bus.api.IEventBus;
 import net.neoforged.neoforge.registries.DeferredRegister;
 
-/** Registers only the clean rivers.bmp continentalness codec. */
+/** Registers the density functions used before normal terrain generation. */
 public final class EarthShapeDensityFunctions {
     private static final DeferredRegister<MapCodec<? extends DensityFunction>> TYPES =
             DeferredRegister.create(Registries.DENSITY_FUNCTION_TYPE, EarthShape.MOD_ID);
@@ -15,6 +15,7 @@ public final class EarthShapeDensityFunctions {
     static {
         TYPES.register("rivers_continents", () -> RiversContinentsDensity.CODEC.codec());
         TYPES.register("heightmap_offset", () -> HeightmapOffsetDensity.CODEC.codec());
+        TYPES.register("river_bank_grade", () -> RiverBankGradeDensity.CODEC.codec());
     }
 
     private EarthShapeDensityFunctions() {}

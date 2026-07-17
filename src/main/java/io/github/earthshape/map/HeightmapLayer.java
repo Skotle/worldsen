@@ -16,10 +16,11 @@ public final class HeightmapLayer {
 
     public double sample(int blockX, int blockZ) {
         Data loaded = data();
-        int blocksPerPixel = RiversMask.INSTANCE.blocksPerPixel();
-        double imageX = blockX / (double) blocksPerPixel + loaded.width * 0.5D;
-        double imageZ = blockZ / (double) blocksPerPixel + loaded.height * 0.5D;
-        if (imageX < 0.0D || imageZ < 0.0D || imageX >= loaded.width - 1 || imageZ >= loaded.height - 1) return 0.0D;
+        double imageX = RiversMask.INSTANCE.legacyImageX(blockX, loaded.width);
+        double imageZ = RiversMask.INSTANCE.legacyImageZ(blockZ, loaded.height);
+        // Outside the original rectangle the full-world mask has only outline information;
+        // use a neutral lowland value rather than stretching edge mountains into the margins.
+        if (imageX < 0.0D || imageZ < 0.0D || imageX >= loaded.width - 1 || imageZ >= loaded.height - 1) return 0.32D;
         int x = (int) Math.floor(imageX);
         int z = (int) Math.floor(imageZ);
         double tx = imageX - x;

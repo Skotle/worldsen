@@ -16,6 +16,7 @@ public final class EarthShape {
 
     public EarthShape(IEventBus modBus, ModContainer container) {
         container.registerConfig(ModConfig.Type.SERVER, EarthShapeServerConfig.SPEC);
+        EarthShapeCompatibility.initialize();
         EarthShapeDensityFunctions.register(modBus);
         LOGGER.info("[EarthShape] rivers.bmp continentalness rewrite loaded for NeoForge 1.21.1.");
     }

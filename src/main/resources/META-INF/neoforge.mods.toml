@@ -9,6 +9,9 @@ displayName="${mod_name}"
 authors="EarthShape contributors"
 description='''Earth-shaped continentalness controls for NeoForge 1.21.1 world generation.'''
 
+[[mixins]]
+config="earthshape.mixins.json"
+
 [[dependencies.${mod_id}]]
 modId="neoforge"
 type="required"

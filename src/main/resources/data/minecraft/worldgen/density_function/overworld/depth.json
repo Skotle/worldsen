@@ -9,9 +9,15 @@
   },
   "argument2": {
     "type": "minecraft:add",
-    "argument1": "minecraft:overworld/offset",
+    "argument1": {
+      "type": "minecraft:add",
+      "argument1": "minecraft:overworld/offset",
+      "argument2": {
+        "type": "earthshape:heightmap_offset"
+      }
+    },
     "argument2": {
-      "type": "earthshape:heightmap_offset"
+      "type": "earthshape:river_bank_grade"
     }
   }
 }
