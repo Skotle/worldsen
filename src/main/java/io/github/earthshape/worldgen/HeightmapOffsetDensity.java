@@ -24,12 +24,12 @@ public final class HeightmapOffsetDensity implements DensityFunction {
         // A river is selected as a real biome, not painted into an existing chunk.  Withhold
         // mountain relief around its source line so both banks grade down toward its water level.
         double riverRelief = RiversMask.INSTANCE.sampleRiverReliefFactor(context.blockX(), context.blockZ());
-        // A small shoreline grade only anchors the smooth transition at sea level.  The broad
-        // continentalness and heightmap fades above shape the slope; they do not just lower a cliff.
-        double coastalSink = -0.08D * (1.0D - inland) * (1.0D - inland);
-        // Apply the same negative-to-positive grade along source rivers.  The river channel
-        // remains an actual river biome; this only lets both banks climb gradually away from it.
-        double riverSink = -0.015D * (1.0D - riverRelief) * (1.0D - riverRelief);
+        // Force the land immediately beside water down toward the waterline before applying
+        // raster uplift.  This is a fixed physical grade (about 8 blocks at the coast and 5
+        // beside a layer river), then fades through the existing inland/river relief ranges.
+        // It prevents high heightmap pixels from reaching the shoreline at full elevation.
+        double coastalSink = -0.125D * (1.0D - inland);
+        double riverSink = -0.080D * (1.0D - riverRelief);
         // Keep ordinary terrain around vanilla sea-level land height.  Below the median the
         // negative term grows with deviation; above it, quadratic/quartic terms reserve large
         // uplift for genuine highland pixels instead of lifting entire continents.

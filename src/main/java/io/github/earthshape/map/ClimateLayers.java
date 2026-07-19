@@ -1,6 +1,7 @@
 package io.github.earthshape.map;
 
 import io.github.earthshape.EarthShape;
+import io.github.earthshape.EarthShapeServerConfig;
 import java.awt.image.BufferedImage;
 import java.io.IOException;
 import java.io.InputStream;
@@ -14,16 +15,20 @@ public final class ClimateLayers {
 
     public double temperature(int x, int z) {
         Data layer = temperature();
-        // The added margins have no legacy climate pixels.  Use latitude-based polar climate
-        // there instead of a constant value, which created a rectangular frozen-ocean seam at
-        // the exact edge of the centred 5632x2048 source rectangle.
-        if (!RiversMask.INSTANCE.isInsideLegacyLayer(x, z, layer.width, layer.height)) return outerLatitudeTemperature(z);
-        return sample(layer, x, z) * 2.0D - 1.0D;
+        TemperatureSample sample = sampleFullTemperature(layer, x, z);
+        double latitude = latitudeTemperature(z);
+        double mapped = sample.value * 2.0D - 1.0D;
+        // The supplied 9-colour raster leaves ocean pixels grey.  Preserve its full-map
+        // land climate while giving those grey waters a continuous latitude temperature.
+        return latitude + (mapped - latitude) * sample.coverage;
     }
-    /** True only where the original 5632x2048 temperature raster exists. */
+    /** Ocean climate intentionally ignores coloured land-temperature pixels and follows latitude only. */
+    public double oceanTemperature(int z) { return latitudeTemperature(z); }
+    /** The supplied temperature map covers the complete Worldmap_river rectangle. */
     public boolean hasLegacyTemperature(int x, int z) {
-        Data layer = temperature();
-        return RiversMask.INSTANCE.isInsideLegacyLayer(x, z, layer.width, layer.height);
+        double mapX = x / (double) RiversMask.INSTANCE.blocksPerPixel() + RiversMask.INSTANCE.width() * 0.5D;
+        double mapZ = z / (double) RiversMask.INSTANCE.blocksPerPixel() + RiversMask.INSTANCE.height() * 0.5D;
+        return mapX >= 0.0D && mapZ >= 0.0D && mapX < RiversMask.INSTANCE.width() && mapZ < RiversMask.INSTANCE.height();
     }
     public double vegetation(int x, int z) { return sample(trees(), x, z) * 2.0D - 1.0D; }
     public TerrainKind terrainKind(int x, int z) {
@@ -60,6 +65,19 @@ public final class ClimateLayers {
         return lerp(lerp(layer.value(x, z), layer.value(x + 1, z), tx), lerp(layer.value(x, z + 1), layer.value(x + 1, z + 1), tx), tz);
     }
 
+    /** Bilinear full-map sample; temperature images no longer use the centred legacy rectangle. */
+    private static TemperatureSample sampleFullTemperature(Data layer, int blockX, int blockZ) {
+        double worldX = blockX / (double) RiversMask.INSTANCE.blocksPerPixel() + RiversMask.INSTANCE.width() * 0.5D;
+        double worldZ = blockZ / (double) RiversMask.INSTANCE.blocksPerPixel() + RiversMask.INSTANCE.height() * 0.5D;
+        double imageX = Math.max(0.0D, Math.min(layer.width - 1.001D, worldX / RiversMask.INSTANCE.width() * layer.width));
+        double imageZ = Math.max(0.0D, Math.min(layer.height - 1.001D, worldZ / RiversMask.INSTANCE.height() * layer.height));
+        int x = (int) imageX, z = (int) imageZ;
+        double tx = imageX - x, tz = imageZ - z;
+        double value = lerp(lerp(layer.value(x, z), layer.value(x + 1, z), tx), lerp(layer.value(x, z + 1), layer.value(x + 1, z + 1), tx), tz);
+        double coverage = lerp(lerp(layer.coverage(x, z), layer.coverage(x + 1, z), tx), lerp(layer.coverage(x, z + 1), layer.coverage(x + 1, z + 1), tx), tz);
+        return new TemperatureSample(value, coverage);
+    }
+
     private static int sourceX(Data layer, int blockX) {
         double imageX = RiversMask.INSTANCE.legacyImageX(blockX, layer.width);
         return Math.max(0, Math.min(layer.width - 1, (int) imageX));
@@ -93,25 +111,28 @@ public final class ClimateLayers {
             BufferedImage image = ImageIO.read(input);
             if (image == null) throw new IOException(name + " is not readable");
             int width = image.getWidth(), height = image.getHeight();
-            byte[] values = new byte[width * height];
+            byte[] values = new byte[width * height], coverage = new byte[width * height];
             int[] row = new int[width];
-            for (int z = 0; z < height; z++) { image.getRGB(0, z, width, 1, row, 0, width); for (int x = 0; x < width; x++) values[z * width + x] = (byte) kind.value(row[x]); }
+            for (int z = 0; z < height; z++) { image.getRGB(0, z, width, 1, row, 0, width); for (int x = 0; x < width; x++) { values[z * width + x] = (byte) kind.value(row[x]); coverage[z * width + x] = (byte) kind.coverage(row[x]); } }
             EarthShape.LOGGER.info("[EarthShape] {} climate layer loaded: {}x{}.", name, width, height);
-            return new Data(width, height, values);
+            return new Data(width, height, values, coverage);
         } catch (IOException exception) { throw new IllegalStateException("EarthShape could not load " + name, exception); }
     }
     private static double lerp(double a, double b, double t) { return a + (b - a) * t; }
 
-    private static double outerLatitudeTemperature(int blockZ) {
+    private static double latitudeTemperature(int blockZ) {
         double imageZ = blockZ / (double) RiversMask.INSTANCE.blocksPerPixel() + RiversMask.INSTANCE.height() * 0.5D;
         double latitude = Math.abs(imageZ / Math.max(1.0D, RiversMask.INSTANCE.height() - 1.0D) * 2.0D - 1.0D);
-        // Mild around the equator, progressively polar toward both map edges.
-        return -0.05D - 0.75D * latitude * latitude;
+        // Mild at the equator and polar toward both world-map edges.
+        return 0.55D - 1.35D * latitude * latitude;
     }
     private enum Kind {
         LUMINANCE { int value(int c) { return (((c >>> 16) & 255) * 30 + ((c >>> 8) & 255) * 59 + (c & 255) * 11) / 100; } },
-        // earth_temperature.png is a false-colour temperature map: red/yellow is hot and blue/purple is cold.
-        TEMPERATURE { int value(int c) { return Math.max(0, Math.min(255, 127 + (((c >>> 16) & 255) - (c & 255)) / 2)); } },
+        // The supplied raster has eight opaque land bands; white is deliberately unclassified ocean.
+        TEMPERATURE {
+            int value(int c) { int band = temperatureBand(c); return band < 0 ? 127 : band * 255 / 8; }
+            int coverage(int c) { return temperatureBand(c) < 0 ? 0 : 255; }
+        },
         // trees.bmp is a tree-cover mask, not a rainfall map.  Black is ordinary open ground (neutral),
         // rather than desert; terrain.bmp alone supplies the forced dry desert classification.
         VEGETATION { int value(int c) { int r = (c >>> 16) & 255, g = (c >>> 8) & 255, b = c & 255; return r < 8 && g < 8 && b < 8 ? 128 : 218; } },
@@ -119,6 +140,19 @@ public final class ClimateLayers {
         // Tangent-space normal maps encode the flat-facing component in blue; slope is red/green.
         NORMAL { int value(int c) { double x = (((c >>> 16) & 255) - 127.5D) / 127.5D, z = (((c >>> 8) & 255) - 127.5D) / 127.5D; return (int) (255 * Math.min(1, Math.sqrt(x * x + z * z))); } };
         abstract int value(int color);
+        int coverage(int color) { return 255; }
+        private static int temperatureBand(int color) {
+            int r = (color >>> 16) & 255, g = (color >>> 8) & 255, b = color & 255;
+            int[] palette = { 0x9558D3, 0x47A2F2, 0x48D0C9, 0x9DCB50, 0xF9D724, 0xFBA430, 0xFC6330, 0xE4302B };
+            int[] bands =   {        0,        1,        2,        3,        4,        5,        6,        8 };
+            int best = -1, distance = Integer.MAX_VALUE;
+            for (int i = 0; i < palette.length; i++) {
+                int pr = (palette[i] >>> 16) & 255, pg = (palette[i] >>> 8) & 255, pb = palette[i] & 255;
+                int d = (r - pr) * (r - pr) + (g - pg) * (g - pg) + (b - pb) * (b - pb);
+                if (d < distance) { distance = d; best = i; }
+            }
+            return distance <= 7000 ? bands[best] : -1;
+        }
     }
 
     /** Broad HOI4 terrain palette categories. Province borders and city symbols do not exist in terrain.bmp. */
@@ -145,5 +179,9 @@ public final class ClimateLayers {
             };
         }
     }
-    private record Data(int width, int height, byte[] values) { double value(int x, int z) { return (values[z * width + x] & 255) / 255.0D; } }
+    private record TemperatureSample(double value, double coverage) {}
+    private record Data(int width, int height, byte[] values, byte[] coverage) {
+        double value(int x, int z) { return (values[z * width + x] & 255) / 255.0D; }
+        double coverage(int x, int z) { return (coverage[z * width + x] & 255) / 255.0D; }
+    }
 }
