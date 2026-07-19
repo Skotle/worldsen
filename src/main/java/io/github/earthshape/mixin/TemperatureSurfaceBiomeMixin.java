@@ -36,6 +36,7 @@ public final class TemperatureSurfaceBiomeMixin {
         callback.setReturnValue(land(layers.terrainKind(x, z), temperature, callback.getReturnValue()));
     }
 
+    /** terrain.bmp picks the detailed local land family; temperature picks its climate variant. */
     private Holder<Biome> land(ClimateLayers.TerrainKind terrain, double t, Holder<Biome> fallback) {
         int band = temperatureBand(t);
         return switch (terrain) {

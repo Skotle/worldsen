@@ -8,20 +8,19 @@ import java.io.InputStream;
 import java.util.BitSet;
 import javax.imageio.ImageIO;
 
-/** Full-world land/ocean mask and river hierarchy from the bundled Worldmap_river.png layer. */
+/** Full-world river hierarchy with the original rivers.bmp coast as the primary land mask. */
 public final class RiversMask {
     public static final RiversMask INSTANCE = new RiversMask();
     public static final int DEFAULT_BLOCKS_PER_PIXEL = 20;
     private static final int RIVER_SEARCH_RADIUS = 4;
 
-    private volatile Data data;
+    private volatile Data data, coastline;
 
     private RiversMask() {}
 
     /** Returns a bilinear land value: 0 for open sea and 1 for land. */
     public double sampleLand(int blockX, int blockZ) {
-        Data loaded = data();
-        return sampleLand(loaded, blockX, blockZ);
+        return samplePriorityLand(blockX, blockZ);
     }
 
     /**
@@ -44,7 +43,7 @@ public final class RiversMask {
                 double distance = Math.sqrt(dx * dx + dz * dz);
                 if (distance > sampleRadius) continue;
                 double sampleWeight = sampleRadius + 1.0D - distance;
-                total += sampleLand(loaded, blockX + dx * sampleStep, blockZ + dz * sampleStep) * sampleWeight;
+                total += samplePriorityLand(blockX + dx * sampleStep, blockZ + dz * sampleStep) * sampleWeight;
                 weight += sampleWeight;
             }
         }
@@ -62,14 +61,14 @@ public final class RiversMask {
         int rings = Math.max(1, (int) Math.ceil(fadeBlocks / (double) step));
         for (int ring = 1; ring <= rings; ring++) {
             int offset = ring * step;
-            if (sampleLand(loaded, blockX - offset, blockZ) < 0.5D
-                    || sampleLand(loaded, blockX + offset, blockZ) < 0.5D
-                    || sampleLand(loaded, blockX, blockZ - offset) < 0.5D
-                    || sampleLand(loaded, blockX, blockZ + offset) < 0.5D
-                    || sampleLand(loaded, blockX - offset, blockZ - offset) < 0.5D
-                    || sampleLand(loaded, blockX + offset, blockZ - offset) < 0.5D
-                    || sampleLand(loaded, blockX - offset, blockZ + offset) < 0.5D
-                    || sampleLand(loaded, blockX + offset, blockZ + offset) < 0.5D) {
+            if (samplePriorityLand(blockX - offset, blockZ) < 0.5D
+                    || samplePriorityLand(blockX + offset, blockZ) < 0.5D
+                    || samplePriorityLand(blockX, blockZ - offset) < 0.5D
+                    || samplePriorityLand(blockX, blockZ + offset) < 0.5D
+                    || samplePriorityLand(blockX - offset, blockZ - offset) < 0.5D
+                    || samplePriorityLand(blockX + offset, blockZ - offset) < 0.5D
+                    || samplePriorityLand(blockX - offset, blockZ + offset) < 0.5D
+                    || samplePriorityLand(blockX + offset, blockZ + offset) < 0.5D) {
                 double t = Math.min(1.0D, (ring - 1D) * step / fadeBlocks);
                 return t * t * (3.0D - 2.0D * t);
             }
@@ -129,8 +128,9 @@ public final class RiversMask {
     public boolean isRiverCentreline(int blockX, int blockZ) {
         int widthBlocks = effectiveRiverWidthBlocks(blockX, blockZ);
         if (widthBlocks == 0) return false;
-        double halfWidthPixels = Math.max(widthBlocks, EarthShapeServerConfig.RIVER_MINIMUM_WIDTH_BLOCKS.get())
-                / (2.0D * blocksPerPixel());
+        // Do not promote every connected thin source line to the legacy 8-block minimum.
+        // At four blocks per pixel that doubled narrow rivers into obvious blue corridors.
+        double halfWidthPixels = Math.max(4, widthBlocks) / (2.0D * blocksPerPixel());
         return riverCentrelineDistance(blockX, blockZ) <= halfWidthPixels;
     }
 
@@ -143,15 +143,22 @@ public final class RiversMask {
         return isRiverCentreline(blockX, blockZ) && hasInlandRiverInfluence(blockX, blockZ);
     }
 
-    /** True within a river/bank influence zone that has enough surrounding land. */
+    /**
+     * True only for a source river well inside a continent.  The source artwork contains
+     * some coast-adjacent blue strokes; accepting their small local land buffer turns an
+     * entire shoreline into river biome and destroys the coastline silhouette.
+     */
     public boolean hasInlandRiverInfluence(int blockX, int blockZ) {
-        if (riverWidthBlocks(blockX, blockZ) == 0 || sampleLand(blockX, blockZ) < 0.5D) return false;
-        int margin = EarthShapeServerConfig.RIVER_MINIMUM_INLAND_BLOCKS.get();
+        if (riverWidthBlocks(blockX, blockZ) == 0 || samplePriorityLand(blockX, blockZ) < 0.5D) return false;
+        int margin = Math.max(192, EarthShapeServerConfig.RIVER_MINIMUM_INLAND_BLOCKS.get());
         Data loaded = data();
-        return sampleLand(loaded, blockX - margin, blockZ) >= 0.5D
-                && sampleLand(loaded, blockX + margin, blockZ) >= 0.5D
-                && sampleLand(loaded, blockX, blockZ - margin) >= 0.5D
-                && sampleLand(loaded, blockX, blockZ + margin) >= 0.5D;
+        for (int dz = -1; dz <= 1; dz++) {
+            for (int dx = -1; dx <= 1; dx++) {
+                if (dx == 0 && dz == 0) continue;
+                if (samplePriorityLand(blockX + dx * margin, blockZ + dz * margin) < 0.5D) return false;
+            }
+        }
+        return true;
     }
 
     /** Width of the closest source river line in Minecraft blocks.  Zero means no river. */
@@ -236,17 +243,26 @@ public final class RiversMask {
         Data current = data;
         if (current != null) return current;
         synchronized (this) {
-            if (data == null) data = load();
+            if (data == null) data = load("worldmap_river.png");
             return data;
         }
     }
 
-    private static Data load() {
+    private Data coastline() {
+        Data current = coastline;
+        if (current != null) return current;
+        synchronized (this) {
+            if (coastline == null) coastline = load("rivers.bmp");
+            return coastline;
+        }
+    }
+
+    private static Data load(String name) {
         long started = System.nanoTime();
-        try (InputStream input = EarthShape.class.getResourceAsStream("/earthshape/hoi4/worldmap_river.png")) {
-            if (input == null) throw new IOException("missing /earthshape/hoi4/worldmap_river.png");
+        try (InputStream input = EarthShape.class.getResourceAsStream("/earthshape/hoi4/" + name)) {
+            if (input == null) throw new IOException("missing /earthshape/hoi4/" + name);
             BufferedImage image = ImageIO.read(input);
-            if (image == null) throw new IOException("worldmap_river.png is not readable");
+            if (image == null) throw new IOException(name + " is not readable");
             int width = image.getWidth();
             int height = image.getHeight();
             BitSet land = new BitSet(width * height);
@@ -260,10 +276,12 @@ public final class RiversMask {
                     int red = (rgb >>> 16) & 255;
                     int green = (rgb >>> 8) & 255;
                     int blue = rgb & 255;
-                    // Full-map water is neutral mid-grey; dark province borders remain land.
-                    // The original rivers.bmp is already centred inside this source image.
-                    if (!isFullMapOcean(red, green, blue)) land.set(z * width + x);
                     int riverWidth = riverWidthForColor(red, green, blue);
+                    // Build the continent mask from the actual underlying raster colour.
+                    // A blue river drawn over grey ocean is not a sliver of land.  Those
+                    // strokes are resolved from their surrounding natural land after this
+                    // pass, so they cannot widen or reshape an entire coastline.
+                    if (!isFullMapOcean(red, green, blue) && riverWidth == 0) land.set(z * width + x);
                     if (riverWidth > 0) {
                         int index = z * width + x;
                         rivers.set(index);
@@ -272,15 +290,53 @@ public final class RiversMask {
                 }
             }
             bridgeSmallRiverGaps(width, height, rivers, riverWidths);
-            EarthShape.LOGGER.info("[EarthShape] Worldmap_river.png mask loaded: {}x{} in {} ms.",
+            restoreOnlyInlandRiverPixels(width, height, land, rivers);
+            EarthShape.LOGGER.info("[EarthShape] {} mask loaded: {}x{} in {} ms.", name,
                     width, height, (System.nanoTime() - started) / 1_000_000L);
             return new Data(width, height, land, rivers, riverWidths);
         } catch (IOException exception) {
-            throw new IllegalStateException("EarthShape could not load Worldmap_river.png", exception);
+            throw new IllegalStateException("EarthShape could not load " + name, exception);
         }
     }
 
+    /** The centred original rivers.bmp contour wins wherever it exists. */
+    private double samplePriorityLand(int blockX, int blockZ) {
+        Data full = data(), coast = coastline();
+        double fullX = blockX / (double) blocksPerPixel() + full.width * 0.5D;
+        double fullZ = blockZ / (double) blocksPerPixel() + full.height * 0.5D;
+        double coastX = fullX - (full.width - coast.width) * 0.5D;
+        double coastZ = fullZ - (full.height - coast.height) * 0.5D;
+        if (coastX >= 0.0D && coastZ >= 0.0D && coastX < coast.width - 1.0D && coastZ < coast.height - 1.0D) {
+            return sampleLandAt(coast, coastX, coastZ);
+        }
+        return sampleLand(full, blockX, blockZ);
+    }
+
+    private static double sampleLandAt(Data source, double imageX, double imageZ) {
+        int x = (int) Math.floor(imageX), z = (int) Math.floor(imageZ);
+        double tx = imageX - x, tz = imageZ - z;
+        return lerp(lerp(source.land(x, z), source.land(x + 1, z), tx),
+                lerp(source.land(x, z + 1), source.land(x + 1, z + 1), tx), tz);
+    }
+
     private static double lerp(double a, double b, double t) { return a + (b - a) * t; }
+
+    /**
+     * Blue source pixels inherit land only when embedded in a clear land neighbourhood.
+     * The 5x5 majority rejects a coast stroke with ocean on one side, while preserving
+     * ordinary one-pixel rivers that have land on both banks.
+     */
+    private static void restoreOnlyInlandRiverPixels(int width, int height, BitSet land, BitSet rivers) {
+        for (int index = rivers.nextSetBit(0); index >= 0; index = rivers.nextSetBit(index + 1)) {
+            int x = index % width, z = index / width;
+            int support = 0;
+            for (int dz = -2; dz <= 2; dz++) for (int dx = -2; dx <= 2; dx++) {
+                int sx = x + dx, sz = z + dz;
+                if (sx >= 0 && sz >= 0 && sx < width && sz < height && land.get(sz * width + sx)) support++;
+            }
+            if (support >= 16) land.set(index);
+        }
+    }
 
     /**
      * Connects short raster gaps where both sides have the same local tangent.  The former

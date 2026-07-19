@@ -28,8 +28,7 @@ public final class TerrainBiomeMixin {
         if (EarthShapeCompatibility.disablesWorldgen()) return;
         ClimateLayers layers = ClimateLayers.INSTANCE;
         boolean desert = layers.terrainKind(blockX, blockZ) == ClimateLayers.TerrainKind.DESERT;
-        boolean sourceRiver = EarthShapeServerConfig.RIVER_BIOMES_ENABLED.get()
-                && blockY >= 48
+        boolean sourceRiver = blockY >= 48
                 && RiversMask.INSTANCE.isInlandRiver(blockX, blockZ);
         if (sourceRiver && desert && EarthShapeServerConfig.DESERT_WATER_REDUCTION_ENABLED.get()) {
             sourceRiver = desertRiverWidth(RiversMask.INSTANCE.effectiveRiverWidthBlocks(blockX, blockZ)) > 0;
@@ -62,7 +61,10 @@ public final class TerrainBiomeMixin {
         // continent mask, heightmap density and source-river locations, but it no longer
         // replaces a valid non-vanilla biome with a vanilla terrain.bmp category.
         // With map rivers enabled, vanilla river results are explicitly replaced outside the source centreline.
-        if (EarthShapeServerConfig.RIVER_BIOMES_ENABLED.get() && isVanillaRiver(callback.getReturnValue())) {
+        // The world map is the sole river authority.  Never retain a noise-selected vanilla
+        // river outside a verified source stroke, even if an older serverconfig has the
+        // optional source-river feature toggle disabled.
+        if (isVanillaRiver(callback.getReturnValue())) {
             callback.setReturnValue(mapTerrainBiome(layers, blockX, blockY, blockZ, callback.getReturnValue()));
             return;
         }

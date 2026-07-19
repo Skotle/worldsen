@@ -3,7 +3,6 @@ package io.github.earthshape.worldgen;
 import com.mojang.serialization.MapCodec;
 import io.github.earthshape.EarthShapeServerConfig;
 import io.github.earthshape.EarthShapeCompatibility;
-import io.github.earthshape.map.ClimateLayers;
 import io.github.earthshape.map.RiversMask;
 import net.minecraft.util.KeyDispatchDataCodec;
 import net.minecraft.world.level.levelgen.DensityFunction;
@@ -22,13 +21,6 @@ public final class RiverBankGradeDensity implements DensityFunction {
         if (!RiversMask.INSTANCE.hasInlandRiverInfluence(context.blockX(), context.blockZ())) return 0.0D;
         double distance = RiversMask.INSTANCE.riverCentrelineDistance(context.blockX(), context.blockZ());
         int widthBlocks = RiversMask.INSTANCE.effectiveRiverWidthBlocks(context.blockX(), context.blockZ());
-        if (EarthShapeServerConfig.DESERT_WATER_REDUCTION_ENABLED.get()
-                && ClimateLayers.INSTANCE.terrainKind(context.blockX(), context.blockZ()) == ClimateLayers.TerrainKind.DESERT) {
-            // Keep this class binary-compatible with the installed 1.0.17 JAR: only
-            // the river-bed depth is being hotfixed, not its desert feature set.
-            widthBlocks = (int) Math.round(widthBlocks * EarthShapeServerConfig.DESERT_RIVER_WIDTH_SCALE.get());
-            if (widthBlocks < Math.max(12, EarthShapeServerConfig.DESERT_MINIMUM_RIVER_WIDTH_BLOCKS.get())) return 0.0D;
-        }
         if (widthBlocks == 0) return 0.0D;
         // Colour-derived water width, with a broad graded bank so a 25-block river never
         // becomes a vertical trench at its edge.

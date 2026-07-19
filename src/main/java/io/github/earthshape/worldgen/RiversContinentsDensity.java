@@ -4,7 +4,6 @@ import com.mojang.serialization.MapCodec;
 import com.mojang.serialization.codecs.RecordCodecBuilder;
 import io.github.earthshape.EarthShapeServerConfig;
 import io.github.earthshape.EarthShapeCompatibility;
-import io.github.earthshape.map.ClimateLayers;
 import io.github.earthshape.map.RiversMask;
 import net.minecraft.util.KeyDispatchDataCodec;
 import net.minecraft.world.level.levelgen.DensityFunction;
@@ -31,12 +30,6 @@ public record RiversContinentsDensity(DensityFunction argument) implements Densi
         if (EarthShapeServerConfig.RIVER_BIOMES_ENABLED.get() && land > 0.5D
                 && RiversMask.INSTANCE.hasInlandRiverInfluence(context.blockX(), context.blockZ())) {
             int widthBlocks = RiversMask.INSTANCE.effectiveRiverWidthBlocks(context.blockX(), context.blockZ());
-            if (EarthShapeServerConfig.DESERT_WATER_REDUCTION_ENABLED.get()
-                    && ClimateLayers.INSTANCE.terrainKind(context.blockX(), context.blockZ()) == ClimateLayers.TerrainKind.DESERT) {
-                // Keep this class binary-compatible with the installed 1.0.17 JAR.
-                widthBlocks = (int) Math.round(widthBlocks * EarthShapeServerConfig.DESERT_RIVER_WIDTH_SCALE.get());
-                if (widthBlocks < Math.max(12, EarthShapeServerConfig.DESERT_MINIMUM_RIVER_WIDTH_BLOCKS.get())) return continentalness;
-            }
             if (widthBlocks > 0) {
                 double floorRadius = widthBlocks / 2.0D;
                 double distance = RiversMask.INSTANCE.riverCentrelineDistance(context.blockX(), context.blockZ())
@@ -44,7 +37,10 @@ public record RiversContinentsDensity(DensityFunction argument) implements Densi
                 // Only the colour-defined stroke becomes a water channel.  Spreading
                 // ocean continentalness across the whole graded bank made wide, straight
                 // river corridors; the separate bank-grade function handles the slope.
-                double channelRadius = floorRadius + Math.max(8, Math.min(16, EarthShapeServerConfig.RIVER_CHANNEL_EDGE_FADE_BLOCKS.get()));
+                // Keep density water inside the colour-derived stroke.  A wide 8–16 block
+                // fade is appropriate for terrain grading, but it made every thin raster
+                // river appear as a several-pixel water corridor at 4 blocks/pixel.
+                double channelRadius = floorRadius + Math.max(1, Math.min(3, EarthShapeServerConfig.RIVER_CHANNEL_EDGE_FADE_BLOCKS.get()));
                 if (distance < channelRadius) {
                     double channel = Math.max(-0.16D, EarthShapeServerConfig.RIVER_CHANNEL_CONTINENTALNESS.get());
                     double blend = distance <= floorRadius ? 1.0D : 1.0D - (distance - floorRadius) / Math.max(0.001D, channelRadius - floorRadius);

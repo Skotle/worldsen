@@ -47,7 +47,7 @@ public final class EarthShapeServerConfig {
         builder.push("layers");
         CONTINENTS_ENABLED = builder.comment("Use rivers.bmp as the continental land/ocean mask.").define("continentsEnabled", true);
         HEIGHTMAP_ENABLED = builder.comment("Use heightmap.bmp for terrain height and mountain relief.").define("heightmapEnabled", true);
-        TERRAIN_BIOMES_ENABLED = builder.comment("Use terrain.bmp to select land biomes.").define("terrainBiomesEnabled", true);
+        TERRAIN_BIOMES_ENABLED = builder.comment("Use terrain.bmp for detailed local land classes before selecting a climate-compatible biome.").define("terrainBiomesEnabled", true);
         OCEAN_TEMPERATURE_ENABLED = builder.comment("Use earth_temperature.png only to select ocean biome temperatures.").define("oceanTemperatureEnabled", true);
         TUNDRA_TEMPERATURE_ENABLED = builder.comment("Use earth_temperature.png on sufficiently cold land to select tundra, taiga and snowy mountain biomes.").define("tundraTemperatureEnabled", true);
         TUNDRA_TEMPERATURE_THRESHOLD = builder

@@ -134,6 +134,8 @@ dependencies {
 tasks.withType(ProcessResources).configureEach {
     // Package the project-owned HOI4 source BMPs without maintaining duplicate copies.
     from('map') {
+        // Detailed 1.1 preview: terrain.bmp supplies local land classes while height,
+        // temperature, tree cover and source rivers retain their independent roles.
         include 'terrain.bmp', 'heightmap.bmp', 'rivers.bmp', 'trees.bmp', 'world_normal.bmp', 'earth_temperature.png', 'worldmap_full.png', 'world_rivers_full.png', 'worldmap_river.png'
         into 'earthshape/hoi4'
     }
