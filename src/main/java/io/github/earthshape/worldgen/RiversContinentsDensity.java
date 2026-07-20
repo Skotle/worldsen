@@ -18,10 +18,12 @@ public record RiversContinentsDensity(DensityFunction argument) implements Densi
     @Override
     public double compute(FunctionContext context) {
         if (EarthShapeCompatibility.disablesWorldgen() || !EarthShapeServerConfig.CONTINENTS_ENABLED.get()) return argument.compute(context);
-        double land = RiversMask.INSTANCE.sampleCoastLand(context.blockX(), context.blockZ());
+        // Land/sea ownership is exact: #FFFFFF stays land and #7A7A7A stays ocean,
+        // including closed inland seas.  Coast smoothing must never average a narrow
+        // sea or lake into continental terrain.
+        double land = RiversMask.INSTANCE.sampleLayerLand(context.blockX(), context.blockZ());
         // Vanilla's continentalness range: negative values form ocean, modest positive values
-        // form ordinary inland terrain. The source bitmap controls only continent placement;
-        // vanilla retains its own terrain, cave, biome and structure generation.
+        // form ordinary inland terrain. The source bitmap controls only continent placement.
         double softenedLand = land * land * (3.0D - 2.0D * land);
         double continentalness = -0.65D + softenedLand * 0.85D;
         // A river biome alone does not force the density router below sea level.  Blend a
@@ -31,7 +33,11 @@ public record RiversContinentsDensity(DensityFunction argument) implements Densi
                 && RiversMask.INSTANCE.hasInlandRiverInfluence(context.blockX(), context.blockZ())) {
             int widthBlocks = RiversMask.INSTANCE.effectiveRiverWidthBlocks(context.blockX(), context.blockZ());
             if (widthBlocks > 0) {
-                double floorRadius = widthBlocks / 2.0D;
+                // Biomes and density are sampled every four blocks.  A 1–3 block
+                // colour-defined channel can fall between two samples and show up as a
+                // dashed river, so only the physical channel has a one-sample minimum.
+                // Wider palette classes retain their configured width unchanged.
+                double floorRadius = Math.max(4, widthBlocks) / 2.0D;
                 double distance = RiversMask.INSTANCE.riverCentrelineDistance(context.blockX(), context.blockZ())
                         * RiversMask.INSTANCE.blocksPerPixel();
                 // Only the colour-defined stroke becomes a water channel.  Spreading

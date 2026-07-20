@@ -28,16 +28,14 @@ public final class TerrainBiomeMixin {
         if (EarthShapeCompatibility.disablesWorldgen()) return;
         ClimateLayers layers = ClimateLayers.INSTANCE;
         boolean desert = layers.terrainKind(blockX, blockZ) == ClimateLayers.TerrainKind.DESERT;
-        boolean sourceRiver = blockY >= 48
-                && RiversMask.INSTANCE.isInlandRiver(blockX, blockZ);
+        boolean sourceRiver = blockY >= 48 && RiversMask.INSTANCE.isInlandRiver(blockX, blockZ);
         if (sourceRiver && desert && EarthShapeServerConfig.DESERT_WATER_REDUCTION_ENABLED.get()) {
             sourceRiver = desertRiverWidth(RiversMask.INSTANCE.effectiveRiverWidthBlocks(blockX, blockZ)) > 0;
         }
         // On map land, the river layer is the only authority for river/lake biome classes.
         // This also catches biome-mod names such as "*_lake" or "*_river" without touching
         // wetland/swamp biomes that are intentionally selected by terrain.bmp.
-        if (EarthShapeServerConfig.RIVER_BIOMES_ENABLED.get()
-                && RiversMask.INSTANCE.sampleLand(blockX, blockZ) >= 0.5D
+        if (RiversMask.INSTANCE.sampleLand(blockX, blockZ) >= 0.5D
                 && !sourceRiver && isInlandWaterBiome(callback.getReturnValue())) {
             callback.setReturnValue(mapTerrainBiome(layers, blockX, blockY, blockZ, callback.getReturnValue()));
             return;
@@ -88,11 +86,19 @@ public final class TerrainBiomeMixin {
     private Holder<Biome> mapTerrainBiome(ClimateLayers layers, int blockX, int blockY, int blockZ, Holder<Biome> fallback) {
         ClimateLayers.TerrainKind terrain = layers.terrainKind(blockX, blockZ);
         double temperature = layers.temperature(blockX, blockZ);
-        if (isCoastalLand(blockX, blockZ)) {
-            if (terrain == ClimateLayers.TerrainKind.HILLS || terrain == ClimateLayers.TerrainKind.MOUNTAIN) return findBiome(Biomes.STONY_SHORE, fallback);
-            return findBiome(temperature < -0.25D ? Biomes.SNOWY_BEACH : Biomes.BEACH, fallback);
-        }
         int region = regionalVariant(blockX, blockZ);
+        // The density channel makes a source river wet, but its nearby land must never
+        // be treated as a coast.  Otherwise vanilla's beach choice creates the broad
+        // yellow sand ribbons visible along ordinary inland rivers.
+        boolean nextToLayerRiver = RiversMask.INSTANCE.isNearInlandRiver(blockX, blockZ, 32);
+        if (!nextToLayerRiver && isCoastalLand(blockX, blockZ)) {
+            if (terrain == ClimateLayers.TerrainKind.HILLS || terrain == ClimateLayers.TerrainKind.MOUNTAIN) return findBiome(Biomes.STONY_SHORE, fallback);
+            // Beaches are exceptional features, not a continuous sand belt.  Keep them
+            // in mapped deserts and in a sparse subset of warm open plains only.
+            boolean sandyBeach = terrain == ClimateLayers.TerrainKind.DESERT
+                    || terrain == ClimateLayers.TerrainKind.PLAINS && temperature > 0.20D && region % 5 == 0;
+            if (sandyBeach) return findBiome(temperature < -0.25D ? Biomes.SNOWY_BEACH : Biomes.BEACH, fallback);
+        }
         return switch (terrain) {
             case DESERT -> layers.isMesaRegion(blockX, blockZ)
                     ? findBiome(region % 10 == 0 ? Biomes.ERODED_BADLANDS : region % 5 == 0 ? Biomes.WOODED_BADLANDS : Biomes.BADLANDS, fallback)
