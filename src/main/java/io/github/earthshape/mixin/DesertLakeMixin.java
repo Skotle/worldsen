@@ -1,5 +1,6 @@
 package io.github.earthshape.mixin;
 
+import io.github.earthshape.EarthShapeServerConfig;
 import io.github.earthshape.map.RiversMask;
 import net.minecraft.core.BlockPos;
 import net.minecraft.world.level.levelgen.feature.FeaturePlaceContext;
@@ -18,11 +19,16 @@ public final class DesertLakeMixin {
       cancellable = true
    )
    private void earthshape$keepOnlyLayerSurfaceWater(FeaturePlaceContext<Configuration> context, CallbackInfoReturnable<Boolean> callback) {
+      if (!(Boolean)EarthShapeServerConfig.DESERT_WATER_REDUCTION_ENABLED.get()) {
+         return;
+      }
+
       BlockPos origin = context.origin();
-      if (origin.getY() >= 52) {
-         if (!RiversMask.INSTANCE.isInlandRiver(origin.getX(), origin.getZ())) {
-            callback.setReturnValue(false);
-         }
+      // LakeFeature moves this origin downward while carving; do not touch caves/aquifers.
+      if (origin.getY() >= 52
+         && RiversMask.INSTANCE.sampleLand(origin.getX(), origin.getZ()) >= 0.5
+         && !RiversMask.INSTANCE.isInlandRiver(origin.getX(), origin.getZ())) {
+         callback.setReturnValue(false);
       }
    }
 }

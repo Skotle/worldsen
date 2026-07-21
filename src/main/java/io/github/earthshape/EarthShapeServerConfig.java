@@ -115,8 +115,11 @@ public final class EarthShapeServerConfig {
          )
          .defineInRange("channelEdgeFadeBlocks", 32, 0, 128);
       builder.pop();
-      builder.push("desert_water");
-      DESERT_WATER_REDUCTION_ENABLED = builder.comment("Suppress generated surface lake features and minor source rivers in terrain.bmp desert areas.")
+      builder.push("surface_water");
+      DESERT_WATER_REDUCTION_ENABLED = builder.comment(
+            "Remove generated surface-water features on mapped land unless the location belongs to the river layer. "
+               + "Mapped ocean and underground water are left unchanged."
+         )
          .define("enabled", true);
       DESERT_RIVER_WIDTH_SCALE = builder.comment(
             "Width multiplier for source rivers crossing desert. Values above 0.30 are safely capped to prevent desert river networks becoming lakes."
