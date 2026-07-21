@@ -1,187 +1,374 @@
 package io.github.earthshape.map;
 
 import io.github.earthshape.EarthShape;
-import io.github.earthshape.EarthShapeServerConfig;
 import java.awt.image.BufferedImage;
 import java.io.IOException;
 import java.io.InputStream;
 import javax.imageio.ImageIO;
 
-/** Climate rasters sampled in the same normalized world rectangle as rivers.bmp. */
 public final class ClimateLayers {
-    public static final ClimateLayers INSTANCE = new ClimateLayers();
-    private volatile Data temperature, trees, terrain, normal;
-    private ClimateLayers() {}
+   public static final ClimateLayers INSTANCE = new ClimateLayers();
+   private volatile ClimateLayers.Data temperature;
+   private volatile ClimateLayers.Data trees;
+   private volatile ClimateLayers.Data terrain;
+   private volatile ClimateLayers.Data normal;
 
-    public double temperature(int x, int z) {
-        Data layer = temperature();
-        TemperatureSample sample = sampleFullTemperature(layer, x, z);
-        double latitude = latitudeTemperature(z);
-        double mapped = sample.value * 2.0D - 1.0D;
-        // The supplied 9-colour raster leaves ocean pixels grey.  Preserve its full-map
-        // land climate while giving those grey waters a continuous latitude temperature.
-        return latitude + (mapped - latitude) * sample.coverage;
-    }
-    /** Ocean climate intentionally ignores coloured land-temperature pixels and follows latitude only. */
-    public double oceanTemperature(int z) { return latitudeTemperature(z); }
-    /** The supplied temperature map covers the complete Worldmap_river rectangle. */
-    public boolean hasLegacyTemperature(int x, int z) {
-        double mapX = x / (double) RiversMask.INSTANCE.blocksPerPixel() + RiversMask.INSTANCE.width() * 0.5D;
-        double mapZ = z / (double) RiversMask.INSTANCE.blocksPerPixel() + RiversMask.INSTANCE.height() * 0.5D;
-        return mapX >= 0.0D && mapZ >= 0.0D && mapX < RiversMask.INSTANCE.width() && mapZ < RiversMask.INSTANCE.height();
-    }
-    public double vegetation(int x, int z) { return sample(trees(), x, z) * 2.0D - 1.0D; }
-    public TerrainKind terrainKind(int x, int z) {
-        Data layer = terrain();
-        if (!RiversMask.INSTANCE.isInsideLegacyLayer(x, z, layer.width, layer.height)) return TerrainKind.PLAINS;
-        int imageX = sourceX(layer, x), imageZ = sourceZ(layer, z);
-        TerrainKind kind = TerrainKind.byCode(layer.values[imageZ * layer.width + imageX] & 255);
-        return kind == TerrainKind.CITY || kind == TerrainKind.SURROUNDING ? surroundingLandKind(layer, imageX, imageZ) : kind;
-    }
-    public double desert(int x, int z) { return terrainKind(x, z) == TerrainKind.DESERT ? 1.0D : 0.0D; }
-    public double steepness(int x, int z) { return sample(normal(), x, z); }
+   private ClimateLayers() {
+   }
 
-    /** Geographic bands for the only two map regions allowed to retain badlands/mesa biomes. */
-    public boolean isMesaRegion(int blockX, int blockZ) {
-        double u = (blockX / (double) RiversMask.INSTANCE.blocksPerPixel() + RiversMask.INSTANCE.width() * 0.5D) / RiversMask.INSTANCE.width();
-        double v = (blockZ / (double) RiversMask.INSTANCE.blocksPerPixel() + RiversMask.INSTANCE.height() * 0.5D) / RiversMask.INSTANCE.height();
-        boolean americas = u > 0.05D && u < 0.43D && v > 0.08D && v < 0.88D;
-        boolean oceania = u > 0.73D && u < 0.97D && v > 0.50D && v < 0.92D;
-        return americas || oceania;
-    }
+   public double temperature(int x, int z) {
+      ClimateLayers.Data layer = this.temperature();
+      ClimateLayers.TemperatureSample sample = sampleFullTemperature(layer, x, z);
+      double latitude = latitudeTemperature(z);
+      // The discrete temperature artwork represents the upper edge of each
+      // climate interval.  Treating it as the lower edge made every land and
+      // ocean band select the next colder vanilla biome.
+      double mapped = Math.min(1.0, sample.value * 2.0 - 0.75);
+      return latitude + (mapped - latitude) * sample.coverage;
+   }
 
-    private Data temperature() { Data v = temperature; if (v != null) return v; synchronized (this) { return temperature = temperature == null ? load("earth_temperature.png", Kind.TEMPERATURE) : temperature; } }
-    private Data trees() { Data v = trees; if (v != null) return v; synchronized (this) { return trees = trees == null ? load("trees.bmp", Kind.VEGETATION) : trees; } }
-    private Data terrain() { Data v = terrain; if (v != null) return v; synchronized (this) { return terrain = terrain == null ? load("terrain.bmp", Kind.TERRAIN_CLASS) : terrain; } }
-    private Data normal() { Data v = normal; if (v != null) return v; synchronized (this) { return normal = normal == null ? load("world_normal.bmp", Kind.NORMAL) : normal; } }
+   public double oceanTemperature(int z) {
+      return latitudeTemperature(z);
+   }
 
-    private static double sample(Data layer, int blockX, int blockZ) {
-        // Legacy climate rasters remain unscaled in the centred 5632x2048 rectangle.
-        double imageX = RiversMask.INSTANCE.legacyImageX(blockX, layer.width);
-        double imageZ = RiversMask.INSTANCE.legacyImageZ(blockZ, layer.height);
-        if (imageX < 0 || imageZ < 0 || imageX >= layer.width - 1D || imageZ >= layer.height - 1D) return 0.5D;
-        int x = (int) imageX, z = (int) imageZ;
-        double tx = imageX - x, tz = imageZ - z;
-        return lerp(lerp(layer.value(x, z), layer.value(x + 1, z), tx), lerp(layer.value(x, z + 1), layer.value(x + 1, z + 1), tx), tz);
-    }
+   public boolean hasLegacyTemperature(int x, int z) {
+      // Temperature imagery now spans the full map, including all ocean pixels.
+      return sampleFullTemperature(this.temperature(), x, z).coverage > 0.5;
+   }
 
-    /** Bilinear full-map sample; temperature images no longer use the centred legacy rectangle. */
-    private static TemperatureSample sampleFullTemperature(Data layer, int blockX, int blockZ) {
-        double worldX = blockX / (double) RiversMask.INSTANCE.blocksPerPixel() + RiversMask.INSTANCE.width() * 0.5D;
-        double worldZ = blockZ / (double) RiversMask.INSTANCE.blocksPerPixel() + RiversMask.INSTANCE.height() * 0.5D;
-        double imageX = Math.max(0.0D, Math.min(layer.width - 1.001D, worldX / RiversMask.INSTANCE.width() * layer.width));
-        double imageZ = Math.max(0.0D, Math.min(layer.height - 1.001D, worldZ / RiversMask.INSTANCE.height() * layer.height));
-        int x = (int) imageX, z = (int) imageZ;
-        double tx = imageX - x, tz = imageZ - z;
-        double value = lerp(lerp(layer.value(x, z), layer.value(x + 1, z), tx), lerp(layer.value(x, z + 1), layer.value(x + 1, z + 1), tx), tz);
-        double coverage = lerp(lerp(layer.coverage(x, z), layer.coverage(x + 1, z), tx), lerp(layer.coverage(x, z + 1), layer.coverage(x + 1, z + 1), tx), tz);
-        return new TemperatureSample(value, coverage);
-    }
+   public double vegetation(int x, int z) {
+      return sample(this.trees(), x, z) * 2.0 - 1.0;
+   }
 
-    private static int sourceX(Data layer, int blockX) {
-        double imageX = RiversMask.INSTANCE.legacyImageX(blockX, layer.width);
-        return Math.max(0, Math.min(layer.width - 1, (int) imageX));
-    }
-    private static int sourceZ(Data layer, int blockZ) {
-        double imageZ = RiversMask.INSTANCE.legacyImageZ(blockZ, layer.height);
-        return Math.max(0, Math.min(layer.height - 1, (int) imageZ));
-    }
-    /** HOI4 city pixels are not terrain: use the nearest surrounding natural terrain ring. */
-    private static TerrainKind surroundingLandKind(Data layer, int centreX, int centreZ) {
-        for (int radius = 1; radius <= 48; radius++) {
-            int[] counts = new int[TerrainKind.values().length];
-            for (int z = Math.max(0, centreZ - radius); z <= Math.min(layer.height - 1, centreZ + radius); z++) {
-                for (int x = Math.max(0, centreX - radius); x <= Math.min(layer.width - 1, centreX + radius); x++) {
-                    if (Math.max(Math.abs(x - centreX), Math.abs(z - centreZ)) != radius) continue;
-                    TerrainKind kind = TerrainKind.byCode(layer.values[z * layer.width + x] & 255);
-                    if (kind != TerrainKind.CITY && kind != TerrainKind.SURROUNDING
-                            && kind != TerrainKind.WATER && kind != TerrainKind.DESERT) counts[kind.code]++;
-                }
+   public ClimateLayers.TerrainKind terrainKind(int x, int z) {
+      ClimateLayers.Data layer = this.terrain();
+      if (!RiversMask.INSTANCE.isInsideLegacyLayer(x, z, layer.width, layer.height)) {
+         return ClimateLayers.TerrainKind.PLAINS;
+      } else {
+         int imageX = sourceX(layer, x);
+         int imageZ = sourceZ(layer, z);
+         ClimateLayers.TerrainKind kind = ClimateLayers.TerrainKind.byCode(layer.values[imageZ * layer.width + imageX] & 255);
+         return kind != ClimateLayers.TerrainKind.CITY && kind != ClimateLayers.TerrainKind.SURROUNDING ? kind : surroundingLandKind(layer, imageX, imageZ);
+      }
+   }
+
+   public double desert(int x, int z) {
+      return this.terrainKind(x, z) == ClimateLayers.TerrainKind.DESERT ? 1.0 : 0.0;
+   }
+
+   public double steepness(int x, int z) {
+      return sample(this.normal(), x, z);
+   }
+
+   public boolean isMesaRegion(int blockX, int blockZ) {
+      double u = ((double)blockX / (double)RiversMask.INSTANCE.blocksPerPixel() + (double)RiversMask.INSTANCE.width() * 0.5)
+         / (double)RiversMask.INSTANCE.width();
+      double v = ((double)blockZ / (double)RiversMask.INSTANCE.blocksPerPixel() + (double)RiversMask.INSTANCE.height() * 0.5)
+         / (double)RiversMask.INSTANCE.height();
+      boolean americas = u > 0.05 && u < 0.43 && v > 0.08 && v < 0.88;
+      boolean oceania = u > 0.73 && u < 0.97 && v > 0.5 && v < 0.92;
+      return americas || oceania;
+   }
+
+   private ClimateLayers.Data temperature() {
+      ClimateLayers.Data v = this.temperature;
+      if (v != null) {
+         return v;
+      } else {
+         synchronized (this) {
+            return this.temperature = this.temperature == null ? load("earth_temperature.png", ClimateLayers.Kind.TEMPERATURE) : this.temperature;
+         }
+      }
+   }
+
+   private ClimateLayers.Data trees() {
+      ClimateLayers.Data v = this.trees;
+      if (v != null) {
+         return v;
+      } else {
+         synchronized (this) {
+            return this.trees = this.trees == null ? load("trees.bmp", ClimateLayers.Kind.VEGETATION) : this.trees;
+         }
+      }
+   }
+
+   private ClimateLayers.Data terrain() {
+      ClimateLayers.Data v = this.terrain;
+      if (v != null) {
+         return v;
+      } else {
+         synchronized (this) {
+            return this.terrain = this.terrain == null ? load("terrain.bmp", ClimateLayers.Kind.TERRAIN_CLASS) : this.terrain;
+         }
+      }
+   }
+
+   private ClimateLayers.Data normal() {
+      ClimateLayers.Data v = this.normal;
+      if (v != null) {
+         return v;
+      } else {
+         synchronized (this) {
+            return this.normal = this.normal == null ? load("world_normal.bmp", ClimateLayers.Kind.NORMAL) : this.normal;
+         }
+      }
+   }
+
+   private static double sample(ClimateLayers.Data layer, int blockX, int blockZ) {
+      double imageX = RiversMask.INSTANCE.legacyImageX(blockX, layer.width);
+      double imageZ = RiversMask.INSTANCE.legacyImageZ(blockZ, layer.height);
+      if (!(imageX < 0.0) && !(imageZ < 0.0) && !(imageX >= (double)layer.width - 1.0) && !(imageZ >= (double)layer.height - 1.0)) {
+         int x = (int)imageX;
+         int z = (int)imageZ;
+         double tx = imageX - (double)x;
+         double tz = imageZ - (double)z;
+         return lerp(lerp(layer.value(x, z), layer.value(x + 1, z), tx), lerp(layer.value(x, z + 1), layer.value(x + 1, z + 1), tx), tz);
+      } else {
+         return 0.5;
+      }
+   }
+
+   private static ClimateLayers.TemperatureSample sampleFullTemperature(ClimateLayers.Data layer, int blockX, int blockZ) {
+      double worldX = (double)blockX / (double)RiversMask.INSTANCE.blocksPerPixel() + (double)RiversMask.INSTANCE.width() * 0.5;
+      double worldZ = (double)blockZ / (double)RiversMask.INSTANCE.blocksPerPixel() + (double)RiversMask.INSTANCE.height() * 0.5;
+      double imageX = Math.max(0.0, Math.min((double)layer.width - 1.001, worldX / (double)RiversMask.INSTANCE.width() * (double)layer.width));
+      double imageZ = Math.max(0.0, Math.min((double)layer.height - 1.001, worldZ / (double)RiversMask.INSTANCE.height() * (double)layer.height));
+      int x = (int)imageX;
+      int z = (int)imageZ;
+      double tx = imageX - (double)x;
+      double tz = imageZ - (double)z;
+      double value = lerp(lerp(layer.value(x, z), layer.value(x + 1, z), tx), lerp(layer.value(x, z + 1), layer.value(x + 1, z + 1), tx), tz);
+      double coverage = lerp(lerp(layer.coverage(x, z), layer.coverage(x + 1, z), tx), lerp(layer.coverage(x, z + 1), layer.coverage(x + 1, z + 1), tx), tz);
+      return new ClimateLayers.TemperatureSample(value, coverage);
+   }
+
+   private static int sourceX(ClimateLayers.Data layer, int blockX) {
+      double imageX = RiversMask.INSTANCE.legacyImageX(blockX, layer.width);
+      return Math.max(0, Math.min(layer.width - 1, (int)imageX));
+   }
+
+   private static int sourceZ(ClimateLayers.Data layer, int blockZ) {
+      double imageZ = RiversMask.INSTANCE.legacyImageZ(blockZ, layer.height);
+      return Math.max(0, Math.min(layer.height - 1, (int)imageZ));
+   }
+
+   private static ClimateLayers.TerrainKind surroundingLandKind(ClimateLayers.Data layer, int centreX, int centreZ) {
+      for (int radius = 1; radius <= 48; radius++) {
+         int[] counts = new int[ClimateLayers.TerrainKind.values().length];
+
+         for (int z = Math.max(0, centreZ - radius); z <= Math.min(layer.height - 1, centreZ + radius); z++) {
+            for (int x = Math.max(0, centreX - radius); x <= Math.min(layer.width - 1, centreX + radius); x++) {
+               if (Math.max(Math.abs(x - centreX), Math.abs(z - centreZ)) == radius) {
+                  ClimateLayers.TerrainKind kind = ClimateLayers.TerrainKind.byCode(layer.values[z * layer.width + x] & 255);
+                  if (kind != ClimateLayers.TerrainKind.CITY
+                     && kind != ClimateLayers.TerrainKind.SURROUNDING
+                     && kind != ClimateLayers.TerrainKind.WATER
+                     && kind != ClimateLayers.TerrainKind.DESERT) {
+                     counts[kind.code]++;
+                  }
+               }
             }
-            TerrainKind result = TerrainKind.PLAINS;
-            for (TerrainKind kind : TerrainKind.values()) if (counts[kind.code] > counts[result.code]) result = kind;
-            if (counts[result.code] > 0) return result;
-        }
-        return TerrainKind.PLAINS;
-    }
+         }
 
-    private static Data load(String name, Kind kind) {
-        try (InputStream input = EarthShape.class.getResourceAsStream("/earthshape/hoi4/" + name)) {
-            if (input == null) throw new IOException("missing " + name);
+         ClimateLayers.TerrainKind result = ClimateLayers.TerrainKind.PLAINS;
+
+         for (ClimateLayers.TerrainKind kind : ClimateLayers.TerrainKind.values()) {
+            if (counts[kind.code] > counts[result.code]) {
+               result = kind;
+            }
+         }
+
+         if (counts[result.code] > 0) {
+            return result;
+         }
+      }
+
+      return ClimateLayers.TerrainKind.PLAINS;
+   }
+
+   private static ClimateLayers.Data load(String name, ClimateLayers.Kind kind) {
+      try {
+         ClimateLayers.Data var14;
+         try (InputStream input = EarthShape.class.getResourceAsStream("/earthshape/hoi4/" + name)) {
+            if (input == null) {
+               throw new IOException("missing " + name);
+            }
+
             BufferedImage image = ImageIO.read(input);
-            if (image == null) throw new IOException(name + " is not readable");
-            int width = image.getWidth(), height = image.getHeight();
-            byte[] values = new byte[width * height], coverage = new byte[width * height];
-            int[] row = new int[width];
-            for (int z = 0; z < height; z++) { image.getRGB(0, z, width, 1, row, 0, width); for (int x = 0; x < width; x++) { values[z * width + x] = (byte) kind.value(row[x]); coverage[z * width + x] = (byte) kind.coverage(row[x]); } }
-            EarthShape.LOGGER.info("[EarthShape] {} climate layer loaded: {}x{}.", name, width, height);
-            return new Data(width, height, values, coverage);
-        } catch (IOException exception) { throw new IllegalStateException("EarthShape could not load " + name, exception); }
-    }
-    private static double lerp(double a, double b, double t) { return a + (b - a) * t; }
-
-    private static double latitudeTemperature(int blockZ) {
-        double imageZ = blockZ / (double) RiversMask.INSTANCE.blocksPerPixel() + RiversMask.INSTANCE.height() * 0.5D;
-        double latitude = Math.abs(imageZ / Math.max(1.0D, RiversMask.INSTANCE.height() - 1.0D) * 2.0D - 1.0D);
-        // Mild at the equator and polar toward both world-map edges.
-        return 0.55D - 1.35D * latitude * latitude;
-    }
-    private enum Kind {
-        LUMINANCE { int value(int c) { return (((c >>> 16) & 255) * 30 + ((c >>> 8) & 255) * 59 + (c & 255) * 11) / 100; } },
-        // The supplied raster has eight opaque land bands; white is deliberately unclassified ocean.
-        TEMPERATURE {
-            int value(int c) { int band = temperatureBand(c); return band < 0 ? 127 : band * 255 / 8; }
-            int coverage(int c) { return temperatureBand(c) < 0 ? 0 : 255; }
-        },
-        // trees.bmp is a tree-cover mask, not a rainfall map.  Black is ordinary open ground (neutral),
-        // rather than desert; terrain.bmp alone supplies the forced dry desert classification.
-        VEGETATION { int value(int c) { int r = (c >>> 16) & 255, g = (c >>> 8) & 255, b = c & 255; return r < 8 && g < 8 && b < 8 ? 128 : 218; } },
-        TERRAIN_CLASS { int value(int c) { return TerrainKind.fromColor(c).code; } },
-        // Tangent-space normal maps encode the flat-facing component in blue; slope is red/green.
-        NORMAL { int value(int c) { double x = (((c >>> 16) & 255) - 127.5D) / 127.5D, z = (((c >>> 8) & 255) - 127.5D) / 127.5D; return (int) (255 * Math.min(1, Math.sqrt(x * x + z * z))); } };
-        abstract int value(int color);
-        int coverage(int color) { return 255; }
-        private static int temperatureBand(int color) {
-            int r = (color >>> 16) & 255, g = (color >>> 8) & 255, b = color & 255;
-            int[] palette = { 0x9558D3, 0x47A2F2, 0x48D0C9, 0x9DCB50, 0xF9D724, 0xFBA430, 0xFC6330, 0xE4302B };
-            int[] bands =   {        0,        1,        2,        3,        4,        5,        6,        8 };
-            int best = -1, distance = Integer.MAX_VALUE;
-            for (int i = 0; i < palette.length; i++) {
-                int pr = (palette[i] >>> 16) & 255, pg = (palette[i] >>> 8) & 255, pb = palette[i] & 255;
-                int d = (r - pr) * (r - pr) + (g - pg) * (g - pg) + (b - pb) * (b - pb);
-                if (d < distance) { distance = d; best = i; }
+            if (image == null) {
+               throw new IOException(name + " is not readable");
             }
-            return distance <= 7000 ? bands[best] : -1;
-        }
-    }
 
-    /** Broad HOI4 terrain palette categories. Province borders and city symbols do not exist in terrain.bmp. */
-    public enum TerrainKind {
-        WATER(0), DESERT(1), WETLAND(2), FOREST(3), JUNGLE(4), PLAINS(5), HILLS(6), MOUNTAIN(7), CITY(8), SURROUNDING(9);
-        private final int code;
-        TerrainKind(int code) { this.code = code; }
-        static TerrainKind byCode(int code) { for (TerrainKind kind : values()) if (kind.code == code) return kind; return PLAINS; }
-        static TerrainKind fromColor(int color) {
-            return switch (color & 0xFFFFFF) {
-                case 0x3A8352, 0x005606, 0x06C80B -> FOREST;
-                case 0x005252 -> JUNGLE;
-                case 0x704A1F, 0x86541E, 0x728969 -> HILLS;
-                case 0x493B0F, 0x5C534C, 0xAE00FF -> MOUNTAIN;
-                case 0x4B93AE -> WETLAND;
-                case 0xCEA963, 0xFCFF00 -> DESERT;
-                // This HOI4 marker colour is not terrain.  Replace every such tile with
-                // the nearest surrounding natural terrain instead of turning it into desert.
-                case 0xF0FF00 -> SURROUNDING;
-                case 0xFF0018, 0xFF00F0, 0xFF007F, 0xFFFFFF -> CITY;
-                case 0x081F82 -> WATER;
-                case 0x567C1B, 0x84FF00 -> PLAINS;
-                default -> PLAINS;
-            };
-        }
-    }
-    private record TemperatureSample(double value, double coverage) {}
-    private record Data(int width, int height, byte[] values, byte[] coverage) {
-        double value(int x, int z) { return (values[z * width + x] & 255) / 255.0D; }
-        double coverage(int x, int z) { return (coverage[z * width + x] & 255) / 255.0D; }
-    }
+            int width = image.getWidth();
+            int height = image.getHeight();
+            byte[] values = new byte[width * height];
+            byte[] coverage = new byte[width * height];
+            int[] row = new int[width];
+
+            for (int z = 0; z < height; z++) {
+               image.getRGB(0, z, width, 1, row, 0, width);
+
+               for (int x = 0; x < width; x++) {
+                  values[z * width + x] = (byte)kind.value(row[x]);
+                  coverage[z * width + x] = (byte)kind.coverage(row[x]);
+               }
+            }
+
+            EarthShape.LOGGER.info("[EarthShape] {} climate layer loaded: {}x{}.", new Object[]{name, width, height});
+            var14 = new ClimateLayers.Data(width, height, values, coverage);
+         }
+
+         return var14;
+      } catch (IOException var13) {
+         throw new IllegalStateException("EarthShape could not load " + name, var13);
+      }
+   }
+
+   private static double lerp(double a, double b, double t) {
+      return a + (b - a) * t;
+   }
+
+   private static double latitudeTemperature(int blockZ) {
+      double imageZ = (double)blockZ / (double)RiversMask.INSTANCE.blocksPerPixel() + (double)RiversMask.INSTANCE.height() * 0.5;
+      double latitude = Math.abs(imageZ / Math.max(1.0, (double)RiversMask.INSTANCE.height() - 1.0) * 2.0 - 1.0);
+      return 0.55 - 1.35 * latitude * latitude;
+   }
+
+   private static record Data(int width, int height, byte[] values, byte[] coverage) {
+      double value(int x, int z) {
+         return (double)(this.values[z * this.width + x] & 255) / 255.0;
+      }
+
+      double coverage(int x, int z) {
+         return (double)(this.coverage[z * this.width + x] & 255) / 255.0;
+      }
+   }
+
+   private static enum Kind {
+      LUMINANCE {
+         @Override
+         int value(int c) {
+            return ((c >>> 16 & 0xFF) * 30 + (c >>> 8 & 0xFF) * 59 + (c & 0xFF) * 11) / 100;
+         }
+      },
+      TEMPERATURE {
+         @Override
+         int value(int c) {
+            int band = ClimateLayers.Kind.temperatureBand(c);
+            return band < 0 ? 127 : band * 255 / 8;
+         }
+
+         @Override
+         int coverage(int c) {
+            return ClimateLayers.Kind.temperatureBand(c) < 0 ? 0 : 255;
+         }
+      },
+      VEGETATION {
+         @Override
+         int value(int c) {
+            int r = c >>> 16 & 0xFF;
+            int g = c >>> 8 & 0xFF;
+            int b = c & 0xFF;
+            return r < 8 && g < 8 && b < 8 ? 128 : 218;
+         }
+      },
+      TERRAIN_CLASS {
+         @Override
+         int value(int c) {
+            return ClimateLayers.TerrainKind.fromColor(c).code;
+         }
+      },
+      NORMAL {
+         @Override
+         int value(int c) {
+            double x = ((double)(c >>> 16 & 0xFF) - 127.5) / 127.5;
+            double z = ((double)(c >>> 8 & 0xFF) - 127.5) / 127.5;
+            return (int)(255.0 * Math.min(1.0, Math.sqrt(x * x + z * z)));
+         }
+      };
+
+      abstract int value(int var1);
+
+      int coverage(int color) {
+         return 255;
+      }
+
+      private static int temperatureBand(int color) {
+         int r = color >>> 16 & 0xFF;
+         int g = color >>> 8 & 0xFF;
+         int b = color & 0xFF;
+         // Layers2.png uses the original eight land bands plus three explicit ocean
+         // bands.  Keeping the ocean colours in the same decoder lets the image control
+         // temperature across its complete extent rather than falling back to latitude.
+         int[] palette = new int[]{9787603, 4694770, 4772041, 10341200, 16373540, 16491568, 16540464, 14954539,
+            0x000081, 0x0000BE, 0x0082BE, 0xFC6A31, 0xA1CD53};
+         // Ocean colour mapping: #0082BE = lukewarm/warm, #0000BE = cold,
+         // #000081 = frozen.  The biome source selects the matching deep variant
+         // only where the ocean floor is actually deep.
+         int[] bands = new int[]{0, 1, 2, 3, 4, 5, 6, 8, 1, 3, 5, 6, 3};
+         int best = -1;
+         int distance = Integer.MAX_VALUE;
+
+         for (int i = 0; i < palette.length; i++) {
+            int pr = palette[i] >>> 16 & 0xFF;
+            int pg = palette[i] >>> 8 & 0xFF;
+            int pb = palette[i] & 0xFF;
+            int d = (r - pr) * (r - pr) + (g - pg) * (g - pg) + (b - pb) * (b - pb);
+            if (d < distance) {
+               distance = d;
+               best = i;
+            }
+         }
+
+         return distance <= 7000 ? bands[best] : -1;
+      }
+   }
+
+   private static record TemperatureSample(double value, double coverage) {
+   }
+
+   public static enum TerrainKind {
+      WATER(0),
+      DESERT(1),
+      WETLAND(2),
+      FOREST(3),
+      JUNGLE(4),
+      PLAINS(5),
+      HILLS(6),
+      MOUNTAIN(7),
+      CITY(8),
+      SURROUNDING(9);
+
+      private final int code;
+
+      private TerrainKind(int code) {
+         this.code = code;
+      }
+
+      static ClimateLayers.TerrainKind byCode(int code) {
+         for (ClimateLayers.TerrainKind kind : values()) {
+            if (kind.code == code) {
+               return kind;
+            }
+         }
+
+         return PLAINS;
+      }
+
+      static ClimateLayers.TerrainKind fromColor(int color) {
+         return switch (color & 16777215) {
+            case 21074 -> JUNGLE;
+            case 22022, 444427, 3834706 -> FOREST;
+            case 532354 -> WATER;
+            case 4799247, 6050636, 11403519 -> MOUNTAIN;
+            case 4953006 -> WETLAND;
+            case 5667867, 8716032 -> PLAINS;
+            case 7359007, 7506281, 8803358 -> HILLS;
+            case 13543779, 16580352 -> DESERT;
+            case 15793920 -> SURROUNDING;
+            case 16711704, 16711807, 16711920, 16777215 -> CITY;
+            default -> PLAINS;
+         };
+      }
+   }
 }

@@ -6,68 +6,114 @@ import java.io.IOException;
 import java.io.InputStream;
 import javax.imageio.ImageIO;
 
-/** Lazily loaded grayscale elevation layer matching the rivers.bmp coordinate system. */
 public final class HeightmapLayer {
-    public static final HeightmapLayer INSTANCE = new HeightmapLayer();
+   public static final HeightmapLayer INSTANCE = new HeightmapLayer();
+   private volatile HeightmapLayer.Data data;
 
-    private volatile Data data;
+   private HeightmapLayer() {
+   }
 
-    private HeightmapLayer() {}
+   public double sample(int blockX, int blockZ) {
+      HeightmapLayer.Data loaded = this.data();
+      double imageX = RiversMask.INSTANCE.legacyImageX(blockX, loaded.width);
+      double imageZ = RiversMask.INSTANCE.legacyImageZ(blockZ, loaded.height);
+      if (!(imageX < 0.0) && !(imageZ < 0.0) && !(imageX >= (double)(loaded.width - 1)) && !(imageZ >= (double)(loaded.height - 1))) {
+         int x = (int)Math.floor(imageX);
+         int z = (int)Math.floor(imageZ);
+         double tx = imageX - (double)x;
+         double tz = imageZ - (double)z;
+         double a = lerp(loaded.value(x, z), loaded.value(x + 1, z), tx);
+         double b = lerp(loaded.value(x, z + 1), loaded.value(x + 1, z + 1), tx);
+         return lerp(a, b, tz);
+      } else {
+         return 0.32;
+      }
+   }
 
-    public double sample(int blockX, int blockZ) {
-        Data loaded = data();
-        double imageX = RiversMask.INSTANCE.legacyImageX(blockX, loaded.width);
-        double imageZ = RiversMask.INSTANCE.legacyImageZ(blockZ, loaded.height);
-        // Outside the original rectangle the full-world mask has only outline information;
-        // use a neutral lowland value rather than stretching edge mountains into the margins.
-        if (imageX < 0.0D || imageZ < 0.0D || imageX >= loaded.width - 1 || imageZ >= loaded.height - 1) return 0.32D;
-        int x = (int) Math.floor(imageX);
-        int z = (int) Math.floor(imageZ);
-        double tx = imageX - x;
-        double tz = imageZ - z;
-        double a = lerp(loaded.value(x, z), loaded.value(x + 1, z), tx);
-        double b = lerp(loaded.value(x, z + 1), loaded.value(x + 1, z + 1), tx);
-        return lerp(a, b, tz);
-    }
+   /**
+    * Removes one-pixel heightmap steps without changing the land/sea or biome masks.
+    * The weighted 3x3 kernel keeps ridges recognizable but prevents small square facets
+    * from becoming visible at the four-block world sampling scale.
+    */
+   public double sampleSmoothed(int blockX, int blockZ) {
+      int step = RiversMask.INSTANCE.blocksPerPixel();
+      double total = 0.0;
+      double weight = 0.0;
+      for (int dz = -1; dz <= 1; dz++) {
+         for (int dx = -1; dx <= 1; dx++) {
+            double sampleWeight = dx == 0 && dz == 0 ? 4.0 : (dx == 0 || dz == 0 ? 2.0 : 1.0);
+            total += this.sample(blockX + dx * step, blockZ + dz * step) * sampleWeight;
+            weight += sampleWeight;
+         }
+      }
+      return total / weight;
+   }
 
-    private Data data() {
-        Data current = data;
-        if (current != null) return current;
-        synchronized (this) {
-            if (data == null) data = load();
-            return data;
-        }
-    }
+   private HeightmapLayer.Data data() {
+      HeightmapLayer.Data current = this.data;
+      if (current != null) {
+         return current;
+      } else {
+         synchronized (this) {
+            if (this.data == null) {
+               this.data = load();
+            }
 
-    private static Data load() {
-        long started = System.nanoTime();
-        try (InputStream input = EarthShape.class.getResourceAsStream("/earthshape/hoi4/heightmap.bmp")) {
-            if (input == null) throw new IOException("missing /earthshape/hoi4/heightmap.bmp");
+            return this.data;
+         }
+      }
+   }
+
+   private static HeightmapLayer.Data load() {
+      long started = System.nanoTime();
+
+      try {
+         HeightmapLayer.Data var15;
+         try (InputStream input = EarthShape.class.getResourceAsStream("/earthshape/hoi4/heightmap.bmp")) {
+            if (input == null) {
+               throw new IOException("missing /earthshape/hoi4/heightmap.bmp");
+            }
+
             BufferedImage image = ImageIO.read(input);
-            if (image == null) throw new IOException("heightmap.bmp is not readable");
+            if (image == null) {
+               throw new IOException("heightmap.bmp is not readable");
+            }
+
             int width = image.getWidth();
             int height = image.getHeight();
             byte[] values = new byte[width * height];
             int[] row = new int[width];
+
             for (int z = 0; z < height; z++) {
-                image.getRGB(0, z, width, 1, row, 0, width);
-                for (int x = 0; x < width; x++) {
-                    int rgb = row[x];
-                    int gray = (((rgb >>> 16) & 255) * 30 + ((rgb >>> 8) & 255) * 59 + (rgb & 255) * 11) / 100;
-                    values[z * width + x] = (byte) gray;
-                }
+               image.getRGB(0, z, width, 1, row, 0, width);
+
+               for (int x = 0; x < width; x++) {
+                  int rgb = row[x];
+                  int gray = ((rgb >>> 16 & 0xFF) * 30 + (rgb >>> 8 & 0xFF) * 59 + (rgb & 0xFF) * 11) / 100;
+                  values[z * width + x] = (byte)gray;
+               }
             }
-            EarthShape.LOGGER.info("[EarthShape] heightmap.bmp elevation layer loaded: {}x{} in {} ms.",
-                    width, height, (System.nanoTime() - started) / 1_000_000L);
-            return new Data(width, height, values);
-        } catch (IOException exception) {
-            throw new IllegalStateException("EarthShape could not load heightmap.bmp", exception);
-        }
-    }
 
-    private static double lerp(double a, double b, double t) { return a + (b - a) * t; }
+            EarthShape.LOGGER
+               .info(
+                  "[EarthShape] heightmap.bmp elevation layer loaded: {}x{} in {} ms.", new Object[]{width, height, (System.nanoTime() - started) / 1000000L}
+               );
+            var15 = new HeightmapLayer.Data(width, height, values);
+         }
 
-    private record Data(int width, int height, byte[] values) {
-        double value(int x, int z) { return (values[z * width + x] & 255) / 255.0D; }
-    }
+         return var15;
+      } catch (IOException var14) {
+         throw new IllegalStateException("EarthShape could not load heightmap.bmp", var14);
+      }
+   }
+
+   private static double lerp(double a, double b, double t) {
+      return a + (b - a) * t;
+   }
+
+   private static record Data(int width, int height, byte[] values) {
+      double value(int x, int z) {
+         return (double)(this.values[z * this.width + x] & 255) / 255.0;
+      }
+   }
 }
