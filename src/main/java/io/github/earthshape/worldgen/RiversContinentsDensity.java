@@ -31,7 +31,10 @@ public record RiversContinentsDensity(DensityFunction argument) implements Densi
                double distance = RiversMask.INSTANCE.riverCentrelineDistance(context.blockX(), context.blockZ()) * (double)RiversMask.INSTANCE.blocksPerPixel();
                double channelRadius = floorRadius + (double)Math.max(1, Math.min(3, (Integer)EarthShapeServerConfig.RIVER_CHANNEL_EDGE_FADE_BLOCKS.get()));
                if (distance < channelRadius) {
-                  double channel = Math.max(-0.16, (Double)EarthShapeServerConfig.RIVER_CHANNEL_CONTINENTALNESS.get());
+                  // A river biome alone does not carve water.  Preserve the configured
+                  // negative continentalness (default -0.42); the previous max() clamped
+                  // it to -0.16, leaving dry biome-only river lines on ordinary terrain.
+                  double channel = Math.min(-0.16, (Double)EarthShapeServerConfig.RIVER_CHANNEL_CONTINENTALNESS.get());
                   double blend = distance <= floorRadius ? 1.0 : 1.0 - (distance - floorRadius) / Math.max(0.001, channelRadius - floorRadius);
                   blend = blend * blend * (3.0 - 2.0 * blend);
                   continentalness += (channel - continentalness) * blend;

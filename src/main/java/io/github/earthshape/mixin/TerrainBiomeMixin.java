@@ -28,12 +28,14 @@ public final class TerrainBiomeMixin {
       int blockZ = quartZ << 2;
       if (!EarthShapeCompatibility.disablesWorldgen()) {
          ClimateLayers layers = ClimateLayers.INSTANCE;
-         boolean desert = layers.terrainKind(blockX, blockZ) == ClimateLayers.TerrainKind.DESERT;
          boolean sourceRiver = blockY >= 48 && RiversMask.INSTANCE.isInlandRiver(blockX, blockZ);
-         if (sourceRiver && desert && (Boolean)EarthShapeServerConfig.DESERT_WATER_REDUCTION_ENABLED.get()) {
-            sourceRiver = desertRiverWidth(RiversMask.INSTANCE.effectiveRiverWidthBlocks(blockX, blockZ)) > 0;
-         }
 
+         // Priority 1: a verified source-river centreline always wins over every terrain
+         // and climate layer, including non-vanilla biome providers.
+         if (sourceRiver) {
+            callback.setReturnValue(this.findBiome(Biomes.RIVER, (Holder<Biome>)callback.getReturnValue()));
+            return;
+         }
          if (RiversMask.INSTANCE.sampleLand(blockX, blockZ) >= 0.5 && !sourceRiver && isInlandWaterBiome((Holder<Biome>)callback.getReturnValue())) {
             callback.setReturnValue(this.mapTerrainBiome(layers, blockX, blockY, blockZ, (Holder<Biome>)callback.getReturnValue()));
          } else if (isVanillaBiome((Holder<Biome>)callback.getReturnValue())) {
@@ -45,12 +47,12 @@ public final class TerrainBiomeMixin {
                }
             }
 
-            if (sourceRiver) {
-               callback.setReturnValue(this.findBiome(Biomes.RIVER, (Holder<Biome>)callback.getReturnValue()));
-            } else if (isVanillaRiver((Holder<Biome>)callback.getReturnValue())) {
+            if (isVanillaRiver((Holder<Biome>)callback.getReturnValue())) {
                callback.setReturnValue(this.mapTerrainBiome(layers, blockX, blockY, blockZ, (Holder<Biome>)callback.getReturnValue()));
             } else if ((Boolean)EarthShapeServerConfig.OCEAN_TEMPERATURE_ENABLED.get() && RiversMask.INSTANCE.sampleLand(blockX, blockZ) < 0.25) {
-               double temperature = layers.hasLegacyTemperature(blockX, blockZ) ? layers.temperature(blockX, blockZ) : 0.0;
+               // The full temperature layer includes the ocean, so this must use its pixel
+               // value rather than falling back to a latitude-only estimate.
+               double temperature = layers.temperature(blockX, blockZ);
                callback.setReturnValue(this.oceanBiome(temperature, blockX, blockZ, (Holder<Biome>)callback.getReturnValue()));
             } else {
                if ((Boolean)EarthShapeServerConfig.TERRAIN_BIOMES_ENABLED.get()) {
@@ -62,7 +64,20 @@ public final class TerrainBiomeMixin {
    }
 
    private Holder<Biome> mapTerrainBiome(ClimateLayers layers, int blockX, int blockY, int blockZ, Holder<Biome> fallback) {
-      ClimateLayers.TerrainKind terrain = layers.terrainKind(blockX, blockZ);
+      ClimateLayers.TerrainKind terrain = this.surfaceTerrain(layers, blockX, blockZ);
+      // Heightmap priority remains in density generation: it controls the actual terrain
+      // height and relief without replacing surface biomes with stone mountain variants.
+      // terrain.bmp supplies surface classes.  trees.bmp only fills a generic plains
+      // category, so it cannot leak across a deliberate desert, wetland or mountain boundary.
+      if (terrain == ClimateLayers.TerrainKind.PLAINS) {
+         ClimateLayers.TreeCover trees = layers.treeCover(blockX, blockZ);
+         if (trees == ClimateLayers.TreeCover.TROPICAL) {
+            terrain = ClimateLayers.TerrainKind.JUNGLE;
+         } else if (trees == ClimateLayers.TreeCover.TEMPERATE) {
+            terrain = ClimateLayers.TerrainKind.FOREST;
+         }
+      }
+      // Priority 5: temperature selects the climate variant within the winning land class.
       double temperature = layers.temperature(blockX, blockZ);
       int region = regionalVariant(blockX, blockZ);
       boolean nextToLayerRiver = RiversMask.INSTANCE.isNearInlandRiver(blockX, blockZ, 32);
@@ -197,6 +212,18 @@ public final class TerrainBiomeMixin {
       return ((MultiNoiseBiomeSource)(Object)this).possibleBiomes().stream().filter(holder -> holder.is(key)).findFirst().orElse(fallback);
    }
 
+   /** terrain.bmp chooses the land family, but forest/jungle requires actual trees.bmp cover. */
+   private ClimateLayers.TerrainKind surfaceTerrain(ClimateLayers layers, int blockX, int blockZ) {
+      ClimateLayers.TerrainKind terrain = layers.terrainKind(blockX, blockZ);
+      ClimateLayers.TreeCover trees = layers.treeCover(blockX, blockZ);
+      if (terrain == ClimateLayers.TerrainKind.FOREST || terrain == ClimateLayers.TerrainKind.JUNGLE || terrain == ClimateLayers.TerrainKind.PLAINS) {
+         if (trees == ClimateLayers.TreeCover.TROPICAL) return ClimateLayers.TerrainKind.JUNGLE;
+         if (trees == ClimateLayers.TreeCover.TEMPERATE) return ClimateLayers.TerrainKind.FOREST;
+         if (terrain == ClimateLayers.TerrainKind.FOREST || terrain == ClimateLayers.TerrainKind.JUNGLE) return ClimateLayers.TerrainKind.PLAINS;
+      }
+      return terrain;
+   }
+
    private static boolean isVanillaBiome(Holder<Biome> biome) {
       return biome.unwrapKey().map(key -> "minecraft".equals(key.location().getNamespace())).orElse(false);
    }
@@ -212,10 +239,4 @@ public final class TerrainBiomeMixin {
       }).orElse(false);
    }
 
-   private static int desertRiverWidth(int sourceWidth) {
-      int scaled = (int)Math.round((double)sourceWidth * Math.min(0.3, (Double)EarthShapeServerConfig.DESERT_RIVER_WIDTH_SCALE.get()));
-      return scaled < Math.max(20, (Integer)EarthShapeServerConfig.DESERT_MINIMUM_RIVER_WIDTH_BLOCKS.get())
-         ? 0
-         : Math.min(scaled, (Integer)EarthShapeServerConfig.DESERT_MAXIMUM_RIVER_WIDTH_BLOCKS.get());
-   }
 }

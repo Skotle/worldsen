@@ -14,6 +14,7 @@ public final class RiversMask {
    public static final int DEFAULT_BLOCKS_PER_PIXEL = 20;
    private static final int RIVER_SEARCH_RADIUS = 4;
    private volatile RiversMask.Data data;
+   private final ThreadLocal<RiversMask.RiverWidthCache> riverWidthCache = ThreadLocal.withInitial(RiversMask.RiverWidthCache::new);
 
    private RiversMask() {
    }
@@ -56,26 +57,12 @@ public final class RiversMask {
 
    public double sampleHeightmapInlandness(int blockX, int blockZ) {
       RiversMask.Data loaded = this.data();
-      int step = this.blocksPerPixel();
       int fadeBlocks = Math.max(320, (Integer)EarthShapeServerConfig.COAST_HEIGHT_FADE_BLOCKS.get());
-      int rings = Math.max(1, (int)Math.ceil((double)fadeBlocks / (double)step));
-
-      for (int ring = 1; ring <= rings; ring++) {
-         int offset = ring * step;
-         if (this.sampleReliefLand(loaded, blockX - offset, blockZ) < 0.5
-            || this.sampleReliefLand(loaded, blockX + offset, blockZ) < 0.5
-            || this.sampleReliefLand(loaded, blockX, blockZ - offset) < 0.5
-            || this.sampleReliefLand(loaded, blockX, blockZ + offset) < 0.5
-            || this.sampleReliefLand(loaded, blockX - offset, blockZ - offset) < 0.5
-            || this.sampleReliefLand(loaded, blockX + offset, blockZ - offset) < 0.5
-            || this.sampleReliefLand(loaded, blockX - offset, blockZ + offset) < 0.5
-            || this.sampleReliefLand(loaded, blockX + offset, blockZ + offset) < 0.5) {
-            double t = Math.min(1.0, ((double)ring - 1.0) * (double)step / (double)fadeBlocks);
-            return t * t * (3.0 - 2.0 * t);
-         }
-      }
-
-      return 1.0;
+      int x = (int)Math.floor((double)blockX / (double)this.blocksPerPixel() + (double)loaded.width * 0.5);
+      int z = (int)Math.floor((double)blockZ / (double)this.blocksPerPixel() + (double)loaded.height * 0.5);
+      if (x < 0 || z < 0 || x >= loaded.width || z >= loaded.height) return 0.0;
+      double t = Math.min(1.0, (double)(loaded.coastDistance[z * loaded.width + x] & 0xFF) * (double)this.blocksPerPixel() / (double)fadeBlocks);
+      return t * t * (3.0 - 2.0 * t);
    }
 
    public double sampleRiverReliefFactor(int blockX, int blockZ) {
@@ -197,36 +184,39 @@ public final class RiversMask {
    }
 
    public boolean hasInlandRiverInfluence(int blockX, int blockZ) {
-      if (this.riverWidthBlocks(blockX, blockZ) != 0 && !(this.sampleLayerLand(blockX, blockZ) < 0.5)) {
-         int margin = Math.max(192, (Integer)EarthShapeServerConfig.RIVER_MINIMUM_INLAND_BLOCKS.get());
-         RiversMask.Data loaded = this.data();
-
-         for (int dz = -1; dz <= 1; dz++) {
-            for (int dx = -1; dx <= 1; dx++) {
-               if ((dx != 0 || dz != 0) && this.sampleLayerLand(blockX + dx * margin, blockZ + dz * margin) < 0.5) {
-                  return false;
-               }
-            }
-         }
-
-         return true;
-      } else {
-         return false;
-      }
+      // River pixels are placed on land only after the local 5x5 support check performed
+      // while loading the source map.  Do not apply a second, 192-block coast rejection:
+      // it removes ordinary rivers on peninsulas and at mouths.
+      RiversMask.Data loaded = this.data();
+      int x = (int)Math.floor((double)blockX / (double)this.blocksPerPixel() + (double)loaded.width * 0.5);
+      int z = (int)Math.floor((double)blockZ / (double)this.blocksPerPixel() + (double)loaded.height * 0.5);
+      return x >= 0 && z >= 0 && x < loaded.width && z < loaded.height
+         && loaded.land.get(z * loaded.width + x) && loaded.riverInfluence.get(z * loaded.width + x);
    }
 
    public int riverWidthBlocks(int blockX, int blockZ) {
       RiversMask.Data loaded = this.data();
+      RiversMask.RiverWidthCache cache = this.riverWidthCache.get();
+      if (cache.data == loaded && cache.blockX == blockX && cache.blockZ == blockZ) {
+         return cache.width;
+      }
       double imageX = (double)blockX / (double)this.blocksPerPixel() + (double)loaded.width * 0.5;
       double imageZ = (double)blockZ / (double)this.blocksPerPixel() + (double)loaded.height * 0.5;
+      int width = 0;
       if (!(imageX < 1.0) && !(imageZ < 1.0) && !(imageX >= (double)loaded.width - 1.0) && !(imageZ >= (double)loaded.height - 1.0)) {
          int centreX = (int)Math.floor(imageX);
          int centreZ = (int)Math.floor(imageZ);
+         if (!loaded.riverInfluence.get(centreZ * loaded.width + centreX)) {
+            cache.data = loaded;
+            cache.blockX = blockX;
+            cache.blockZ = blockZ;
+            cache.width = 0;
+            return 0;
+         }
          double best = Double.POSITIVE_INFINITY;
-         int width = 0;
 
-         for (int z = centreZ - 4; z <= centreZ + 4; z++) {
-            for (int x = centreX - 4; x <= centreX + 4; x++) {
+         for (int z = centreZ - RIVER_SEARCH_RADIUS; z <= centreZ + RIVER_SEARCH_RADIUS; z++) {
+            for (int x = centreX - RIVER_SEARCH_RADIUS; x <= centreX + RIVER_SEARCH_RADIUS; x++) {
                int candidate = loaded.riverWidth(x, z);
                if (candidate != 0) {
                   double distance = distanceSquared(imageX, imageZ, (double)x + 0.5, (double)z + 0.5, (double)x + 0.5, (double)z + 0.5);
@@ -238,41 +228,20 @@ public final class RiversMask {
             }
          }
 
-         return width;
-      } else {
-         return 0;
       }
+      cache.data = loaded;
+      cache.blockX = blockX;
+      cache.blockZ = blockZ;
+      cache.width = width;
+      return width;
    }
 
    public int effectiveRiverWidthBlocks(int blockX, int blockZ) {
-      RiversMask.Data loaded = this.data();
-      double imageX = (double)blockX / (double)this.blocksPerPixel() + (double)loaded.width * 0.5;
-      double imageZ = (double)blockZ / (double)this.blocksPerPixel() + (double)loaded.height * 0.5;
-      int centreX = (int)Math.floor(imageX);
-      int centreZ = (int)Math.floor(imageZ);
-      double best = Double.POSITIVE_INFINITY;
-      int width = 0;
-      int nearestX = 0;
-      int nearestZ = 0;
-
-      for (int z = centreZ - 4; z <= centreZ + 4; z++) {
-         for (int x = centreX - 4; x <= centreX + 4; x++) {
-            int candidate = loaded.riverWidth(x, z);
-            if (candidate != 0) {
-               double distance = distanceSquared(imageX, imageZ, (double)x + 0.5, (double)z + 0.5, (double)x + 0.5, (double)z + 0.5);
-               if (distance < best) {
-                  best = distance;
-                  width = candidate;
-                  nearestX = x;
-                  nearestZ = z;
-               }
-            }
-         }
-      }
-
-      return width > 0 && riverNeighbours(nearestX, nearestZ, loaded.width, loaded.height, loaded.rivers) == 0
-         ? Math.max(width, (Integer)EarthShapeServerConfig.RIVER_MINIMUM_WIDTH_BLOCKS.get())
-         : width;
+      // Biomes are sampled on a four-block grid.  Apply the configured minimum to every
+      // source stroke, not only isolated pixels, so connected thin blue lines cannot fall
+      // between biome samples and disappear.
+      int width = this.riverWidthBlocks(blockX, blockZ);
+      return width > 0 ? Math.max(width, (Integer)EarthShapeServerConfig.RIVER_MINIMUM_WIDTH_BLOCKS.get()) : 0;
    }
 
    public double riverCentrelineDistance(int blockX, int blockZ) {
@@ -282,6 +251,7 @@ public final class RiversMask {
       if (!(imageX < 1.0) && !(imageZ < 1.0) && !(imageX >= (double)loaded.width - 1.0) && !(imageZ >= (double)loaded.height - 1.0)) {
          int centreX = (int)Math.floor(imageX);
          int centreZ = (int)Math.floor(imageZ);
+         if (!loaded.riverInfluence.get(centreZ * loaded.width + centreX)) return Double.POSITIVE_INFINITY;
          double best = Double.POSITIVE_INFINITY;
 
          for (int z = centreZ - 4; z <= centreZ + 4; z++) {
@@ -345,14 +315,14 @@ public final class RiversMask {
 
       try {
          RiversMask.Data var21;
-         try (InputStream input = EarthShape.class.getResourceAsStream("/earthshape/hoi4/rivers.bmp")) {
+         try (InputStream input = EarthShape.class.getResourceAsStream("/earthshape/hoi4/worldmap_river.png")) {
             if (input == null) {
-               throw new IOException("missing /earthshape/hoi4/rivers.bmp");
+               throw new IOException("missing /earthshape/hoi4/worldmap_river.png");
             }
 
             BufferedImage image = ImageIO.read(input);
             if (image == null) {
-               throw new IOException("rivers.bmp is not readable");
+               throw new IOException("worldmap_river.png is not readable");
             }
 
             int width = image.getWidth();
@@ -385,17 +355,19 @@ public final class RiversMask {
 
             bridgeSmallRiverGaps(width, height, rivers, riverWidths);
             restoreOnlyInlandRiverPixels(width, height, land, rivers);
+            BitSet riverInfluence = createRiverInfluence(width, height, land, rivers);
+            byte[] coastDistance = createCoastDistance(width, height, land, rivers);
             EarthShape.LOGGER
                .info(
-                  "[EarthShape] rivers.bmp land/ocean and river mask loaded: {}x{} in {} ms.",
+                  "[EarthShape] worldmap_river.png land/ocean and river mask loaded: {}x{} in {} ms.",
                   new Object[]{width, height, (System.nanoTime() - started) / 1000000L}
                );
-            var21 = new RiversMask.Data(width, height, land, rivers, riverWidths);
+            var21 = new RiversMask.Data(width, height, land, rivers, riverWidths, riverInfluence, coastDistance);
          }
 
          return var21;
       } catch (IOException var20) {
-         throw new IllegalStateException("EarthShape could not load Worldmap_river.png", var20);
+         throw new IllegalStateException("EarthShape could not load worldmap_river.png", var20);
       }
    }
 
@@ -434,6 +406,58 @@ public final class RiversMask {
             land.set(index);
          }
       }
+   }
+
+   private static BitSet createRiverInfluence(int width, int height, BitSet land, BitSet rivers) {
+      BitSet influence = new BitSet(width * height);
+      for (int index = rivers.nextSetBit(0); index >= 0; index = rivers.nextSetBit(index + 1)) {
+         if (!land.get(index)) continue;
+         int centreX = index % width;
+         int centreZ = index / width;
+         for (int dz = -RIVER_SEARCH_RADIUS; dz <= RIVER_SEARCH_RADIUS; dz++) {
+            for (int dx = -RIVER_SEARCH_RADIUS; dx <= RIVER_SEARCH_RADIUS; dx++) {
+               int x = centreX + dx;
+               int z = centreZ + dz;
+               if (inside(x, z, width, height)) influence.set(z * width + x);
+            }
+         }
+      }
+      return influence;
+   }
+
+   private static byte[] createCoastDistance(int width, int height, BitSet land, BitSet rivers) {
+      byte[] distance = new byte[width * height];
+      Arrays.fill(distance, (byte)127);
+      for (int z = 0; z < height; z++) {
+         for (int x = 0; x < width; x++) {
+            int index = z * width + x;
+            if (!land.get(index) && !rivers.get(index)) distance[index] = 0;
+            else {
+               int best = distance[index] & 0xFF;
+               if (x > 0) best = Math.min(best, (distance[index - 1] & 0xFF) + 1);
+               if (z > 0) {
+                  best = Math.min(best, (distance[index - width] & 0xFF) + 1);
+                  if (x > 0) best = Math.min(best, (distance[index - width - 1] & 0xFF) + 1);
+                  if (x + 1 < width) best = Math.min(best, (distance[index - width + 1] & 0xFF) + 1);
+               }
+               distance[index] = (byte)Math.min(127, best);
+            }
+         }
+      }
+      for (int z = height - 1; z >= 0; z--) {
+         for (int x = width - 1; x >= 0; x--) {
+            int index = z * width + x;
+            int best = distance[index] & 0xFF;
+            if (x + 1 < width) best = Math.min(best, (distance[index + 1] & 0xFF) + 1);
+            if (z + 1 < height) {
+               best = Math.min(best, (distance[index + width] & 0xFF) + 1);
+               if (x > 0) best = Math.min(best, (distance[index + width - 1] & 0xFF) + 1);
+               if (x + 1 < width) best = Math.min(best, (distance[index + width + 1] & 0xFF) + 1);
+            }
+            distance[index] = (byte)Math.min(127, best);
+         }
+      }
+      return distance;
    }
 
    private static void bridgeSmallRiverGaps(int width, int height, BitSet rivers, byte[] riverWidths) {
@@ -633,7 +657,10 @@ public final class RiversMask {
          }
       }
 
-      return nearestAlpha >= 0.1 && nearestDistance <= 9.0 ? configuredRiverWidth(nearest[0], nearest[1], nearest[2]) : 0;
+      // BMP export and resampling can move an edge colour a few RGB units away from its
+      // mathematically blended value.  Keep the tolerance narrow enough that land/ocean
+      // colours never become water, while accepting those one-pixel river boundaries.
+      return nearestAlpha >= 0.04 && nearestDistance <= 64.0 ? configuredRiverWidth(nearest[0], nearest[1], nearest[2]) : 0;
    }
 
    private static int configuredRiverWidth(int red, int green, int blue) {
@@ -653,7 +680,14 @@ public final class RiversMask {
       }
    }
 
-   private static record Data(int width, int height, BitSet land, BitSet rivers, byte[] riverWidths) {
+   private static final class RiverWidthCache {
+      private RiversMask.Data data;
+      private int blockX;
+      private int blockZ;
+      private int width;
+   }
+
+   private static record Data(int width, int height, BitSet land, BitSet rivers, byte[] riverWidths, BitSet riverInfluence, byte[] coastDistance) {
       double land(int x, int z) {
          return this.land.get(z * this.width + x) ? 1.0 : 0.0;
       }

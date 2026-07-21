@@ -7,6 +7,8 @@ import java.io.InputStream;
 import javax.imageio.ImageIO;
 
 public final class ClimateLayers {
+   private static final int TREES_REGION_WIDTH = 5632;
+   private static final int TREES_REGION_HEIGHT = 2048;
    public static final ClimateLayers INSTANCE = new ClimateLayers();
    private volatile ClimateLayers.Data temperature;
    private volatile ClimateLayers.Data trees;
@@ -36,6 +38,22 @@ public final class ClimateLayers {
 
    public double vegetation(int x, int z) {
       return sample(this.trees(), x, z) * 2.0 - 1.0;
+   }
+
+   /** Reads trees.bmp as a categorical palette; boundaries must not be blended into another cover type. */
+   public ClimateLayers.TreeCover treeCover(int x, int z) {
+      ClimateLayers.Data layer = this.trees();
+      double worldX = (double)x / (double)RiversMask.INSTANCE.blocksPerPixel() + TREES_REGION_WIDTH * .5D;
+      double worldZ = (double)z / (double)RiversMask.INSTANCE.blocksPerPixel() + TREES_REGION_HEIGHT * .5D;
+      // trees.bmp is a lower-resolution overlay for the central 5632x2048 world-map
+      // rectangle, not a small map pasted unscaled into its centre.
+      if (worldX < 0.0D || worldZ < 0.0D || worldX >= TREES_REGION_WIDTH || worldZ >= TREES_REGION_HEIGHT) {
+         return ClimateLayers.TreeCover.NONE;
+      }
+      int imageX = Math.min(layer.width - 1, (int)(worldX / TREES_REGION_WIDTH * layer.width));
+      int imageZ = Math.min(layer.height - 1, (int)(worldZ / TREES_REGION_HEIGHT * layer.height));
+      int value = layer.values[imageZ * layer.width + imageX] & 0xFF;
+      return value >= 235 ? ClimateLayers.TreeCover.TROPICAL : value >= 150 ? ClimateLayers.TreeCover.TEMPERATE : ClimateLayers.TreeCover.NONE;
    }
 
    public ClimateLayers.TerrainKind terrainKind(int x, int z) {
@@ -264,10 +282,7 @@ public final class ClimateLayers {
       VEGETATION {
          @Override
          int value(int c) {
-            int r = c >>> 16 & 0xFF;
-            int g = c >>> 8 & 0xFF;
-            int b = c & 0xFF;
-            return r < 8 && g < 8 && b < 8 ? 128 : 218;
+            return ClimateLayers.Kind.treeCover(c);
          }
       },
       TERRAIN_CLASS {
@@ -295,8 +310,27 @@ public final class ClimateLayers {
          int r = color >>> 16 & 0xFF;
          int g = color >>> 8 & 0xFF;
          int b = color & 0xFF;
-         int[] palette = new int[]{9787603, 4694770, 4772041, 10341200, 16373540, 16491568, 16540464, 14954539};
-         int[] bands = new int[]{0, 1, 2, 3, 4, 5, 6, 8};
+         // White is the intentionally unpainted/ocean portion of the source raster.  It
+         // must remain outside of the palette rather than being assigned to the warmest band.
+         if (r > 244 && g > 244 && b > 244) {
+            return -1;
+         }
+         switch (color & 0xFFFFFF) {
+            case 0x9558D3: case 0x000081: return 0;
+            case 0x47A2F2: return 1;
+            case 0x48D0C9: return 2;
+            case 0x9DCB50: case 0x0000BE: return 3;
+            case 0xF9D724: return 4;
+            case 0xFBA430: case 0x0082BE: return 5;
+            case 0xFC6330: return 6;
+            case 0xE4302B: return 8;
+         }
+         int[] palette = new int[]{
+                 0x9558D3, 0x47A2F2, 0x48D0C9, 0x9DCB50, 0xF9D724, 0xFBA430, 0xFC6330, 0xE4302B,
+                 // temperature_full.png ocean palette: polar, cold-temperate, warm-temperate.
+                 0x000081, 0x0000BE, 0x0082BE
+         };
+         int[] bands = new int[]{0, 1, 2, 3, 4, 5, 6, 8, 0, 3, 5};
          int best = -1;
          int distance = Integer.MAX_VALUE;
 
@@ -311,7 +345,44 @@ public final class ClimateLayers {
             }
          }
 
-         return distance <= 7000 ? bands[best] : -1;
+         // The exported map contains anti-aliased pixels at every coloured-band boundary.
+         // Classify those against their nearest declared palette colour instead of dropping
+         // them out of coverage, which created thin latitude gaps and shifted boundaries.
+         return distance <= 24000 ? bands[best] : -1;
+      }
+
+      private static int treeCover(int color) {
+         int rgb = color & 0xFFFFFF;
+         switch (rgb) {
+            case 0x000000: return 0;
+            case 0x2F7818: return 190;
+            case 0x4C9C33: return 210;
+            case 0x9600FF: case 0x58008A: return 255;
+            case 0xFFFF00: return 80;
+         }
+         // #000000 means deliberately tree-free.  Green shades are temperate/cold tree
+         // cover; purple shades are tropical cover.  Every other colour is matched to the
+         // nearest declared colour so anti-aliased outline pixels cannot spill into no-cover.
+         int[] palette = new int[]{0x000000, 0x2F7818, 0x4C9C33, 0x9600FF, 0x58008A, 0xFFFF00};
+         int[] values = new int[]{0, 190, 210, 255, 255, 80};
+         int best = 0;
+         int distance = Integer.MAX_VALUE;
+         for (int i = 0; i < palette.length; i++) {
+            int d = colourDistance(rgb, palette[i]);
+            if (d < distance) {
+               distance = d;
+               best = i;
+            }
+         }
+         return values[best];
+      }
+
+      private static int colourDistance(int first, int second) {
+         int dr = (first >>> 16 & 0xFF) - (second >>> 16 & 0xFF);
+         int dg = (first >>> 8 & 0xFF) - (second >>> 8 & 0xFF);
+         int db = (first & 0xFF) - (second & 0xFF);
+         // Green carries more visual information in these exported land-cover palettes.
+         return dr * dr * 2 + dg * dg * 4 + db * db;
       }
    }
 
@@ -347,19 +418,47 @@ public final class ClimateLayers {
       }
 
       static ClimateLayers.TerrainKind fromColor(int color) {
-         return switch (color & 16777215) {
-            case 21074 -> JUNGLE;
-            case 22022, 444427, 3834706 -> FOREST;
-            case 532354 -> WATER;
-            case 4799247, 6050636, 11403519 -> MOUNTAIN;
-            case 4953006 -> WETLAND;
-            case 5667867, 8716032 -> PLAINS;
-            case 7359007, 7506281, 8803358 -> HILLS;
-            case 13543779, 16580352 -> DESERT;
-            case 15793920 -> SURROUNDING;
-            case 16711704, 16711807, 16711920, 16777215 -> CITY;
-            default -> PLAINS;
+         int rgb = color & 0xFFFFFF;
+         switch (rgb) {
+            case 0x005252: return JUNGLE;
+            case 0x005606: case 0x06C80B: case 0x3A8352: return FOREST;
+            case 0x081F82: return WATER;
+            case 0x493B0F: case 0x5C534C: case 0xAE00FF: return MOUNTAIN;
+            case 0x4B93AE: return WETLAND;
+            case 0x567C1B: case 0x84FF00: return PLAINS;
+            case 0x704A1F: case 0x728969: case 0x86541E: return HILLS;
+            case 0xCEA963: case 0xFCFF00: return DESERT;
+            case 0xF0FF00: return SURROUNDING;
+            case 0xFF0018: case 0xFF007F: case 0xFF00F0: case 0xFFFFFF: return CITY;
+         }
+         // Only anti-aliased boundary pixels reach the nearest-palette fallback below.
+         ClimateLayers.TerrainKind[] kinds = new ClimateLayers.TerrainKind[]{
+                 JUNGLE, FOREST, FOREST, FOREST, WATER, MOUNTAIN, MOUNTAIN, MOUNTAIN,
+                 WETLAND, PLAINS, PLAINS, HILLS, HILLS, HILLS, DESERT, DESERT,
+                 SURROUNDING, CITY, CITY, CITY, CITY
          };
+         int[] palette = new int[]{
+                 0x005252, 0x005606, 0x06C80B, 0x3A8352, 0x081F82, 0x493B0F,
+                 0x5C534C, 0xAE00FF, 0x4B93AE, 0x567C1B, 0x84FF00, 0x704A1F,
+                 0x728969, 0x86541E, 0xCEA963, 0xFCFF00, 0xF0FF00, 0xFF0018,
+                 0xFF007F, 0xFF00F0, 0xFFFFFF
+         };
+         ClimateLayers.TerrainKind nearest = PLAINS;
+         int distance = Integer.MAX_VALUE;
+         for (int i = 0; i < palette.length; i++) {
+            int d = ClimateLayers.Kind.colourDistance(rgb, palette[i]);
+            if (d < distance) {
+               distance = d;
+               nearest = kinds[i];
+            }
+         }
+         return nearest;
       }
+   }
+
+   public static enum TreeCover {
+      NONE,
+      TEMPERATE,
+      TROPICAL
    }
 }

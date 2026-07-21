@@ -30,7 +30,9 @@ public final class TemperatureSurfaceBiomeMixin {
       if (y >= 48 && isVanilla((Holder<Biome>)callback.getReturnValue())) {
          ClimateLayers layers = ClimateLayers.INSTANCE;
          if (RiversMask.INSTANCE.sampleLand(x, z) < 0.5) {
-            callback.setReturnValue(this.ocean(layers.oceanTemperature(z), (Holder<Biome>)callback.getReturnValue()));
+            // temperature_full.png includes explicit ocean colours; do not replace them
+            // with a latitude estimate.
+            callback.setReturnValue(this.ocean(layers.temperature(x, z), (Holder<Biome>)callback.getReturnValue()));
          } else {
             double temperature = layers.temperature(x, z);
             if (!RiversMask.INSTANCE.isInlandRiver(x, z)) {
