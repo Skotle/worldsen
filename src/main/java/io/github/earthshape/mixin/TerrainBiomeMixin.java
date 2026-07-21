@@ -36,17 +36,13 @@ public final class TerrainBiomeMixin {
             callback.setReturnValue(this.findBiome(Biomes.RIVER, (Holder<Biome>)callback.getReturnValue()));
             return;
          }
+         // Structures and underground generation commonly query the biome at low Y values.
+         // Keep those queries owned by the original biome source so modpack structure biome
+         // predicates continue to work; EarthShape controls only the visible surface layer.
+         if (blockY < 48) return;
          if (RiversMask.INSTANCE.sampleLand(blockX, blockZ) >= 0.5 && !sourceRiver && isInlandWaterBiome((Holder<Biome>)callback.getReturnValue())) {
             callback.setReturnValue(this.mapTerrainBiome(layers, blockX, blockY, blockZ, (Holder<Biome>)callback.getReturnValue()));
          } else if (isVanillaBiome((Holder<Biome>)callback.getReturnValue())) {
-            if ((Boolean)EarthShapeServerConfig.TERRAIN_BIOMES_ENABLED.get() && blockY <= 32) {
-               Holder<Biome> cave = this.mapCaveBiome(layers, blockX, blockY, blockZ, (Holder<Biome>)callback.getReturnValue());
-               if (cave != callback.getReturnValue()) {
-                  callback.setReturnValue(cave);
-                  return;
-               }
-            }
-
             if (isVanillaRiver((Holder<Biome>)callback.getReturnValue())) {
                callback.setReturnValue(this.mapTerrainBiome(layers, blockX, blockY, blockZ, (Holder<Biome>)callback.getReturnValue()));
             } else if ((Boolean)EarthShapeServerConfig.OCEAN_TEMPERATURE_ENABLED.get() && RiversMask.INSTANCE.sampleLand(blockX, blockZ) < 0.25) {
@@ -146,22 +142,6 @@ public final class TerrainBiomeMixin {
          return temperature > 0.45
             ? this.findBiome(region % 6 == 0 ? Biomes.SAVANNA_PLATEAU : Biomes.SAVANNA, fallback)
             : this.findBiome(region % 16 == 0 ? Biomes.SUNFLOWER_PLAINS : Biomes.PLAINS, fallback);
-      }
-   }
-
-   private Holder<Biome> mapCaveBiome(ClimateLayers layers, int blockX, int blockY, int blockZ, Holder<Biome> fallback) {
-      int variant = regionalVariant(blockX, blockZ) % 8;
-      if (variant > 1) {
-         return fallback;
-      } else {
-         ClimateLayers.TerrainKind terrain = layers.terrainKind(blockX, blockZ);
-         if (blockY < -24 && terrain == ClimateLayers.TerrainKind.MOUNTAIN) {
-            return this.findBiome(Biomes.DEEP_DARK, fallback);
-         } else {
-            return terrain != ClimateLayers.TerrainKind.FOREST && terrain != ClimateLayers.TerrainKind.JUNGLE && terrain != ClimateLayers.TerrainKind.WETLAND
-               ? this.findBiome(Biomes.DRIPSTONE_CAVES, fallback)
-               : this.findBiome(Biomes.LUSH_CAVES, fallback);
-         }
       }
    }
 
