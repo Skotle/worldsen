@@ -15,8 +15,12 @@ public final class EarthShapeServerConfig {
    public static final BooleanValue OCEAN_TEMPERATURE_ENABLED;
    public static final BooleanValue TUNDRA_TEMPERATURE_ENABLED;
    public static final DoubleValue TUNDRA_TEMPERATURE_THRESHOLD;
+   public static final IntValue SNOW_ALTITUDE_BLOCKS;
+   public static final DoubleValue SNOW_TEMPERATURE_THRESHOLD;
    public static final DoubleValue TEMPERATURE_VERTICAL_SCALE;
    public static final BooleanValue RIVER_BIOMES_ENABLED;
+   public static final BooleanValue BIOME_BOUNDARY_WARP_ENABLED;
+   public static final IntValue BIOME_BOUNDARY_WARP_BLOCKS;
    public static final IntValue COAST_HEIGHT_FADE_BLOCKS;
    public static final IntValue RIVER_HEIGHT_FADE_BLOCKS;
    public static final DoubleValue HEIGHTMAP_MEDIAN;
@@ -61,12 +65,28 @@ public final class EarthShapeServerConfig {
             "Temperature cutoff for snowy land. Higher values expand tundra/snow coverage; default -0.25 replaces the former sparse -0.45 cutoff."
          )
          .defineInRange("tundraTemperatureThreshold", -0.25, -1.0, 1.0);
+      SNOW_ALTITUDE_BLOCKS = builder.comment(
+            "Surface Y level where high-altitude biomes may receive snow regardless of the temperature map."
+         )
+         .defineInRange("snowAltitudeBlocks", 160, 64, 320);
+      SNOW_TEMPERATURE_THRESHOLD = builder.comment(
+            "Temperature-map cutoff for snow below the high-altitude snowline. -0.625 corresponds to the purple and blue sub-zero bands."
+         )
+         .defineInRange("snowTemperatureThreshold", -0.625, -1.0, 0.0);
       TEMPERATURE_VERTICAL_SCALE = builder.comment(
             "Vertical expansion of earth_temperature.png around the equator. 1.12 keeps southern Africa in its intended warm band when using the expanded 6000x3400 world map."
          )
          .defineInRange("temperatureVerticalScale", 1.12, 0.75, 1.5);
       RIVER_BIOMES_ENABLED = builder.comment("Use blue rivers.bmp lines as real river biomes and suppress all other river biomes.")
          .define("riverBiomesEnabled", true);
+      BIOME_BOUNDARY_WARP_ENABLED = builder.comment(
+            "Gently bend terrain, trees and temperature layer sampling so long bitmap biome borders do not generate as straight lines. Rivers and coasts stay exact."
+         )
+         .define("biomeBoundaryWarpEnabled", true);
+      BIOME_BOUNDARY_WARP_BLOCKS = builder.comment(
+            "Maximum sideways displacement for temperature-variant biome boundaries. It is capped below one source-map pixel so terrain.bmp and trees.bmp regions cannot be crossed."
+         )
+         .defineInRange("biomeBoundaryWarpBlocks", 12, 0, 64);
       builder.pop();
       builder.push("terrain_shaping");
       COAST_HEIGHT_FADE_BLOCKS = builder.comment("Distance from an ocean coast over which heightmap relief rises from a negative shoreline grade.")
@@ -95,9 +115,9 @@ public final class EarthShapeServerConfig {
          )
          .defineInRange("minimumWidthBlocks", 8, 1, 64);
       RIVER_GAP_BRIDGE_PIXELS = builder.comment(
-            "Maximum missing source pixels joined only between similarly directed river strokes.  This repairs broken thin lines without joining nearby rivers."
+            "Maximum missing source pixels joined between similarly directed river strokes. Keep this at 2 or lower so nearby independent rivers cannot be joined."
          )
-         .defineInRange("gapBridgePixels", 8, 0, 16);
+         .defineInRange("gapBridgePixels", 2, 0, 2);
       RIVER_CHANNEL_CONTINENTALNESS = builder.comment(
             "Continentalness at the center of a source-layer river. Lower values make a reliable shallow water channel before normal terrain generation."
          )

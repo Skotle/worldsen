@@ -156,6 +156,16 @@ public final class RiversMask {
       return this.isRiverCentreline(blockX, blockZ) && this.hasInlandRiverInfluence(blockX, blockZ);
    }
 
+   /** Last inland source-river pixels beside mapped ocean; these become estuary ocean, not a river biome seam. */
+   public boolean isRiverMouth(int blockX, int blockZ) {
+      RiversMask.Data loaded = this.data();
+      int x = (int)Math.floor((double)blockX / (double)this.blocksPerPixel() + (double)loaded.width * 0.5);
+      int z = (int)Math.floor((double)blockZ / (double)this.blocksPerPixel() + (double)loaded.height * 0.5);
+      return x >= 0 && z >= 0 && x < loaded.width && z < loaded.height
+         && loaded.riverMouths.get(z * loaded.width + x)
+         && this.isRiverCentreline(blockX, blockZ);
+   }
+
    public boolean isInlandRiverBank(int blockX, int blockZ) {
       if (!this.hasInlandRiverInfluence(blockX, blockZ)) {
          return false;
@@ -410,7 +420,9 @@ public final class RiversMask {
             }
 
             bridgeSmallRiverGaps(width, height, rivers, riverWidths);
+            stabilizeRiverWidths(width, height, rivers, riverWidths);
             restoreOnlyInlandRiverPixels(width, height, land, rivers);
+            BitSet riverMouths = createRiverMouths(width, height, land, rivers);
             byte[] riverCorners = createRiverCornerMasks(width, height, rivers);
             BitSet riverInfluence = createRiverInfluence(width, height, land, rivers);
             byte[] coastDistance = createCoastDistance(width, height, land, rivers);
@@ -419,7 +431,7 @@ public final class RiversMask {
                   "[EarthShape] worldmap_river.png land/ocean and river mask loaded: {}x{} in {} ms.",
                   new Object[]{width, height, (System.nanoTime() - started) / 1000000L}
                );
-            var21 = new RiversMask.Data(width, height, land, rivers, riverWidths, riverCorners, riverInfluence, coastDistance);
+            var21 = new RiversMask.Data(width, height, land, rivers, riverWidths, riverCorners, riverMouths, riverInfluence, coastDistance);
          }
 
          return var21;
@@ -480,6 +492,34 @@ public final class RiversMask {
          }
       }
       return influence;
+   }
+
+   private static BitSet createRiverMouths(int width, int height, BitSet land, BitSet rivers) {
+      BitSet mouths = new BitSet(width * height);
+
+      for (int index = rivers.nextSetBit(0); index >= 0; index = rivers.nextSetBit(index + 1)) {
+         if (!land.get(index)) continue;
+         int x = index % width;
+         int z = index / width;
+
+         for (int dz = -2; dz <= 2; dz++) {
+            for (int dx = -2; dx <= 2; dx++) {
+               int sampleX = x + dx;
+               int sampleZ = z + dz;
+               if (inside(sampleX, sampleZ, width, height)) {
+                  int sample = sampleZ * width + sampleX;
+                  // Do not mistake another inland source-river pixel for open water.
+                  if (!land.get(sample) && !rivers.get(sample)) {
+                     mouths.set(index);
+                     dx = 3;
+                     break;
+                  }
+               }
+            }
+         }
+      }
+
+      return mouths;
    }
 
    private static byte[] createRiverCornerMasks(int width, int height, BitSet rivers) {
@@ -549,7 +589,9 @@ public final class RiversMask {
    }
 
    private static void bridgeSmallRiverGaps(int width, int height, BitSet rivers, byte[] riverWidths) {
-      int maximumGap = (Integer)EarthShapeServerConfig.RIVER_GAP_BRIDGE_PIXELS.get();
+      // A large bridge radius draws artificial Bresenham strokes between separate source
+      // rivers.  Two pixels only repairs export pinholes and cannot create new branches.
+      int maximumGap = Math.min(2, (Integer)EarthShapeServerConfig.RIVER_GAP_BRIDGE_PIXELS.get());
       if (maximumGap > 0) {
          BitSet sourceRivers = (BitSet)rivers.clone();
 
@@ -580,6 +622,33 @@ public final class RiversMask {
                   }
                }
             }
+         }
+      }
+   }
+
+   /** Removes one-pixel colour/alpha width flicker without flattening real river-width changes. */
+   private static void stabilizeRiverWidths(int width, int height, BitSet rivers, byte[] riverWidths) {
+      byte[] source = riverWidths.clone();
+      int[] nearbyWidths = new int[9];
+
+      for (int index = rivers.nextSetBit(0); index >= 0; index = rivers.nextSetBit(index + 1)) {
+         int x = index % width;
+         int z = index / width;
+         int count = 0;
+
+         for (int dz = -1; dz <= 1; dz++) {
+            for (int dx = -1; dx <= 1; dx++) {
+               int sampleX = x + dx;
+               int sampleZ = z + dz;
+               if (inside(sampleX, sampleZ, width, height) && rivers.get(sampleZ * width + sampleX)) {
+                  nearbyWidths[count++] = source[sampleZ * width + sampleX] & 0xFF;
+               }
+            }
+         }
+
+         if (count >= 3) {
+            Arrays.sort(nearbyWidths, 0, count);
+            riverWidths[index] = (byte)nearbyWidths[count / 2];
          }
       }
    }
@@ -775,7 +844,17 @@ public final class RiversMask {
       private int width;
    }
 
-   private static record Data(int width, int height, BitSet land, BitSet rivers, byte[] riverWidths, byte[] riverCorners, BitSet riverInfluence, byte[] coastDistance) {
+   private static record Data(
+      int width,
+      int height,
+      BitSet land,
+      BitSet rivers,
+      byte[] riverWidths,
+      byte[] riverCorners,
+      BitSet riverMouths,
+      BitSet riverInfluence,
+      byte[] coastDistance
+   ) {
       double land(int x, int z) {
          return this.land.get(z * this.width + x) ? 1.0 : 0.0;
       }
