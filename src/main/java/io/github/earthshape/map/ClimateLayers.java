@@ -1,6 +1,7 @@
 package io.github.earthshape.map;
 
 import io.github.earthshape.EarthShape;
+import io.github.earthshape.EarthShapeServerConfig;
 import java.awt.image.BufferedImage;
 import java.io.IOException;
 import java.io.InputStream;
@@ -23,7 +24,9 @@ public final class ClimateLayers {
       ClimateLayers.TemperatureSample sample = sampleFullTemperature(layer, x, z);
       double latitude = latitudeTemperature(z);
       double mapped = sample.value * 2.0 - 1.0;
-      return latitude + (mapped - latitude) * sample.coverage;
+      double weight = (Double)EarthShapeServerConfig.TEMPERATURE_GLOBAL_WEIGHT.get() * temperatureBandWeight(sample.value);
+      double result = latitude + (mapped - latitude) * sample.coverage * weight + (Double)EarthShapeServerConfig.TEMPERATURE_GLOBAL_OFFSET.get();
+      return Math.max(-1.0, Math.min(1.0, result));
    }
 
    public double oceanTemperature(int z) {
@@ -248,6 +251,22 @@ public final class ClimateLayers {
       double imageZ = (double)blockZ / (double)RiversMask.INSTANCE.blocksPerPixel() + (double)RiversMask.INSTANCE.height() * 0.5;
       double latitude = Math.abs(imageZ / Math.max(1.0, (double)RiversMask.INSTANCE.height() - 1.0) * 2.0 - 1.0);
       return 0.55 - 1.35 * latitude * latitude;
+   }
+
+   /** Per-palette weights let individual temperature-map colour regions be tuned independently. */
+   private static double temperatureBandWeight(double normalizedBand) {
+      int band = Math.max(0, Math.min(8, (int)Math.round(normalizedBand * 8.0)));
+      return switch (band) {
+         case 0 -> (Double)EarthShapeServerConfig.TEMPERATURE_WEIGHT_POLAR.get();
+         case 1 -> (Double)EarthShapeServerConfig.TEMPERATURE_WEIGHT_COLD.get();
+         case 2 -> (Double)EarthShapeServerConfig.TEMPERATURE_WEIGHT_COOL.get();
+         case 3 -> (Double)EarthShapeServerConfig.TEMPERATURE_WEIGHT_TEMPERATE.get();
+         case 4 -> (Double)EarthShapeServerConfig.TEMPERATURE_WEIGHT_MILD.get();
+         case 5 -> (Double)EarthShapeServerConfig.TEMPERATURE_WEIGHT_WARM.get();
+         case 6 -> (Double)EarthShapeServerConfig.TEMPERATURE_WEIGHT_HOT.get();
+         case 7 -> (Double)EarthShapeServerConfig.TEMPERATURE_WEIGHT_TROPICAL.get();
+         default -> (Double)EarthShapeServerConfig.TEMPERATURE_WEIGHT_EQUATORIAL.get();
+      };
    }
 
    private static record Data(int width, int height, byte[] values, byte[] coverage) {
