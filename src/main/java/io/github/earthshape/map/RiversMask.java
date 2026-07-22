@@ -13,6 +13,7 @@ public final class RiversMask {
    public static final RiversMask INSTANCE = new RiversMask();
    public static final int DEFAULT_BLOCKS_PER_PIXEL = 20;
    private static final int RIVER_SEARCH_RADIUS = 4;
+   private static final double RIVER_CORNER_TRIM = 0.32;
    private volatile RiversMask.Data data;
    private final ThreadLocal<RiversMask.RiverWidthCache> riverWidthCache = ThreadLocal.withInitial(RiversMask.RiverWidthCache::new);
 
@@ -257,14 +258,24 @@ public final class RiversMask {
          for (int z = centreZ - 4; z <= centreZ + 4; z++) {
             for (int x = centreX - 4; x <= centreX + 4; x++) {
                if (loaded.river(x, z)) {
-                  best = Math.min(best, Math.sqrt(distanceSquared(imageX, imageZ, (double)x + 0.5, (double)z + 0.5, (double)x + 0.5, (double)z + 0.5)));
+                  int cornerMask = loaded.riverCornerMask(x, z);
+                  if (cornerMask == 0) {
+                     best = Math.min(best, Math.sqrt(distanceSquared(imageX, imageZ, (double)x + 0.5, (double)z + 0.5, (double)x + 0.5, (double)z + 0.5)));
+                  } else {
+                     best = Math.min(best, Math.sqrt(roundedCornerDistanceSquared(imageX, imageZ, x, z, cornerMask)));
+                  }
 
                   for (int dz = -1; dz <= 1; dz++) {
                      for (int dx = -1; dx <= 1; dx++) {
-                        if ((dx != 0 || dz != 0) && loaded.river(x + dx, z + dz)) {
+                        if ((dx > 0 || dx == 0 && dz > 0) && loaded.river(x + dx, z + dz)) {
+                           int neighbourCornerMask = loaded.riverCornerMask(x + dx, z + dz);
+                           double startX = (double)x + 0.5 + ((cornerMask & neighbourBit(dx, dz)) != 0 ? (double)dx * RIVER_CORNER_TRIM : 0.0);
+                           double startZ = (double)z + 0.5 + ((cornerMask & neighbourBit(dx, dz)) != 0 ? (double)dz * RIVER_CORNER_TRIM : 0.0);
+                           double endX = (double)(x + dx) + 0.5 + ((neighbourCornerMask & neighbourBit(-dx, -dz)) != 0 ? (double)-dx * RIVER_CORNER_TRIM : 0.0);
+                           double endZ = (double)(z + dz) + 0.5 + ((neighbourCornerMask & neighbourBit(-dx, -dz)) != 0 ? (double)-dz * RIVER_CORNER_TRIM : 0.0);
                            best = Math.min(
                               best,
-                              Math.sqrt(distanceSquared(imageX, imageZ, (double)x + 0.5, (double)z + 0.5, (double)(x + dx) + 0.5, (double)(z + dz) + 0.5))
+                              Math.sqrt(distanceSquared(imageX, imageZ, startX, startZ, endX, endZ))
                            );
                         }
                      }
@@ -293,6 +304,51 @@ public final class RiversMask {
          double oz = pz - (az + t * dz);
          return ox * ox + oz * oz;
       }
+   }
+
+   private static double roundedCornerDistanceSquared(double px, double pz, int x, int z, int cornerMask) {
+      int first = Integer.numberOfTrailingZeros(cornerMask & 0xFF);
+      int second = Integer.numberOfTrailingZeros((cornerMask & 0xFF) & ~(1 << first));
+      int firstX = neighbourX(first);
+      int firstZ = neighbourZ(first);
+      int secondX = neighbourX(second);
+      int secondZ = neighbourZ(second);
+      double startX = (double)x + 0.5 + (double)firstX * RIVER_CORNER_TRIM;
+      double startZ = (double)z + 0.5 + (double)firstZ * RIVER_CORNER_TRIM;
+      double endX = (double)x + 0.5 + (double)secondX * RIVER_CORNER_TRIM;
+      double endZ = (double)z + 0.5 + (double)secondZ * RIVER_CORNER_TRIM;
+      double controlX = (double)x + 0.5;
+      double controlZ = (double)z + 0.5;
+      double best = Double.POSITIVE_INFINITY;
+      double previousX = startX;
+      double previousZ = startZ;
+
+      for (int step = 1; step <= 5; step++) {
+         double t = (double)step / 5.0;
+         double inverse = 1.0 - t;
+         double nextX = inverse * inverse * startX + 2.0 * inverse * t * controlX + t * t * endX;
+         double nextZ = inverse * inverse * startZ + 2.0 * inverse * t * controlZ + t * t * endZ;
+         best = Math.min(best, distanceSquared(px, pz, previousX, previousZ, nextX, nextZ));
+         previousX = nextX;
+         previousZ = nextZ;
+      }
+
+      return best;
+   }
+
+   private static int neighbourBit(int dx, int dz) {
+      int index = (dz + 1) * 3 + dx + 1;
+      return 1 << (index > 4 ? index - 1 : index);
+   }
+
+   private static int neighbourX(int bit) {
+      int index = bit >= 4 ? bit + 1 : bit;
+      return index % 3 - 1;
+   }
+
+   private static int neighbourZ(int bit) {
+      int index = bit >= 4 ? bit + 1 : bit;
+      return index / 3 - 1;
    }
 
    private RiversMask.Data data() {
@@ -355,6 +411,7 @@ public final class RiversMask {
 
             bridgeSmallRiverGaps(width, height, rivers, riverWidths);
             restoreOnlyInlandRiverPixels(width, height, land, rivers);
+            byte[] riverCorners = createRiverCornerMasks(width, height, rivers);
             BitSet riverInfluence = createRiverInfluence(width, height, land, rivers);
             byte[] coastDistance = createCoastDistance(width, height, land, rivers);
             EarthShape.LOGGER
@@ -362,7 +419,7 @@ public final class RiversMask {
                   "[EarthShape] worldmap_river.png land/ocean and river mask loaded: {}x{} in {} ms.",
                   new Object[]{width, height, (System.nanoTime() - started) / 1000000L}
                );
-            var21 = new RiversMask.Data(width, height, land, rivers, riverWidths, riverInfluence, coastDistance);
+            var21 = new RiversMask.Data(width, height, land, rivers, riverWidths, riverCorners, riverInfluence, coastDistance);
          }
 
          return var21;
@@ -423,6 +480,37 @@ public final class RiversMask {
          }
       }
       return influence;
+   }
+
+   private static byte[] createRiverCornerMasks(int width, int height, BitSet rivers) {
+      byte[] corners = new byte[width * height];
+
+      for (int index = rivers.nextSetBit(0); index >= 0; index = rivers.nextSetBit(index + 1)) {
+         int x = index % width;
+         int z = index / width;
+         int mask = 0;
+         int count = 0;
+
+         for (int dz = -1; dz <= 1; dz++) {
+            for (int dx = -1; dx <= 1; dx++) {
+               if ((dx != 0 || dz != 0) && inside(x + dx, z + dz, width, height) && rivers.get((z + dz) * width + x + dx)) {
+                  mask |= neighbourBit(dx, dz);
+                  count++;
+               }
+            }
+         }
+
+         if (count == 2) {
+            int first = Integer.numberOfTrailingZeros(mask);
+            int second = Integer.numberOfTrailingZeros(mask & ~(1 << first));
+            int dot = neighbourX(first) * neighbourX(second) + neighbourZ(first) * neighbourZ(second);
+            if (dot > -1) {
+               corners[index] = (byte)mask;
+            }
+         }
+      }
+
+      return corners;
    }
 
    private static byte[] createCoastDistance(int width, int height, BitSet land, BitSet rivers) {
@@ -687,7 +775,7 @@ public final class RiversMask {
       private int width;
    }
 
-   private static record Data(int width, int height, BitSet land, BitSet rivers, byte[] riverWidths, BitSet riverInfluence, byte[] coastDistance) {
+   private static record Data(int width, int height, BitSet land, BitSet rivers, byte[] riverWidths, byte[] riverCorners, BitSet riverInfluence, byte[] coastDistance) {
       double land(int x, int z) {
          return this.land.get(z * this.width + x) ? 1.0 : 0.0;
       }
@@ -702,6 +790,10 @@ public final class RiversMask {
 
       int riverWidth(int x, int z) {
          return x >= 0 && z >= 0 && x < this.width && z < this.height ? this.riverWidths[z * this.width + x] & 0xFF : 0;
+      }
+
+      int riverCornerMask(int x, int z) {
+         return x >= 0 && z >= 0 && x < this.width && z < this.height ? this.riverCorners[z * this.width + x] & 0xFF : 0;
       }
    }
 
