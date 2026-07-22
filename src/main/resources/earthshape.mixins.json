@@ -2,6 +2,6 @@
   "required": true,
   "package": "io.github.earthshape.mixin",
   "compatibilityLevel": "JAVA_21",
-  "mixins": ["TerrainBiomeMixin", "DesertLakeMixin", "OceanIcebergMixin", "SurfaceAquiferGuardMixin"],
+  "mixins": ["TerrainBiomeMixin", "DesertLakeMixin", "OceanIcebergMixin", "SurfaceAquiferGuardMixin", "RiverFeatureGuardMixin"],
   "injectors": { "defaultRequire": 1 }
 }

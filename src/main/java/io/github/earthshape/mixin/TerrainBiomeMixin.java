@@ -45,17 +45,19 @@ public final class TerrainBiomeMixin {
          // Keep those queries owned by the original biome source so modpack structure biome
          // predicates continue to work; EarthShape controls only the visible surface layer.
          if (blockY < 48) return;
+         if ((Boolean)EarthShapeServerConfig.OCEAN_TEMPERATURE_ENABLED.get() && RiversMask.INSTANCE.sampleLand(blockX, blockZ) < 0.25) {
+            // The mapped ocean must be selected even when another worldgen mod supplied a
+            // non-vanilla fallback biome. Otherwise normal/lukewarm ocean bands disappear.
+            long layerPoint = warpedLayerPoint(blockX, blockZ);
+            double temperature = layers.temperature(unpackX(layerPoint), unpackZ(layerPoint));
+            callback.setReturnValue(this.oceanBiome(temperature, blockX, blockZ, (Holder<Biome>)callback.getReturnValue()));
+            return;
+         }
          if (RiversMask.INSTANCE.sampleLand(blockX, blockZ) >= 0.5 && !sourceRiver && isInlandWaterBiome((Holder<Biome>)callback.getReturnValue())) {
             callback.setReturnValue(this.mapTerrainBiome(layers, blockX, blockY, blockZ, (Holder<Biome>)callback.getReturnValue()));
          } else if (isVanillaBiome((Holder<Biome>)callback.getReturnValue())) {
             if (isVanillaRiver((Holder<Biome>)callback.getReturnValue())) {
                callback.setReturnValue(this.mapTerrainBiome(layers, blockX, blockY, blockZ, (Holder<Biome>)callback.getReturnValue()));
-            } else if ((Boolean)EarthShapeServerConfig.OCEAN_TEMPERATURE_ENABLED.get() && RiversMask.INSTANCE.sampleLand(blockX, blockZ) < 0.25) {
-               // The full temperature layer includes the ocean, so this must use its pixel
-               // value rather than falling back to a latitude-only estimate.
-               long layerPoint = warpedLayerPoint(blockX, blockZ);
-               double temperature = layers.temperature(unpackX(layerPoint), unpackZ(layerPoint));
-               callback.setReturnValue(this.oceanBiome(temperature, blockX, blockZ, (Holder<Biome>)callback.getReturnValue()));
             } else {
                if ((Boolean)EarthShapeServerConfig.TERRAIN_BIOMES_ENABLED.get()) {
                   callback.setReturnValue(this.mapTerrainBiome(layers, blockX, blockY, blockZ, (Holder<Biome>)callback.getReturnValue()));
@@ -116,8 +118,11 @@ public final class TerrainBiomeMixin {
       if (snowAllowed && temperature < -0.55) {
          return this.findBiome(Biomes.SNOWY_TAIGA, fallback);
       } else {
-         return snowAllowed && temperature < -0.25
-            ? this.findBiome(region % 6 == 0 ? Biomes.OLD_GROWTH_SPRUCE_TAIGA : (region % 4 == 0 ? Biomes.OLD_GROWTH_PINE_TAIGA : Biomes.TAIGA), fallback)
+         return temperature <= (Double)EarthShapeServerConfig.TAIGA_TEMPERATURE_THRESHOLD.get()
+            ? this.findBiome(
+               region % 6 == 0 ? Biomes.OLD_GROWTH_SPRUCE_TAIGA : (region % 4 == 0 ? Biomes.OLD_GROWTH_PINE_TAIGA : Biomes.TAIGA),
+               fallback
+            )
             : this.findBiome(
                region % 14 == 0
                   ? Biomes.FLOWER_FOREST
@@ -136,6 +141,8 @@ public final class TerrainBiomeMixin {
          return this.findBiome(region % 17 == 0 ? Biomes.ICE_SPIKES : Biomes.SNOWY_PLAINS, fallback);
       } else if (snowAllowed && temperature < -0.3) {
          return this.findBiome(Biomes.SNOWY_PLAINS, fallback);
+      } else if (temperature <= (Double)EarthShapeServerConfig.TAIGA_TEMPERATURE_THRESHOLD.get()) {
+         return this.findBiome(region % 5 == 0 ? Biomes.OLD_GROWTH_SPRUCE_TAIGA : Biomes.TAIGA, fallback);
       } else {
          return temperature > 0.45
             ? this.findBiome(region % 6 == 0 ? Biomes.SAVANNA_PLATEAU : Biomes.SAVANNA, fallback)
@@ -146,15 +153,15 @@ public final class TerrainBiomeMixin {
    private Holder<Biome> oceanBiome(double temperature, int blockX, int blockZ, Holder<Biome> fallback) {
       boolean deep = isOpenOcean(blockX, blockZ);
       if (temperature > 0.65) {
-         return this.findBiome(Biomes.WARM_OCEAN, fallback);
+         return this.findOceanBiome(Biomes.WARM_OCEAN, fallback);
       } else if (temperature > 0.15) {
-         return this.findBiome(deep ? Biomes.DEEP_LUKEWARM_OCEAN : Biomes.LUKEWARM_OCEAN, fallback);
+         return this.findOceanBiome(deep ? Biomes.DEEP_LUKEWARM_OCEAN : Biomes.LUKEWARM_OCEAN, fallback);
       } else if (temperature > -0.15) {
-         return this.findBiome(deep ? Biomes.DEEP_OCEAN : Biomes.OCEAN, fallback);
+         return this.findOceanBiome(deep ? Biomes.DEEP_OCEAN : Biomes.OCEAN, fallback);
       } else {
          return temperature > -0.5
-            ? this.findBiome(deep ? Biomes.DEEP_COLD_OCEAN : Biomes.COLD_OCEAN, fallback)
-            : this.findBiome(deep ? Biomes.DEEP_FROZEN_OCEAN : Biomes.FROZEN_OCEAN, fallback);
+            ? this.findOceanBiome(deep ? Biomes.DEEP_COLD_OCEAN : Biomes.COLD_OCEAN, fallback)
+            : this.findOceanBiome(deep ? Biomes.DEEP_FROZEN_OCEAN : Biomes.FROZEN_OCEAN, fallback);
       }
    }
 
@@ -188,6 +195,7 @@ public final class TerrainBiomeMixin {
 
    private static boolean allowsSnow(int blockY, double temperature) {
       return blockY >= (Integer)EarthShapeServerConfig.SNOW_ALTITUDE_BLOCKS.get()
+            && temperature < (Double)EarthShapeServerConfig.HIGH_ALTITUDE_SNOW_MAX_TEMPERATURE.get()
          || (Boolean)EarthShapeServerConfig.TUNDRA_TEMPERATURE_ENABLED.get()
             && temperature <= (Double)EarthShapeServerConfig.SNOW_TEMPERATURE_THRESHOLD.get();
    }
@@ -257,21 +265,22 @@ public final class TerrainBiomeMixin {
       return ((MultiNoiseBiomeSource)(Object)this).possibleBiomes().stream().filter(holder -> holder.is(key)).findFirst().orElse(fallback);
    }
 
+   /** Keeps the ocean decision centralized so every mapped sea cell follows its temperature band. */
+   private Holder<Biome> findOceanBiome(ResourceKey<Biome> key, Holder<Biome> fallback) {
+      return this.findBiome(key, fallback);
+   }
+
    /**
-    * Every explicit terrain.bmp class owns its surface biome.  The trees layer may only
-    * refine generic PLAINS pixels; it must never demote or replace a mapped jungle,
-    * forest, desert, wetland, hill, mountain or water class.
+    * terrain.bmp owns every surface class. A forest additionally requires actual tree
+    * cover from trees.bmp: neither a tree-only plains pixel nor bare shrub terrain may
+    * become a forest biome.
     */
    private ClimateLayers.TerrainKind surfaceTerrain(ClimateLayers layers, int blockX, int blockZ) {
       ClimateLayers.TerrainKind terrain = layers.terrainKind(blockX, blockZ);
-      if (terrain != ClimateLayers.TerrainKind.PLAINS) {
-         return terrain;
-      }
-
       ClimateLayers.TreeCover trees = layers.treeCover(blockX, blockZ);
-      return trees == ClimateLayers.TreeCover.TROPICAL
-         ? ClimateLayers.TerrainKind.JUNGLE
-         : (trees == ClimateLayers.TreeCover.TEMPERATE ? ClimateLayers.TerrainKind.FOREST : ClimateLayers.TerrainKind.PLAINS);
+      return terrain == ClimateLayers.TerrainKind.FOREST && trees == ClimateLayers.TreeCover.NONE
+         ? ClimateLayers.TerrainKind.PLAINS
+         : terrain;
    }
 
    private static boolean isVanillaBiome(Holder<Biome> biome) {

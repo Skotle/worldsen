@@ -16,7 +16,9 @@ public final class EarthShapeServerConfig {
    public static final BooleanValue TUNDRA_TEMPERATURE_ENABLED;
    public static final DoubleValue TUNDRA_TEMPERATURE_THRESHOLD;
    public static final IntValue SNOW_ALTITUDE_BLOCKS;
+   public static final DoubleValue HIGH_ALTITUDE_SNOW_MAX_TEMPERATURE;
    public static final DoubleValue SNOW_TEMPERATURE_THRESHOLD;
+   public static final DoubleValue TAIGA_TEMPERATURE_THRESHOLD;
    public static final DoubleValue TEMPERATURE_VERTICAL_SCALE;
    public static final DoubleValue TEMPERATURE_GLOBAL_WEIGHT;
    public static final DoubleValue TEMPERATURE_GLOBAL_OFFSET;
@@ -50,6 +52,7 @@ public final class EarthShapeServerConfig {
    public static final IntValue RIVER_BANK_FADE_BLOCKS;
    public static final IntValue RIVER_MINIMUM_INLAND_BLOCKS;
    public static final IntValue RIVER_CHANNEL_EDGE_FADE_BLOCKS;
+   public static final BooleanValue RIVER_FEATURE_PROTECTION_ENABLED;
    public static final BooleanValue DESERT_WATER_REDUCTION_ENABLED;
    public static final DoubleValue DESERT_RIVER_WIDTH_SCALE;
    public static final IntValue DESERT_MINIMUM_RIVER_WIDTH_BLOCKS;
@@ -80,10 +83,18 @@ public final class EarthShapeServerConfig {
             "온도맵과 무관하게 고지대 눈을 허용하는 지표 Y 높이입니다."
          )
          .defineInRange("snowAltitudeBlocks", 160, 64, 320);
+      HIGH_ALTITUDE_SNOW_MAX_TEMPERATURE = builder.comment(
+            "고지대 눈을 허용하는 온도맵 최대값입니다. 기본값 0.75는 약 30°C 경계이며, 열대 고산 지대의 부자연스러운 눈을 막습니다."
+         )
+         .defineInRange("highAltitudeSnowMaxTemperature", 0.75, -1.0, 1.0);
       SNOW_TEMPERATURE_THRESHOLD = builder.comment(
             "고지대가 아닌 곳에 눈을 허용하는 온도맵 기준입니다. 기본값 -0.625는 보라·파랑 영하 색상 구간입니다."
          )
          .defineInRange("snowTemperatureThreshold", -0.625, -1.0, 0.0);
+      TAIGA_TEMPERATURE_THRESHOLD = builder.comment(
+            "설원과 일반 온대 사이의 타이가/침엽수림 전이대 온도 기준입니다. 값을 높이면 고위도 생물군계 범위가 넓어집니다."
+         )
+         .defineInRange("taigaTemperatureThreshold", -0.15, -1.0, 0.5);
       TEMPERATURE_VERTICAL_SCALE = builder.comment(
             "온도맵의 적도 기준 세로 보정 배율입니다. 1.12는 확장 세계지도에서 남부 아프리카의 온대/고온대를 맞춥니다."
          )
@@ -164,6 +175,10 @@ public final class EarthShapeServerConfig {
             "강 바닥에서 둑으로 이어지는 완화 거리(블록)입니다. 높일수록 물가 절벽이 줄어듭니다."
          )
          .defineInRange("channelEdgeFadeBlocks", 32, 0, 128);
+      RIVER_FEATURE_PROTECTION_ENABLED = builder.comment(
+            "레이어 강 중심과 둑에서 일반 지상 피처(나무·암석·잡초 등)를 막아 수로 내부의 지저분한 구조 생성을 방지합니다."
+         )
+         .define("featureProtectionEnabled", true);
       builder.pop();
       builder.push("surface_water");
       DESERT_WATER_REDUCTION_ENABLED = builder.comment(
