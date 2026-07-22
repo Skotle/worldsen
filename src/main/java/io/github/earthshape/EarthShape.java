@@ -17,6 +17,6 @@ public final class EarthShape {
       container.registerConfig(Type.SERVER, EarthShapeServerConfig.SPEC);
       EarthShapeCompatibility.initialize();
       EarthShapeDensityFunctions.register(modBus);
-      LOGGER.info("[EarthShape] independent layer pipeline loaded for NeoForge 1.21.1.");
+      LOGGER.info("[EarthShape] rivers.bmp continentalness rewrite loaded for NeoForge 1.21.1.");
    }
 }

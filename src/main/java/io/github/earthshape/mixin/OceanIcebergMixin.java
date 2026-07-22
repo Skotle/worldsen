@@ -12,18 +12,17 @@ import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
 
-/** Stops frozen-ocean placed features from surviving after the map selects a temperate ocean. */
-@Mixin(IcebergFeature.class)
+@Mixin({IcebergFeature.class})
 public final class OceanIcebergMixin {
-   @Inject(method = "place", at = @At("HEAD"), cancellable = true)
-   private void earthshape$requireFrozenOcean(
-      FeaturePlaceContext<BlockStateConfiguration> context,
-      CallbackInfoReturnable<Boolean> callback
-   ) {
+   @Inject(
+      method = {"place"},
+      at = {@At("HEAD")},
+      cancellable = true
+   )
+   private void earthshape$requireFrozenOcean(FeaturePlaceContext<BlockStateConfiguration> context, CallbackInfoReturnable<Boolean> callback) {
       BlockPos origin = context.origin();
       if (RiversMask.INSTANCE.sampleLand(origin.getX(), origin.getZ()) < 0.25
-         && ClimateLayers.INSTANCE.temperature(origin.getX(), origin.getZ())
-            > (Double)EarthShapeServerConfig.SNOW_TEMPERATURE_THRESHOLD.get()) {
+         && ClimateLayers.INSTANCE.temperature(origin.getX(), origin.getZ()) > (Double)EarthShapeServerConfig.SNOW_TEMPERATURE_THRESHOLD.get()) {
          callback.setReturnValue(false);
       }
    }

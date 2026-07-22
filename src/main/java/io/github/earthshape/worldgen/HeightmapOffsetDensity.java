@@ -3,33 +3,51 @@ package io.github.earthshape.worldgen;
 import com.mojang.serialization.MapCodec;
 import io.github.earthshape.EarthShapeCompatibility;
 import io.github.earthshape.EarthShapeServerConfig;
-import io.github.earthshape.map.ClimateLayers;
 import io.github.earthshape.map.HeightmapLayer;
 import io.github.earthshape.map.RiversMask;
 import net.minecraft.util.KeyDispatchDataCodec;
 import net.minecraft.world.level.levelgen.DensityFunction;
+import net.minecraft.world.level.levelgen.DensityFunction.ContextProvider;
+import net.minecraft.world.level.levelgen.DensityFunction.FunctionContext;
+import net.minecraft.world.level.levelgen.DensityFunction.Visitor;
 
-/** Heightmap relief only; it neither creates water nor modifies source river widths. */
 public final class HeightmapOffsetDensity implements DensityFunction {
-    private static final MapCodec<HeightmapOffsetDensity> DATA_CODEC = MapCodec.unit(new HeightmapOffsetDensity());
-    public static final KeyDispatchDataCodec<HeightmapOffsetDensity> CODEC = KeyDispatchDataCodec.of(DATA_CODEC);
+   private static final MapCodec<HeightmapOffsetDensity> DATA_CODEC = MapCodec.unit(new HeightmapOffsetDensity());
+   public static final KeyDispatchDataCodec<HeightmapOffsetDensity> CODEC = KeyDispatchDataCodec.of(DATA_CODEC);
 
-    @Override
-    public double compute(FunctionContext context) {
-        if (EarthShapeCompatibility.disablesWorldgen() || !EarthShapeServerConfig.HEIGHTMAP_ENABLED.get()
-                || RiversMask.INSTANCE.sampleLayerLand(context.blockX(), context.blockZ()) < 0.5D) return 0.0D;
-        double elevation = HeightmapLayer.INSTANCE.sampleSmoothed(context.blockX(), context.blockZ());
-        double factor = RiversMask.INSTANCE.sampleHeightmapInlandness(context.blockX(), context.blockZ());
-        double aboveSea = Math.max(0.0D, elevation - 0.50D);
-        ClimateLayers.TerrainKind kind = ClimateLayers.INSTANCE.terrainKind(context.blockX(), context.blockZ());
-        double terrainScale = kind == ClimateLayers.TerrainKind.MOUNTAIN ? 0.35D
-                : kind == ClimateLayers.TerrainKind.HILLS ? 0.18D : 0.06D;
-        return factor * terrainScale * (aboveSea * 0.35D + aboveSea * aboveSea * 0.65D);
-    }
+   public double compute(FunctionContext context) {
+      if (!EarthShapeCompatibility.disablesWorldgen() && (Boolean)EarthShapeServerConfig.HEIGHTMAP_ENABLED.get()) {
+         double elevation = HeightmapLayer.INSTANCE.sample(context.blockX(), context.blockZ());
+         double inland = RiversMask.INSTANCE.sampleHeightmapInlandness(context.blockX(), context.blockZ());
+         double riverRelief = RiversMask.INSTANCE.sampleRiverReliefFactor(context.blockX(), context.blockZ());
+         double median = (Double)EarthShapeServerConfig.HEIGHTMAP_MEDIAN.get();
+         double deviation = elevation - median;
+         double lowland = Math.max(0.0, deviation) * 0.16;
+         double mountain = Math.max(0.0, Math.min(1.0, deviation / Math.max(0.01, 1.0 - median)));
+         double highlandLift = mountain * mountain * 0.24 + mountain * mountain * mountain * mountain * 0.3;
+         return inland * riverRelief * (lowland + highlandLift);
+      } else {
+         return 0.0;
+      }
+   }
 
-    @Override public void fillArray(double[] values, ContextProvider provider) { provider.fillAllDirectly(values, this); }
-    @Override public DensityFunction mapAll(Visitor visitor) { return visitor.apply(this); }
-    @Override public double minValue() { return 0.0D; }
-    @Override public double maxValue() { return 0.35D; }
-    @Override public KeyDispatchDataCodec<? extends DensityFunction> codec() { return CODEC; }
+   public void fillArray(double[] values, ContextProvider provider) {
+      provider.fillAllDirectly(values, this);
+   }
+
+   public DensityFunction mapAll(Visitor visitor) {
+      return visitor.apply(this);
+   }
+
+   public double minValue() {
+      return 0.0;
+   }
+
+   public double maxValue() {
+      return 0.95;
+   }
+
+   public KeyDispatchDataCodec<? extends DensityFunction> codec() {
+      return CODEC;
+   }
 }

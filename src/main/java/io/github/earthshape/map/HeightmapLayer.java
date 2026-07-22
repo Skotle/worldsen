@@ -30,25 +30,6 @@ public final class HeightmapLayer {
       }
    }
 
-   /**
-    * Removes one-pixel heightmap steps without changing the land/sea or biome masks.
-    * The weighted 3x3 kernel keeps ridges recognizable but prevents small square facets
-    * from becoming visible at the four-block world sampling scale.
-    */
-   public double sampleSmoothed(int blockX, int blockZ) {
-      int step = RiversMask.INSTANCE.blocksPerPixel();
-      double total = 0.0;
-      double weight = 0.0;
-      for (int dz = -1; dz <= 1; dz++) {
-         for (int dx = -1; dx <= 1; dx++) {
-            double sampleWeight = dx == 0 && dz == 0 ? 4.0 : (dx == 0 || dz == 0 ? 2.0 : 1.0);
-            total += this.sample(blockX + dx * step, blockZ + dz * step) * sampleWeight;
-            weight += sampleWeight;
-         }
-      }
-      return total / weight;
-   }
-
    private HeightmapLayer.Data data() {
       HeightmapLayer.Data current = this.data;
       if (current != null) {
@@ -68,7 +49,7 @@ public final class HeightmapLayer {
       long started = System.nanoTime();
 
       try {
-         HeightmapLayer.Data var15;
+         HeightmapLayer.Data var15x;
          try (InputStream input = EarthShape.class.getResourceAsStream("/earthshape/hoi4/heightmap.bmp")) {
             if (input == null) {
                throw new IOException("missing /earthshape/hoi4/heightmap.bmp");
@@ -98,12 +79,12 @@ public final class HeightmapLayer {
                .info(
                   "[EarthShape] heightmap.bmp elevation layer loaded: {}x{} in {} ms.", new Object[]{width, height, (System.nanoTime() - started) / 1000000L}
                );
-            var15 = new HeightmapLayer.Data(width, height, values);
+            var15x = new HeightmapLayer.Data(width, height, values);
          }
 
-         return var15;
-      } catch (IOException var14) {
-         throw new IllegalStateException("EarthShape could not load heightmap.bmp", var14);
+         return var15x;
+      } catch (IOException var15) {
+         throw new IllegalStateException("EarthShape could not load heightmap.bmp", var15);
       }
    }
 

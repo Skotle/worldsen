@@ -7,6 +7,8 @@ import java.io.InputStream;
 import javax.imageio.ImageIO;
 
 public final class ClimateLayers {
+   private static final int TREES_REGION_WIDTH = 5632;
+   private static final int TREES_REGION_HEIGHT = 2048;
    public static final ClimateLayers INSTANCE = new ClimateLayers();
    private volatile ClimateLayers.Data temperature;
    private volatile ClimateLayers.Data trees;
@@ -20,10 +22,7 @@ public final class ClimateLayers {
       ClimateLayers.Data layer = this.temperature();
       ClimateLayers.TemperatureSample sample = sampleFullTemperature(layer, x, z);
       double latitude = latitudeTemperature(z);
-      // The discrete temperature artwork represents the upper edge of each
-      // climate interval.  Treating it as the lower edge made every land and
-      // ocean band select the next colder vanilla biome.
-      double mapped = Math.min(1.0, sample.value * 2.0 - 0.75);
+      double mapped = sample.value * 2.0 - 1.0;
       return latitude + (mapped - latitude) * sample.coverage;
    }
 
@@ -32,12 +31,27 @@ public final class ClimateLayers {
    }
 
    public boolean hasLegacyTemperature(int x, int z) {
-      // Temperature imagery now spans the full map, including all ocean pixels.
-      return sampleFullTemperature(this.temperature(), x, z).coverage > 0.5;
+      double mapX = (double)x / (double)RiversMask.INSTANCE.blocksPerPixel() + (double)RiversMask.INSTANCE.width() * 0.5;
+      double mapZ = (double)z / (double)RiversMask.INSTANCE.blocksPerPixel() + (double)RiversMask.INSTANCE.height() * 0.5;
+      return mapX >= 0.0 && mapZ >= 0.0 && mapX < (double)RiversMask.INSTANCE.width() && mapZ < (double)RiversMask.INSTANCE.height();
    }
 
    public double vegetation(int x, int z) {
       return sample(this.trees(), x, z) * 2.0 - 1.0;
+   }
+
+   public ClimateLayers.TreeCover treeCover(int x, int z) {
+      ClimateLayers.Data layer = this.trees();
+      double worldX = (double)x / (double)RiversMask.INSTANCE.blocksPerPixel() + 2816.0;
+      double worldZ = (double)z / (double)RiversMask.INSTANCE.blocksPerPixel() + 1024.0;
+      if (!(worldX < 0.0) && !(worldZ < 0.0) && !(worldX >= 5632.0) && !(worldZ >= 2048.0)) {
+         int imageX = Math.min(layer.width - 1, (int)(worldX / 5632.0 * (double)layer.width));
+         int imageZ = Math.min(layer.height - 1, (int)(worldZ / 2048.0 * (double)layer.height));
+         int value = layer.values[imageZ * layer.width + imageX] & 255;
+         return value >= 235 ? ClimateLayers.TreeCover.TROPICAL : (value >= 150 ? ClimateLayers.TreeCover.TEMPERATE : ClimateLayers.TreeCover.NONE);
+      } else {
+         return ClimateLayers.TreeCover.NONE;
+      }
    }
 
    public ClimateLayers.TerrainKind terrainKind(int x, int z) {
@@ -188,7 +202,7 @@ public final class ClimateLayers {
 
    private static ClimateLayers.Data load(String name, ClimateLayers.Kind kind) {
       try {
-         ClimateLayers.Data var14;
+         ClimateLayers.Data var14x;
          try (InputStream input = EarthShape.class.getResourceAsStream("/earthshape/hoi4/" + name)) {
             if (input == null) {
                throw new IOException("missing " + name);
@@ -215,12 +229,12 @@ public final class ClimateLayers {
             }
 
             EarthShape.LOGGER.info("[EarthShape] {} climate layer loaded: {}x{}.", new Object[]{name, width, height});
-            var14 = new ClimateLayers.Data(width, height, values, coverage);
+            var14x = new ClimateLayers.Data(width, height, values, coverage);
          }
 
-         return var14;
-      } catch (IOException var13) {
-         throw new IllegalStateException("EarthShape could not load " + name, var13);
+         return var14x;
+      } catch (IOException var14) {
+         throw new IllegalStateException("EarthShape could not load " + name, var14);
       }
    }
 
@@ -266,10 +280,7 @@ public final class ClimateLayers {
       VEGETATION {
          @Override
          int value(int c) {
-            int r = c >>> 16 & 0xFF;
-            int g = c >>> 8 & 0xFF;
-            int b = c & 0xFF;
-            return r < 8 && g < 8 && b < 8 ? 128 : 218;
+            return ClimateLayers.Kind.treeCover(c);
          }
       },
       TERRAIN_CLASS {
@@ -297,30 +308,88 @@ public final class ClimateLayers {
          int r = color >>> 16 & 0xFF;
          int g = color >>> 8 & 0xFF;
          int b = color & 0xFF;
-         // Layers2.png uses the original eight land bands plus three explicit ocean
-         // bands.  Keeping the ocean colours in the same decoder lets the image control
-         // temperature across its complete extent rather than falling back to latitude.
-         int[] palette = new int[]{9787603, 4694770, 4772041, 10341200, 16373540, 16491568, 16540464, 14954539,
-            0x000081, 0x0000BE, 0x0082BE, 0xFC6A31, 0xA1CD53};
-         // Ocean colour mapping: #0082BE = lukewarm/warm, #0000BE = cold,
-         // #000081 = frozen.  The biome source selects the matching deep variant
-         // only where the ocean floor is actually deep.
-         int[] bands = new int[]{0, 1, 2, 3, 4, 5, 6, 8, 1, 3, 5, 6, 3};
-         int best = -1;
-         int distance = Integer.MAX_VALUE;
+         if (r > 244 && g > 244 && b > 244) {
+            return -1;
+         } else {
+            switch (color & 16777215) {
+               case 129:
+               case 9787603:
+                  return 0;
+               case 190:
+               case 10341200:
+                  return 3;
+               case 33470:
+               case 16491568:
+                  return 5;
+               case 4694770:
+                  return 1;
+               case 4772041:
+                  return 2;
+               case 14954539:
+                  return 8;
+               case 16373540:
+                  return 4;
+               case 16540464:
+                  return 6;
+               default:
+                  int[] palette = new int[]{9787603, 4694770, 4772041, 10341200, 16373540, 16491568, 16540464, 14954539, 129, 190, 33470};
+                  int[] bands = new int[]{0, 1, 2, 3, 4, 5, 6, 8, 0, 3, 5};
+                  int best = -1;
+                  int distance = Integer.MAX_VALUE;
 
-         for (int i = 0; i < palette.length; i++) {
-            int pr = palette[i] >>> 16 & 0xFF;
-            int pg = palette[i] >>> 8 & 0xFF;
-            int pb = palette[i] & 0xFF;
-            int d = (r - pr) * (r - pr) + (g - pg) * (g - pg) + (b - pb) * (b - pb);
-            if (d < distance) {
-               distance = d;
-               best = i;
+                  for (int i = 0; i < palette.length; i++) {
+                     int pr = palette[i] >>> 16 & 0xFF;
+                     int pg = palette[i] >>> 8 & 0xFF;
+                     int pb = palette[i] & 0xFF;
+                     int d = (r - pr) * (r - pr) + (g - pg) * (g - pg) + (b - pb) * (b - pb);
+                     if (d < distance) {
+                        distance = d;
+                        best = i;
+                     }
+                  }
+
+                  return distance <= 24000 ? bands[best] : -1;
             }
          }
+      }
 
-         return distance <= 7000 ? bands[best] : -1;
+      private static int treeCover(int color) {
+         int rgb = color & 16777215;
+         switch (rgb) {
+            case 0:
+               return 0;
+            case 3110936:
+               return 190;
+            case 5020723:
+               return 210;
+            case 5767306:
+            case 9830655:
+               return 255;
+            case 16776960:
+               return 80;
+            default:
+               int[] palette = new int[]{0, 3110936, 5020723, 9830655, 5767306, 16776960};
+               int[] values = new int[]{0, 190, 210, 255, 255, 80};
+               int best = 0;
+               int distance = Integer.MAX_VALUE;
+
+               for (int i = 0; i < palette.length; i++) {
+                  int d = colourDistance(rgb, palette[i]);
+                  if (d < distance) {
+                     distance = d;
+                     best = i;
+                  }
+               }
+
+               return values[best];
+         }
+      }
+
+      private static int colourDistance(int first, int second) {
+         int dr = (first >>> 16 & 0xFF) - (second >>> 16 & 0xFF);
+         int dg = (first >>> 8 & 0xFF) - (second >>> 8 & 0xFF);
+         int db = (first & 0xFF) - (second & 0xFF);
+         return dr * dr * 2 + dg * dg * 4 + db * db;
       }
    }
 
@@ -356,19 +425,105 @@ public final class ClimateLayers {
       }
 
       static ClimateLayers.TerrainKind fromColor(int color) {
-         return switch (color & 16777215) {
-            case 21074 -> JUNGLE;
-            case 22022, 444427, 3834706 -> FOREST;
-            case 532354 -> WATER;
-            case 4799247, 6050636, 11403519 -> MOUNTAIN;
-            case 4953006 -> WETLAND;
-            case 5667867, 8716032 -> PLAINS;
-            case 7359007, 7506281, 8803358 -> HILLS;
-            case 13543779, 16580352 -> DESERT;
-            case 15793920 -> SURROUNDING;
-            case 16711704, 16711807, 16711920, 16777215 -> CITY;
-            default -> PLAINS;
-         };
+         int rgb = color & 16777215;
+         switch (rgb) {
+            case 21074:
+               return JUNGLE;
+            case 22022:
+            case 444427:
+            case 3834706:
+               return FOREST;
+            case 532354:
+               return WATER;
+            case 4799247:
+            case 6050636:
+            case 11403519:
+               return MOUNTAIN;
+            case 4953006:
+               return WETLAND;
+            case 5667867:
+            case 8716032:
+               return PLAINS;
+            case 7359007:
+            case 7506281:
+            case 8803358:
+               return HILLS;
+            case 13543779:
+            case 16580352:
+               return DESERT;
+            case 15793920:
+               return SURROUNDING;
+            case 16711704:
+            case 16711807:
+            case 16711920:
+            case 16777215:
+               return CITY;
+            default:
+               ClimateLayers.TerrainKind[] kinds = new ClimateLayers.TerrainKind[]{
+                  JUNGLE,
+                  FOREST,
+                  FOREST,
+                  FOREST,
+                  WATER,
+                  MOUNTAIN,
+                  MOUNTAIN,
+                  MOUNTAIN,
+                  WETLAND,
+                  PLAINS,
+                  PLAINS,
+                  HILLS,
+                  HILLS,
+                  HILLS,
+                  DESERT,
+                  DESERT,
+                  SURROUNDING,
+                  CITY,
+                  CITY,
+                  CITY,
+                  CITY
+               };
+               int[] palette = new int[]{
+                  21074,
+                  22022,
+                  444427,
+                  3834706,
+                  532354,
+                  4799247,
+                  6050636,
+                  11403519,
+                  4953006,
+                  5667867,
+                  8716032,
+                  7359007,
+                  7506281,
+                  8803358,
+                  13543779,
+                  16580352,
+                  15793920,
+                  16711704,
+                  16711807,
+                  16711920,
+                  16777215
+               };
+               ClimateLayers.TerrainKind nearest = PLAINS;
+               int distance = Integer.MAX_VALUE;
+
+               for (int i = 0; i < palette.length; i++) {
+                  int d = ClimateLayers.Kind.colourDistance(rgb, palette[i]);
+                  if (d < distance) {
+                     distance = d;
+                     nearest = kinds[i];
+                  }
+               }
+
+               return nearest;
+         }
       }
+   }
+
+   public static enum TreeCover {
+      NONE,
+      TEMPERATE,
+      TROPICAL;
    }
 }
