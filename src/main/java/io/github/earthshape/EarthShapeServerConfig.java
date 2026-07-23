@@ -115,7 +115,7 @@ public final class EarthShapeServerConfig {
       RIVER_GAP_BRIDGE_PIXELS = builder.comment(
                       "비슷한 방향의 강 선 사이에서 연결할 수 있는 최대 누락 원본 픽셀 수. 인접한 독립된 강끼리 연결되지 않도록 2 이하로 유지하세요."
               )
-              .defineInRange("gapBridgePixels", 2, 0, 2);
+         .defineInRange("gapBridgePixels", 3, 0, 4);
       RIVER_CHANNEL_CONTINENTALNESS = builder.comment(
                       "원본 레이어 강 중심의 대륙성(continentalness) 값. 값이 낮을수록 일반 지형 생성 이전에 안정적인 얕은 수로가 형성됩니다."
               )

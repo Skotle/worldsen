@@ -69,6 +69,40 @@ public final class RiversMask {
       }
    }
 
+   /**
+    * Smooth land-side distance from the shoreline.  Unlike sampleCoastLand this never
+    * averages water into a narrow strait; it is used only to grade a land bank upward.
+    */
+   public double sampleCoastInlandness(int blockX, int blockZ, int fadeBlocks) {
+      RiversMask.Data loaded = this.data();
+      int x = (int)Math.floor((double)blockX / (double)this.blocksPerPixel() + (double)loaded.width * 0.5);
+      int z = (int)Math.floor((double)blockZ / (double)this.blocksPerPixel() + (double)loaded.height * 0.5);
+      if (x < 0 || z < 0 || x >= loaded.width || z >= loaded.height || !loaded.land.get(z * loaded.width + x)) {
+         return 0.0;
+      }
+
+      double t = Math.min(1.0, (double)(loaded.coastDistance[z * loaded.width + x] & 255) * (double)this.blocksPerPixel() / (double)Math.max(1, fadeBlocks));
+      return t * t * (3.0 - 2.0 * t);
+   }
+
+   /**
+    * Water-side counterpart of {@link #sampleCoastInlandness}.  This uses the exact
+    * distance to mapped land rather than a blurred land average, so narrow straits and
+    * enclosed seas stay water while their floor still forms a shallow continental shelf.
+    */
+   public double sampleWaterShoreProximity(int blockX, int blockZ, int fadeBlocks) {
+      RiversMask.Data loaded = this.data();
+      int x = (int)Math.floor((double)blockX / (double)this.blocksPerPixel() + (double)loaded.width * 0.5);
+      int z = (int)Math.floor((double)blockZ / (double)this.blocksPerPixel() + (double)loaded.height * 0.5);
+      if (x < 0 || z < 0 || x >= loaded.width || z >= loaded.height || loaded.land.get(z * loaded.width + x)) {
+         return 0.0;
+      }
+
+      double distance = (double)(loaded.waterCoastDistance[z * loaded.width + x] & 255) * (double)this.blocksPerPixel();
+      double t = 1.0 - Math.min(1.0, distance / (double)Math.max(1, fadeBlocks));
+      return t * t * (3.0 - 2.0 * t);
+   }
+
    public double sampleRiverReliefFactor(int blockX, int blockZ) {
       if (!(Boolean)EarthShapeServerConfig.RIVER_BIOMES_ENABLED.get()) {
          return 1.0;
@@ -77,7 +111,9 @@ public final class RiversMask {
       } else {
          double distance = this.riverCentrelineDistance(blockX, blockZ) * (double)this.blocksPerPixel();
          double riverRadius = (double)this.effectiveRiverWidthBlocks(blockX, blockZ) * 0.5;
-         int fadeBlocks = Math.max(160, (Integer)EarthShapeServerConfig.RIVER_HEIGHT_FADE_BLOCKS.get());
+         // Only soften the immediate bank.  A 160+ block relief suppression turns each
+         // river into a visibly excavated strip across otherwise natural terrain.
+         int fadeBlocks = Math.max(24, Math.min(56, (Integer)EarthShapeServerConfig.RIVER_HEIGHT_FADE_BLOCKS.get()));
          double t = Math.max(0.0, Math.min(1.0, (distance - riverRadius) / (double)fadeBlocks));
          return t * t * (3.0 - 2.0 * t);
       }
@@ -434,12 +470,13 @@ public final class RiversMask {
             byte[] riverCorners = createRiverCornerMasks(width, height, rivers);
             BitSet riverInfluence = createRiverInfluence(width, height, land, rivers);
             byte[] coastDistance = createCoastDistance(width, height, land, rivers);
+            byte[] waterCoastDistance = createWaterCoastDistance(width, height, land);
             EarthShape.LOGGER
                .info(
                   "[EarthShape] worldmap_river.png land/ocean and river mask loaded: {}x{} in {} ms.",
                   new Object[]{width, height, (System.nanoTime() - started) / 1000000L}
                );
-            var21x = new RiversMask.Data(width, height, land, rivers, riverWidths, riverCorners, riverMouths, riverInfluence, coastDistance);
+            var21x = new RiversMask.Data(width, height, land, rivers, riverWidths, riverCorners, riverMouths, riverInfluence, coastDistance, waterCoastDistance);
          }
 
          return var21x;
@@ -624,8 +661,70 @@ public final class RiversMask {
       return distance;
    }
 
+   private static byte[] createWaterCoastDistance(int width, int height, BitSet land) {
+      byte[] distance = new byte[width * height];
+      Arrays.fill(distance, (byte)127);
+
+      for (int z = 0; z < height; z++) {
+         for (int x = 0; x < width; x++) {
+            int index = z * width + x;
+            if (!land.get(index)) {
+               boolean touchesLand = false;
+               for (int dz = -1; dz <= 1 && !touchesLand; dz++) {
+                  for (int dx = -1; dx <= 1; dx++) {
+                     int nx = x + dx;
+                     int nz = z + dz;
+                     if ((dx != 0 || dz != 0) && inside(nx, nz, width, height) && land.get(nz * width + nx)) {
+                        touchesLand = true;
+                        break;
+                     }
+                  }
+               }
+               if (touchesLand) distance[index] = 0;
+            }
+         }
+      }
+
+      for (int z = 0; z < height; z++) {
+         for (int x = 0; x < width; x++) {
+            int index = z * width + x;
+            if (!land.get(index)) {
+               int best = distance[index] & 255;
+               if (x > 0 && !land.get(index - 1)) best = Math.min(best, (distance[index - 1] & 255) + 1);
+               if (z > 0) {
+                  if (!land.get(index - width)) best = Math.min(best, (distance[index - width] & 255) + 1);
+                  if (x > 0 && !land.get(index - width - 1)) best = Math.min(best, (distance[index - width - 1] & 255) + 1);
+                  if (x + 1 < width && !land.get(index - width + 1)) best = Math.min(best, (distance[index - width + 1] & 255) + 1);
+               }
+               distance[index] = (byte)Math.min(127, best);
+            }
+         }
+      }
+
+      for (int z = height - 1; z >= 0; z--) {
+         for (int x = width - 1; x >= 0; x--) {
+            int index = z * width + x;
+            if (!land.get(index)) {
+               int best = distance[index] & 255;
+               if (x + 1 < width && !land.get(index + 1)) best = Math.min(best, (distance[index + 1] & 255) + 1);
+               if (z + 1 < height) {
+                  if (!land.get(index + width)) best = Math.min(best, (distance[index + width] & 255) + 1);
+                  if (x > 0 && !land.get(index + width - 1)) best = Math.min(best, (distance[index + width - 1] & 255) + 1);
+                  if (x + 1 < width && !land.get(index + width + 1)) best = Math.min(best, (distance[index + width + 1] & 255) + 1);
+               }
+               distance[index] = (byte)Math.min(127, best);
+            }
+         }
+      }
+
+      return distance;
+   }
+
    private static void bridgeSmallRiverGaps(int width, int height, BitSet rivers, byte[] riverWidths) {
-      int maximumGap = Math.min(2, (Integer)EarthShapeServerConfig.RIVER_GAP_BRIDGE_PIXELS.get());
+      // Fine one-pixel source lines can lose several pixels during raster export.
+      // Join only similarly directed endpoints, but allow a short four-pixel bridge so
+      // those gaps do not become disconnected river segments in-game.
+      int maximumGap = Math.max(3, Math.min(4, (Integer)EarthShapeServerConfig.RIVER_GAP_BRIDGE_PIXELS.get()));
       if (maximumGap > 0) {
          BitSet sourceRivers = (BitSet)rivers.clone();
 
@@ -876,7 +975,8 @@ public final class RiversMask {
       byte[] riverCorners,
       BitSet riverMouths,
       BitSet riverInfluence,
-      byte[] coastDistance
+      byte[] coastDistance,
+      byte[] waterCoastDistance
    ) {
       double land(int x, int z) {
          return this.land.get(z * this.width + x) ? 1.0 : 0.0;

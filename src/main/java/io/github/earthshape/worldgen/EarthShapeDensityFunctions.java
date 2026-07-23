@@ -20,5 +20,6 @@ public final class EarthShapeDensityFunctions {
       TYPES.register("rivers_continents", () -> RiversContinentsDensity.CODEC.codec());
       TYPES.register("heightmap_offset", () -> HeightmapOffsetDensity.CODEC.codec());
       TYPES.register("river_bank_grade", () -> RiverBankGradeDensity.CODEC.codec());
+      TYPES.register("layer_waterline", () -> LayerWaterlineDensity.CODEC.codec());
    }
 }

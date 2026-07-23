@@ -32,22 +32,15 @@ public final class RiverBankGradeDensity implements DensityFunction {
                if (distanceBlocks >= radius) {
                   return 0.0;
                } else {
-                  // Keep the physical bed shallow like a normal vanilla river.  The broader
-                  // continentalness fade supplies the gentle banks; this only holds water.
-                  double maximumDrop = (double)Math.min(2, (Integer)EarthShapeServerConfig.RIVER_MAXIMUM_DEPTH_BLOCKS.get()) / 64.0;
+                  // Keep the actual carved bed to a single additional block.  The
+                  // continentalness shoulder handles the broad valley; applying a second
+                  // deep density carve here is what made rivers turn into ravines.
+                  double maximumDrop = (double)Math.min(1, (Integer)EarthShapeServerConfig.RIVER_MAXIMUM_DEPTH_BLOCKS.get()) / 64.0;
                   if (distanceBlocks <= floorRadius) {
                      // The shoreline starts at the surrounding terrain height and slopes
                      // into the centre of the watercourse instead of dropping vertically.
                      double centreWeight = 1.0 - distanceBlocks / Math.max(1.0, floorRadius);
                      centreWeight = centreWeight * centreWeight * (3.0 - 2.0 * centreWeight);
-                     // Seal caves below the shallow riverbed.  Without this, the normal
-                     // cave density remains open beneath a source river and exposes vertical
-                     // underwater walls even though the surface channel is shallow.
-                     double riverbedY = 62.0 - 2.0 * centreWeight;
-                     if ((double)context.blockY() < riverbedY) {
-                        return (riverbedY - (double)context.blockY()) / 16.0;
-                     }
-
                      return -maximumDrop * centreWeight;
                   }
 

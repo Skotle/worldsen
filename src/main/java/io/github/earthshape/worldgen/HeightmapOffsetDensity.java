@@ -21,6 +21,10 @@ public final class HeightmapOffsetDensity implements DensityFunction {
          double inland = RiversMask.INSTANCE.sampleHeightmapInlandness(context.blockX(), context.blockZ());
          double riverRelief = RiversMask.INSTANCE.sampleRiverReliefFactor(context.blockX(), context.blockZ());
          double median = (Double)EarthShapeServerConfig.HEIGHTMAP_MEDIAN.get();
+         // Rivers may soften lowland terrain, but must not erase the actual mountain
+         // relief from the source height map.  Restore that relief smoothly in highlands.
+         double highlandProtection = smoothstep((elevation - (median + 0.14)) / 0.20);
+         riverRelief = riverRelief + (1.0 - riverRelief) * highlandProtection;
          double deviation = elevation - median;
          double lowland = Math.max(0.0, deviation) * 0.16;
          double mountain = Math.max(0.0, Math.min(1.0, deviation / Math.max(0.01, 1.0 - median)));
@@ -49,5 +53,10 @@ public final class HeightmapOffsetDensity implements DensityFunction {
 
    public KeyDispatchDataCodec<? extends DensityFunction> codec() {
       return CODEC;
+   }
+
+   private static double smoothstep(double value) {
+      value = Math.max(0.0, Math.min(1.0, value));
+      return value * value * (3.0 - 2.0 * value);
    }
 }
