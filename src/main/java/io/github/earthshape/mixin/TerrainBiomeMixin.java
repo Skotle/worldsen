@@ -6,21 +6,60 @@ import io.github.earthshape.map.ClimateLayers;
 import io.github.earthshape.map.RiversMask;
 import net.minecraft.core.Holder;
 import net.minecraft.resources.ResourceKey;
+import net.minecraft.tags.TagKey;
 import net.minecraft.world.level.biome.Biome;
 import net.minecraft.world.level.biome.Biomes;
+import net.minecraft.world.level.biome.Climate;
 import net.minecraft.world.level.biome.MultiNoiseBiomeSource;
 import net.minecraft.world.level.biome.Climate.Sampler;
+import net.neoforged.neoforge.common.Tags;
 import org.spongepowered.asm.mixin.Mixin;
+import org.spongepowered.asm.mixin.Shadow;
 import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
 
-@Mixin({MultiNoiseBiomeSource.class})
-public final class TerrainBiomeMixin {
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.List;
+
+// TerraBlender cancels getNoiseBiome at HEAD. This mixin must run first when that
+// library is present, otherwise its RETURN hook would never be reached.
+@Mixin(value = {MultiNoiseBiomeSource.class}, priority = 2000)
+public abstract class TerrainBiomeMixin {
+   private static final AtomicBoolean TERRABLENDER_INTERCEPT_LOGGED = new AtomicBoolean();
+
+   @Shadow(remap = false)
+   public abstract Climate.ParameterList<Holder<Biome>> parameters();
+
+   @Inject(
+      method = {"getNoiseBiome(IIILnet/minecraft/world/level/biome/Climate$Sampler;)Lnet/minecraft/core/Holder;"},
+      at = {@At("HEAD")},
+      cancellable = true,
+      remap = false
+   )
+   private void earthshape$beforeTerraBlender(int quartX, int quartY, int quartZ, Sampler sampler, CallbackInfoReturnable<Holder<Biome>> callback) {
+      if (!EarthShapeCompatibility.disablesWorldgen() && EarthShapeCompatibility.isTerraBlenderLoaded()) {
+         int blockX = quartX << 2;
+         int blockY = quartY << 2;
+         int blockZ = quartZ << 2;
+         // TerraBlender replaces this method at HEAD with a weighted region RTree.
+         // EarthShape owns the final biome decision while its map worldgen is active,
+         // so cancel every lookup here rather than allowing that RTree to run on
+         // locations where the selected vanilla holder happened to be unchanged.
+         Holder<Biome> vanillaResult = this.parameters().findValue(sampler.sample(quartX, quartY, quartZ));
+         Holder<Biome> mapped = this.applyLayerBiome(ClimateLayers.INSTANCE, blockX, blockY, blockZ, vanillaResult);
+         if (TERRABLENDER_INTERCEPT_LOGGED.compareAndSet(false, true)) {
+            io.github.earthshape.EarthShape.LOGGER.info("[EarthShape] TerraBlender biome lookup intercepted; applying EarthShape layer result before TerraBlender's region RTree.");
+         }
+         callback.setReturnValue(mapped);
+      }
+   }
+
    @Inject(
       method = {"getNoiseBiome(IIILnet/minecraft/world/level/biome/Climate$Sampler;)Lnet/minecraft/core/Holder;"},
       at = {@At("RETURN")},
-      cancellable = true
+      cancellable = true,
+      remap = false
    )
    private void earthshape$chooseTerrainBiome(int quartX, int quartY, int quartZ, Sampler sampler, CallbackInfoReturnable<Holder<Biome>> callback) {
       int blockX = quartX << 2;
@@ -28,38 +67,32 @@ public final class TerrainBiomeMixin {
       int blockZ = quartZ << 2;
       if (!EarthShapeCompatibility.disablesWorldgen()) {
          ClimateLayers layers = ClimateLayers.INSTANCE;
-         // Biome lookup occurs for all vertical noise cells. Do not let the river column
-         // below Y=48 fall back to a vanilla ocean biome.
-         boolean sourceRiver = RiversMask.INSTANCE.isInlandRiver(blockX, blockZ);
-         boolean riverMouth = blockY >= 48 && RiversMask.INSTANCE.isRiverMouth(blockX, blockZ);
-         if (riverMouth) {
-            callback.setReturnValue(this.oceanBiome(layers.temperature(blockX, blockZ), blockX, blockZ, (Holder<Biome>)callback.getReturnValue()));
-            return;
-         }
-
-         if (sourceRiver) {
-            callback.setReturnValue(this.findBiome(Biomes.RIVER, (Holder<Biome>)callback.getReturnValue()));
-            return;
-         }
-
-         if (blockY < 48) {
-            return;
-         }
-
-         if (RiversMask.INSTANCE.sampleLand(blockX, blockZ) >= 0.5 && !sourceRiver && isInlandWaterBiome((Holder<Biome>)callback.getReturnValue())) {
-            callback.setReturnValue(this.mapTerrainBiome(layers, blockX, blockY, blockZ, (Holder<Biome>)callback.getReturnValue()));
-         } else if (isVanillaBiome((Holder<Biome>)callback.getReturnValue())) {
-            if (isVanillaRiver((Holder<Biome>)callback.getReturnValue())) {
-               callback.setReturnValue(this.mapTerrainBiome(layers, blockX, blockY, blockZ, (Holder<Biome>)callback.getReturnValue()));
-            } else if ((Boolean)EarthShapeServerConfig.OCEAN_TEMPERATURE_ENABLED.get() && RiversMask.INSTANCE.sampleLand(blockX, blockZ) < 0.25) {
-               long layerPoint = warpedLayerPoint(blockX, blockZ);
-               double temperature = layers.temperature(unpackX(layerPoint), unpackZ(layerPoint));
-               callback.setReturnValue(this.oceanBiome(temperature, blockX, blockZ, (Holder<Biome>)callback.getReturnValue()));
-            } else if ((Boolean)EarthShapeServerConfig.TERRAIN_BIOMES_ENABLED.get()) {
-               callback.setReturnValue(this.mapTerrainBiome(layers, blockX, blockY, blockZ, (Holder<Biome>)callback.getReturnValue()));
-            }
-         }
+         callback.setReturnValue(this.applyLayerBiome(layers, blockX, blockY, blockZ, (Holder<Biome>)callback.getReturnValue()));
       }
+   }
+
+   private Holder<Biome> applyLayerBiome(ClimateLayers layers, int blockX, int blockY, int blockZ, Holder<Biome> current) {
+      // Biome lookup occurs for all vertical noise cells. Do not let the river column
+      // below Y=48 fall back to a vanilla ocean biome.
+      boolean sourceRiver = RiversMask.INSTANCE.isInlandRiver(blockX, blockZ);
+      boolean riverMouth = blockY >= 48 && RiversMask.INSTANCE.isRiverMouth(blockX, blockZ);
+      if (riverMouth) return this.oceanBiome(layers.temperature(blockX, blockZ), blockX, blockZ, current);
+      if (sourceRiver) return this.findBiome(Biomes.RIVER, current);
+      if (blockY < 48) return current;
+      if (RiversMask.INSTANCE.sampleLand(blockX, blockZ) >= 0.5 && isInlandWaterBiome(current)) {
+         return this.mapTerrainBiome(layers, blockX, blockY, blockZ, current);
+      }
+      // TerraBlender may return a modded holder even when it is only acting as a
+      // region library. In that mode no holder may bypass terrain.bmp selection.
+      if (!isVanillaBiome(current) && !EarthShapeCompatibility.isTerraBlenderLoaded()) return current;
+      if (isVanillaRiver(current)) return this.mapTerrainBiome(layers, blockX, blockY, blockZ, current);
+      if ((Boolean)EarthShapeServerConfig.OCEAN_TEMPERATURE_ENABLED.get() && RiversMask.INSTANCE.sampleLand(blockX, blockZ) < 0.25) {
+         long layerPoint = warpedLayerPoint(blockX, blockZ);
+         return this.oceanBiome(layers.temperature(unpackX(layerPoint), unpackZ(layerPoint)), blockX, blockZ, current);
+      }
+      return ((Boolean)EarthShapeServerConfig.TERRAIN_BIOMES_ENABLED.get() || EarthShapeCompatibility.isTerraBlenderLoaded())
+         ? this.mapTerrainBiome(layers, blockX, blockY, blockZ, current)
+         : current;
    }
 
    private Holder<Biome> mapTerrainBiome(ClimateLayers layers, int blockX, int blockY, int blockZ, Holder<Biome> fallback) {
@@ -72,6 +105,8 @@ public final class TerrainBiomeMixin {
       int region = regionalVariant(blockX, blockZ);
       boolean nextToLayerRiver = RiversMask.INSTANCE.isNearInlandRiver(blockX, blockZ, 32);
       if (!nextToLayerRiver && isCoastalLand(blockX, blockZ)) {
+         Holder<Biome> terraBeach = this.terraBlenderTaggedBiome(Tags.Biomes.IS_BEACH, blockX, blockZ);
+         if (terraBeach != null) return terraBeach;
          if (terrain == ClimateLayers.TerrainKind.HILLS || terrain == ClimateLayers.TerrainKind.MOUNTAIN) {
             return this.findBiome(Biomes.STONY_SHORE, fallback);
          }
@@ -82,6 +117,8 @@ public final class TerrainBiomeMixin {
             return this.findBiome(snowAllowed ? Biomes.SNOWY_BEACH : Biomes.BEACH, fallback);
          }
       }
+      Holder<Biome> terraBiome = this.terraBlenderTerrainBiome(terrain, snowAllowed, blockX, blockZ);
+      if (terraBiome != null) return terraBiome;
       return switch (terrain) {
          case DESERT -> layers.isMesaRegion(blockX, blockZ)
          ? this.findBiome(region % 10 == 0 ? Biomes.ERODED_BADLANDS : (region % 5 == 0 ? Biomes.WOODED_BADLANDS : Biomes.BADLANDS), fallback)
@@ -133,6 +170,8 @@ public final class TerrainBiomeMixin {
 
    private Holder<Biome> oceanBiome(double temperature, int blockX, int blockZ, Holder<Biome> fallback) {
       boolean deep = isOpenOcean(blockX, blockZ);
+      Holder<Biome> terraOcean = this.terraBlenderTaggedBiome(Tags.Biomes.IS_OCEAN, blockX, blockZ);
+      if (terraOcean != null) return terraOcean;
       if (temperature > 0.65) {
          return this.findBiome(Biomes.WARM_OCEAN, fallback);
       } else if (temperature > 0.15) {
@@ -233,6 +272,33 @@ public final class TerrainBiomeMixin {
 
    private Holder<Biome> findBiome(ResourceKey<Biome> key, Holder<Biome> fallback) {
       return ((MultiNoiseBiomeSource)(Object)this).possibleBiomes().stream().filter(holder -> holder.is(key)).findFirst().orElse(fallback);
+   }
+
+   /**
+    * TerraBlender may append mod biome holders during startup, but it never gets to
+    * select them. EarthShape selects only holders whose published biome tag matches
+    * the terrain.bmp class at this exact map position.
+    */
+   private Holder<Biome> terraBlenderTerrainBiome(ClimateLayers.TerrainKind terrain, boolean snowAllowed, int blockX, int blockZ) {
+      if (!EarthShapeCompatibility.isTerraBlenderLoaded()) return null;
+      return switch (terrain) {
+         case DESERT -> this.terraBlenderTaggedBiome(ClimateLayers.INSTANCE.isMesaRegion(blockX, blockZ) ? Tags.Biomes.IS_BADLANDS : Tags.Biomes.IS_DESERT, blockX, blockZ);
+         case WETLAND -> this.terraBlenderTaggedBiome(Tags.Biomes.IS_SWAMP, blockX, blockZ);
+         case JUNGLE -> this.terraBlenderTaggedBiome(Tags.Biomes.IS_JUNGLE, blockX, blockZ);
+         case FOREST -> this.terraBlenderTaggedBiome(snowAllowed ? Tags.Biomes.IS_TAIGA : Tags.Biomes.IS_FOREST, blockX, blockZ);
+         case HILLS -> this.terraBlenderTaggedBiome(Tags.Biomes.IS_MOUNTAIN_SLOPE, blockX, blockZ);
+         case MOUNTAIN -> this.terraBlenderTaggedBiome(snowAllowed ? Tags.Biomes.IS_MOUNTAIN_PEAK : Tags.Biomes.IS_MOUNTAIN, blockX, blockZ);
+         case WATER -> this.terraBlenderTaggedBiome(Tags.Biomes.IS_OCEAN, blockX, blockZ);
+         case PLAINS, CITY, SURROUNDING -> null;
+      };
+   }
+
+   private Holder<Biome> terraBlenderTaggedBiome(TagKey<Biome> tag, int blockX, int blockZ) {
+      if (!EarthShapeCompatibility.isTerraBlenderLoaded()) return null;
+      List<Holder<Biome>> candidates = ((MultiNoiseBiomeSource)(Object)this).possibleBiomes().stream()
+         .filter(holder -> !isVanillaBiome(holder) && holder.is(tag))
+         .toList();
+      return candidates.isEmpty() ? null : candidates.get(regionalVariant(blockX, blockZ) % candidates.size());
    }
 
    private ClimateLayers.TerrainKind surfaceTerrain(ClimateLayers layers, int blockX, int blockZ) {
