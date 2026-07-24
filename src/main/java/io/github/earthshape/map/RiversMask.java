@@ -516,7 +516,12 @@ public final class RiversMask {
             }
          }
 
-         if (support >= 16) {
+         // A wide painted river has fewer surrounding land pixels than a one-pixel
+         // tributary.  Requiring 16 of 25 pixels therefore discarded many genuine
+         // inland main-channel cells before the density functions ever saw them.
+         // Eight still rejects open-ocean ink while retaining a continuous inland
+         // corridor for both narrow and wide source strokes.
+         if (support >= 8) {
             land.set(index);
          }
       }
