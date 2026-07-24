@@ -3,6 +3,7 @@ package io.github.earthshape.mixin;
 import io.github.earthshape.EarthShapeCompatibility;
 import io.github.earthshape.EarthShapeServerConfig;
 import io.github.earthshape.map.ClimateLayers;
+import io.github.earthshape.map.HeightmapLayer;
 import io.github.earthshape.map.RiversMask;
 import net.minecraft.core.Holder;
 import net.minecraft.resources.ResourceKey;
@@ -15,11 +16,14 @@ import net.minecraft.world.level.biome.Climate.Sampler;
 import net.neoforged.neoforge.common.Tags;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.Shadow;
+import org.spongepowered.asm.mixin.Unique;
 import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
 
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.ArrayList;
 import java.util.List;
 
 // TerraBlender cancels getNoiseBiome at HEAD. This mixin must run first when that
@@ -27,6 +31,11 @@ import java.util.List;
 @Mixin(value = {MultiNoiseBiomeSource.class}, priority = 2000)
 public abstract class TerrainBiomeMixin {
    private static final AtomicBoolean TERRABLENDER_INTERCEPT_LOGGED = new AtomicBoolean();
+
+   // One RTree per layer family is built lazily. The old implementation evaluated
+   // every vanilla parameter point for every quart biome sample.
+   @Unique
+   private final ConcurrentHashMap<Integer, Climate.ParameterList<Holder<Biome>>> earthshape$filteredParameterLists = new ConcurrentHashMap<>();
 
    @Shadow(remap = false)
    public abstract Climate.ParameterList<Holder<Biome>> parameters();
@@ -46,8 +55,9 @@ public abstract class TerrainBiomeMixin {
          // EarthShape owns the final biome decision while its map worldgen is active,
          // so cancel every lookup here rather than allowing that RTree to run on
          // locations where the selected vanilla holder happened to be unchanged.
-         Holder<Biome> vanillaResult = this.parameters().findValue(sampler.sample(quartX, quartY, quartZ));
-         Holder<Biome> mapped = this.applyLayerBiome(ClimateLayers.INSTANCE, blockX, blockY, blockZ, vanillaResult);
+         ClimateLayers layers = ClimateLayers.INSTANCE;
+         Climate.TargetPoint point = this.guidedClimatePoint(layers, blockX, blockZ, sampler.sample(quartX, quartY, quartZ));
+         Holder<Biome> mapped = this.selectLayerCandidate(layers, blockX, blockY, blockZ, point);
          if (TERRABLENDER_INTERCEPT_LOGGED.compareAndSet(false, true)) {
             io.github.earthshape.EarthShape.LOGGER.info("[EarthShape] TerraBlender biome lookup intercepted; applying EarthShape layer result before TerraBlender's region RTree.");
          }
@@ -67,8 +77,128 @@ public abstract class TerrainBiomeMixin {
       int blockZ = quartZ << 2;
       if (!EarthShapeCompatibility.disablesWorldgen()) {
          ClimateLayers layers = ClimateLayers.INSTANCE;
-         callback.setReturnValue(this.applyLayerBiome(layers, blockX, blockY, blockZ, (Holder<Biome>)callback.getReturnValue()));
+         if ((Boolean)EarthShapeServerConfig.TERRAIN_BIOMES_ENABLED.get()) {
+            Climate.TargetPoint point = this.guidedClimatePoint(layers, blockX, blockZ, sampler.sample(quartX, quartY, quartZ));
+            callback.setReturnValue(this.selectLayerCandidate(layers, blockX, blockY, blockZ, point));
+         }
       }
+   }
+
+   /**
+    * Converts map layers into the axes used by vanilla's ParameterList.  The layers
+    * are guidance, not a post-generation biome paint: the final holder is still the
+    * closest vanilla climate entry chosen from the allowed terrain family.
+    */
+   private Climate.TargetPoint guidedClimatePoint(ClimateLayers layers, int blockX, int blockZ, Climate.TargetPoint source) {
+      ClimateLayers.TerrainKind terrain = layers.terrainKind(blockX, blockZ);
+      ClimateLayers.TreeCover trees = layers.treeCover(blockX, blockZ);
+      float temperature = (float)layers.temperature(blockX, blockZ);
+      float humidity = -0.08F;
+      float continentalness = RiversMask.INSTANCE.sampleLayerLand(blockX, blockZ) >= 0.5 ? 0.14F : -0.50F;
+      float erosion = 0.48F;
+      float depth = Climate.unquantizeCoord(source.depth()) * 0.20F;
+      float weirdness = Climate.unquantizeCoord(source.weirdness()) * 0.20F;
+      float relief = (float)Math.max(
+         layers.steepness(blockX, blockZ),
+         Math.max(0.0, (HeightmapLayer.INSTANCE.sample(blockX, blockZ) - 0.50) / 0.50)
+      );
+
+      // trees.bmp only refines already-vegetated terrain.  It cannot turn an explicit
+      // plains or desert colour into a forest/jungle family.
+      switch (terrain) {
+         case WATER -> continentalness = -0.62F;
+         case DESERT -> {
+            temperature = Math.max(temperature, 0.78F);
+            humidity = -0.82F;
+            continentalness = 0.12F;
+            erosion = 0.34F;
+         }
+         case WETLAND -> {
+            humidity = 0.82F;
+            erosion = 0.72F;
+         }
+         case FOREST -> {
+            humidity = trees == ClimateLayers.TreeCover.TROPICAL ? 0.80F : 0.58F;
+            erosion = 0.48F - relief * 0.14F;
+         }
+         case JUNGLE -> {
+            temperature = Math.max(temperature, 0.72F);
+            humidity = 0.92F;
+            erosion = 0.46F;
+         }
+         case HILLS -> {
+            continentalness = 0.24F;
+            erosion = -0.55F;
+            weirdness = 0.46F;
+         }
+         case MOUNTAIN -> {
+            continentalness = 0.36F;
+            erosion = -0.82F;
+            weirdness = 0.76F;
+         }
+         case PLAINS, CITY, SURROUNDING -> {
+            humidity = -0.06F;
+            erosion = 0.64F - relief * 0.12F;
+         }
+      }
+
+      if ((Boolean)EarthShapeServerConfig.RIVER_BIOMES_ENABLED.get() && RiversMask.INSTANCE.isInlandRiver(blockX, blockZ)) {
+         // Exact valley values from OverworldBiomeBuilder's river range. Temperature
+         // stays layer-driven, so frozen source rivers resolve to FROZEN_RIVER.
+         continentalness = -0.05F;
+         erosion = 0.30F;
+         depth = 0.0F;
+         weirdness = 0.0F;
+      }
+      return Climate.target(temperature, humidity, continentalness, erosion, depth, weirdness);
+   }
+
+   /**
+    * Run the normal vanilla nearest-parameter calculation, constrained only to the
+    * biome family represented by terrain.bmp at this point.  No fixed biome key or
+    * hash-based variant is chosen here.
+    */
+   private Holder<Biome> selectLayerCandidate(ClimateLayers layers, int blockX, int blockY, int blockZ, Climate.TargetPoint point) {
+      ClimateLayers.TerrainKind terrain = layers.terrainKind(blockX, blockZ);
+      boolean sourceRiver = (Boolean)EarthShapeServerConfig.RIVER_BIOMES_ENABLED.get() && RiversMask.INSTANCE.isInlandRiver(blockX, blockZ);
+      boolean riverMouth = RiversMask.INSTANCE.isRiverMouth(blockX, blockZ);
+      int group = sourceRiver ? 1 : (riverMouth || terrain == ClimateLayers.TerrainKind.WATER ? 2 : terrain.ordinal() + 3);
+      Climate.ParameterList<Holder<Biome>> candidates = this.earthshape$filteredParameterLists.computeIfAbsent(
+         group,
+         ignored -> this.createFilteredParameterList(terrain, sourceRiver, riverMouth)
+      );
+      return candidates.findValue(point);
+   }
+
+   private Climate.ParameterList<Holder<Biome>> createFilteredParameterList(
+      ClimateLayers.TerrainKind terrain, boolean sourceRiver, boolean riverMouth
+   ) {
+      List<com.mojang.datafixers.util.Pair<Climate.ParameterPoint, Holder<Biome>>> allowed = new ArrayList<>();
+      for (var entry : this.parameters().values()) {
+         if (this.isAllowedTerrainCandidate(terrain, sourceRiver, riverMouth, entry.getSecond())) {
+            allowed.add(entry);
+         }
+      }
+      // A datapack can omit an entire vanilla tag family. Preserve vanilla's
+      // behaviour in that case instead of crashing while constructing an empty RTree.
+      return allowed.isEmpty() ? this.parameters() : new Climate.ParameterList<>(List.copyOf(allowed));
+   }
+
+   private boolean isAllowedTerrainCandidate(ClimateLayers.TerrainKind terrain, boolean sourceRiver, boolean riverMouth, Holder<Biome> biome) {
+      if (sourceRiver) return biome.is(Tags.Biomes.IS_RIVER) || isVanillaRiver(biome);
+      if (riverMouth || terrain == ClimateLayers.TerrainKind.WATER) return biome.is(Tags.Biomes.IS_OCEAN);
+      return switch (terrain) {
+         case DESERT -> biome.is(Tags.Biomes.IS_DESERT) || biome.is(Tags.Biomes.IS_BADLANDS);
+         case WETLAND -> biome.is(Tags.Biomes.IS_SWAMP);
+         case FOREST -> biome.is(Tags.Biomes.IS_FOREST) || biome.is(Tags.Biomes.IS_TAIGA);
+         case JUNGLE -> biome.is(Tags.Biomes.IS_JUNGLE);
+         case HILLS -> biome.is(Tags.Biomes.IS_HILL) || biome.is(Tags.Biomes.IS_MOUNTAIN_SLOPE);
+         case MOUNTAIN -> biome.is(Tags.Biomes.IS_MOUNTAIN) || biome.is(Tags.Biomes.IS_MOUNTAIN_PEAK);
+         case PLAINS, CITY, SURROUNDING -> biome.is(Tags.Biomes.IS_PLAINS)
+            || biome.is(Biomes.SAVANNA) || biome.is(Biomes.SAVANNA_PLATEAU)
+            || biome.is(Biomes.SNOWY_PLAINS) || biome.is(Biomes.ICE_SPIKES);
+         case WATER -> false;
+      };
    }
 
    private Holder<Biome> applyLayerBiome(ClimateLayers layers, int blockX, int blockY, int blockZ, Holder<Biome> current) {

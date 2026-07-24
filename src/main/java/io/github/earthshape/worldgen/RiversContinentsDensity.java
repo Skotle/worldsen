@@ -26,24 +26,24 @@ public record RiversContinentsDensity(DensityFunction argument) implements Densi
          double softenedLand = land * land * (3.0 - 2.0 * land);
          double continentalness = -0.65 + softenedLand * 0.85;
          if (land >= 0.5) {
-            // Grade mapped land from the shoreline to inland continental relief over a
-            // full coastal band instead of restoring it in one source pixel.
+            // Both sides of every mapped shore meet at the same water-safe coast value.
+            // Keeping separate land/ocean anchor values here creates a density step at
+            // every shoreline, which is visible as an artificial coastal wall.
             double inlandness = RiversMask.INSTANCE.sampleCoastInlandness(
                context.blockX(), context.blockZ(), Math.max(480, (Integer)EarthShapeServerConfig.COAST_HEIGHT_FADE_BLOCKS.get())
             );
-            // Keep mapped land close to the normal vanilla coast/lowland range.  The
-            // old -0.08..0.20 band raised every continent into a high plateau before
-            // the height map was even applied.
-            continentalness = -0.18 + 0.22 * inlandness;
+            // -0.20 stays on the ocean side of vanilla's land threshold. Land then
+            // rises gradually to the normal near-inland value rather than receiving a
+            // separate coast carve.
+            continentalness = -0.20 + 0.23 * inlandness;
          } else {
-            // Use the matching water-side distance field so every mapped coast has a
-            // continuous continentalness slope.  Keep the highest ocean value safely
-            // close to the land-side coast value, then ease into deep ocean across the
-            // full available coastal band.
+            // Use the matching water-side distance field. At the shoreline this is
+            // exactly the land-side -0.20; only farther offshore does it descend into
+            // deep-ocean continentalness.
             double shore = RiversMask.INSTANCE.sampleWaterShoreProximity(
                context.blockX(), context.blockZ(), Math.max(480, (Integer)EarthShapeServerConfig.COAST_HEIGHT_FADE_BLOCKS.get())
             );
-            continentalness = -0.65 + 0.18 * shore;
+            continentalness = -0.65 + 0.45 * shore;
          }
          if ((Boolean)EarthShapeServerConfig.RIVER_BIOMES_ENABLED.get()
             && land > 0.5
@@ -59,17 +59,17 @@ public record RiversContinentsDensity(DensityFunction argument) implements Densi
                // flattens an entire corridor beside every river and looks artificially
                // excavated from above.
                double channelRadius = floorRadius
-                  + (double)Math.max(32, Math.min(56, (Integer)EarthShapeServerConfig.RIVER_CHANNEL_EDGE_FADE_BLOCKS.get()));
+                  + (double)Math.max(96, Math.min(160, (Integer)EarthShapeServerConfig.RIVER_CHANNEL_EDGE_FADE_BLOCKS.get()));
                if (distance < channelRadius) {
                   // A river needs to reach the vanilla water table, not merely select the
                   // RIVER biome.  Keep this independent from an old persisted config value:
                   // a value close to zero leaves only a coloured biome line with dry land.
                   // The channel stays in the normal density pipeline, so no elevated water
                   // is injected above the terrain.
-                  // Stay in the shallow-coast band rather than the deep-ocean band.
-                  // The RIVER biome override supplies the river ecology; this value only
-                  // controls the physical floor and keeps it a few blocks below sea level.
-                  double centreChannel = -0.18;
+                  // Keep the channel in the shallow river/near-coast range. The old
+                  // -0.18 target pushed ordinary inland terrain straight into an ocean
+                  // value at the first river pixel, producing a deep trench.
+                  double centreChannel = -0.12;
                   double floorWeight = 1.0 - Math.min(1.0, distance / Math.max(1.0, floorRadius));
                   floorWeight = floorWeight * floorWeight * (3.0 - 2.0 * floorWeight);
                   double shoulderWeight = 1.0 - Math.min(1.0, distance / Math.max(1.0, channelRadius));
@@ -80,10 +80,12 @@ public record RiversContinentsDensity(DensityFunction argument) implements Densi
                   double median = (Double)EarthShapeServerConfig.HEIGHTMAP_MEDIAN.get();
                   double highlandProtection = smoothstep((HeightmapLayer.INSTANCE.sample(context.blockX(), context.blockZ()) - (median + 0.14)) / 0.20);
                   shoulderWeight *= 1.0 - highlandProtection;
-                  // At the painted edge the target is ordinary lowland, then the shoulder
-                  // blends back into the surrounding continentalness without a hard wall.
-                  double target = 0.02 + (centreChannel - 0.02) * floorWeight;
-                  continentalness += (target - continentalness) * shoulderWeight;
+                  // Never raise an already-low coastal value. Inland terrain eases into
+                  // the shallow channel target across the full bank instead of flipping
+                  // to a negative continentalness value in one source sample.
+                  double target = Math.min(continentalness, centreChannel);
+                  double influence = shoulderWeight * (0.30 + 0.70 * floorWeight);
+                  continentalness += (target - continentalness) * influence;
                }
             }
          }

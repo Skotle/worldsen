@@ -51,16 +51,16 @@ public final class LayerWaterlineDensity implements DensityFunction {
 
       double distance = RiversMask.INSTANCE.riverCentrelineDistance(x, z) * (double)RiversMask.INSTANCE.blocksPerPixel();
       double floorRadius = (double)width / 2.0;
-      double bankRadius = floorRadius + 56.0;
+      double bankRadius = floorRadius + 96.0;
       double bankWeight = 1.0 - Math.min(1.0, distance / bankRadius);
       bankWeight = bankWeight * bankWeight * (3.0 - 2.0 * bankWeight);
       if (bankWeight <= 0.0) return 0.0;
 
-      // The centre reaches vanilla sea level; neighbouring ground is only eased over
-      // the short bank, avoiding a vertical ravine but never making elevated water.
-      double capY = 63.0 + (1.0 - bankWeight) * 56.0;
+      // Keep the watercourse shallow. A large vertical cap carve made the density
+      // change from normal land to deep water in one block at the source stroke.
+      double capY = 63.0 + (1.0 - bankWeight) * 16.0;
       if ((double)y > capY) {
-         return -1.25 * carveStrength * bankWeight * Math.min(1.0, ((double)y - capY) / 24.0);
+         return -0.35 * carveStrength * bankWeight * Math.min(1.0, ((double)y - capY) / 16.0);
       }
       if (distance <= floorRadius) {
          // A real river cross-section: one block at the shores, then a smooth fall to
