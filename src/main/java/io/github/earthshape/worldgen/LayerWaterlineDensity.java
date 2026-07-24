@@ -29,7 +29,10 @@ public final class LayerWaterlineDensity implements DensityFunction {
       int y = context.blockY();
       int z = context.blockZ();
 
-      if ((Boolean)EarthShapeServerConfig.RIVER_BIOMES_ENABLED.get() && RiversMask.INSTANCE.isInlandRiver(x, z)) {
+      // Use the same raster influence field as the continentalness density.  Restricting
+      // this to an exact centreline sample made diagonal and pixel-edge segments miss
+      // the 4-block density grid, leaving dry land gaps in an otherwise continuous line.
+      if ((Boolean)EarthShapeServerConfig.RIVER_BIOMES_ENABLED.get() && RiversMask.INSTANCE.hasInlandRiverInfluence(x, z)) {
          return riverGrade(x, y, z);
       }
 
@@ -42,12 +45,10 @@ public final class LayerWaterlineDensity implements DensityFunction {
       int width = RiversMask.INSTANCE.effectiveRiverWidthBlocks(x, z);
       if (width <= 0) return 0.0;
 
-      // A painted river crossing a mountain must not turn the whole mountain into a
-      // sea-level trench.  Above the highland threshold, retain progressively more of
-      // the height-map relief and leave the local vanilla terrain to form the valley.
+      // Preserve mountain relief at the outer bank, but never abandon the painted
+      // channel core.  Returning early here left a dry land line along most rivers
+      // that crossed elevated terrain.
       double highlandProtection = highlandProtection(x, z);
-      if (highlandProtection >= 0.98) return 0.0;
-      double carveStrength = 1.0 - highlandProtection;
 
       double distance = RiversMask.INSTANCE.riverCentrelineDistance(x, z) * (double)RiversMask.INSTANCE.blocksPerPixel();
       double floorRadius = (double)width / 2.0;
@@ -55,6 +56,8 @@ public final class LayerWaterlineDensity implements DensityFunction {
       double bankWeight = 1.0 - Math.min(1.0, distance / bankRadius);
       bankWeight = bankWeight * bankWeight * (3.0 - 2.0 * bankWeight);
       if (bankWeight <= 0.0) return 0.0;
+      boolean channelCore = distance <= floorRadius;
+      double carveStrength = channelCore ? 1.0 : 1.0 - highlandProtection;
 
       // The centre reaches vanilla sea level; neighbouring ground is only eased over
       // the short bank, avoiding a vertical ravine but never making elevated water.
@@ -62,7 +65,7 @@ public final class LayerWaterlineDensity implements DensityFunction {
       if ((double)y > capY) {
          return -1.25 * carveStrength * bankWeight * Math.min(1.0, ((double)y - capY) / 24.0);
       }
-      if (distance <= floorRadius) {
+      if (channelCore) {
          // A real river cross-section: one block at the shores, then a smooth fall to
          // three blocks at the centre.  A constant deep floor makes the edge drop in one
          // block and reads as an artificial trench.

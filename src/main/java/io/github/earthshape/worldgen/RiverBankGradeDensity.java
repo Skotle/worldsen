@@ -32,10 +32,12 @@ public final class RiverBankGradeDensity implements DensityFunction {
                if (distanceBlocks >= radius) {
                   return 0.0;
                } else {
-                  // Keep the actual carved bed to a single additional block.  The
-                  // continentalness shoulder handles the broad valley; applying a second
-                  // deep density carve here is what made rivers turn into ravines.
-                  double maximumDrop = (double)Math.min(1, (Integer)EarthShapeServerConfig.RIVER_MAXIMUM_DEPTH_BLOCKS.get()) / 64.0;
+                  // This is an offset in the normal 1.21 density graph, not a block
+                  // replacement.  It combines with continentalness and the vertical
+                  // gradient to form a valley before the aquifer fills it.  The old
+                  // min(1, configuredDepth) accidentally limited every configured
+                  // depth to one block, leaving a dry biome-coloured line.
+                  double maximumDrop = (double)(Integer)EarthShapeServerConfig.RIVER_MAXIMUM_DEPTH_BLOCKS.get() / 64.0;
                   if (distanceBlocks <= floorRadius) {
                      // The shoreline starts at the surrounding terrain height and slopes
                      // into the centre of the watercourse instead of dropping vertically.

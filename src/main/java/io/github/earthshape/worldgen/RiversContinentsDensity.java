@@ -69,7 +69,10 @@ public record RiversContinentsDensity(DensityFunction argument) implements Densi
                   // Stay in the shallow-coast band rather than the deep-ocean band.
                   // The RIVER biome override supplies the river ecology; this value only
                   // controls the physical floor and keeps it a few blocks below sea level.
-                  double centreChannel = -0.18;
+                  // Honour the server setting.  The former hard-coded -0.18 only
+                  // selected a shallow lowland climate and left much of the source
+                  // river path above the water table.
+                  double centreChannel = (Double)EarthShapeServerConfig.RIVER_CHANNEL_CONTINENTALNESS.get();
                   double floorWeight = 1.0 - Math.min(1.0, distance / Math.max(1.0, floorRadius));
                   floorWeight = floorWeight * floorWeight * (3.0 - 2.0 * floorWeight);
                   double shoulderWeight = 1.0 - Math.min(1.0, distance / Math.max(1.0, channelRadius));
@@ -79,11 +82,14 @@ public record RiversContinentsDensity(DensityFunction argument) implements Densi
                   // riverbed while genuine mountain terrain keeps its outer profile.
                   double median = (Double)EarthShapeServerConfig.HEIGHTMAP_MEDIAN.get();
                   double highlandProtection = smoothstep((HeightmapLayer.INSTANCE.sample(context.blockX(), context.blockZ()) - (median + 0.14)) / 0.20);
-                  shoulderWeight *= 1.0 - highlandProtection;
+                  // Protect the outer bank in mountains, never the painted channel
+                  // core itself.  Suppressing both weights here was what let terrain
+                  // re-cover a river in elevated and forested regions.
+                  double channelWeight = Math.max(floorWeight, shoulderWeight * (1.0 - highlandProtection));
                   // At the painted edge the target is ordinary lowland, then the shoulder
                   // blends back into the surrounding continentalness without a hard wall.
                   double target = 0.02 + (centreChannel - 0.02) * floorWeight;
-                  continentalness += (target - continentalness) * shoulderWeight;
+                  continentalness += (target - continentalness) * channelWeight;
                }
             }
          }

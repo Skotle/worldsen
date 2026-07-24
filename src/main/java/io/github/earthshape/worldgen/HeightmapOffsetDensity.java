@@ -21,10 +21,21 @@ public final class HeightmapOffsetDensity implements DensityFunction {
          double inland = RiversMask.INSTANCE.sampleHeightmapInlandness(context.blockX(), context.blockZ());
          double riverRelief = RiversMask.INSTANCE.sampleRiverReliefFactor(context.blockX(), context.blockZ());
          double median = (Double)EarthShapeServerConfig.HEIGHTMAP_MEDIAN.get();
-         // Rivers may soften lowland terrain, but must not erase the actual mountain
-         // relief from the source height map.  Restore that relief smoothly in highlands.
-         double highlandProtection = smoothstep((elevation - (median + 0.14)) / 0.20);
-         riverRelief = riverRelief + (1.0 - riverRelief) * highlandProtection;
+         int riverWidth = RiversMask.INSTANCE.effectiveRiverWidthBlocks(context.blockX(), context.blockZ());
+         double riverDistance = RiversMask.INSTANCE.riverCentrelineDistance(context.blockX(), context.blockZ())
+            * (double)RiversMask.INSTANCE.blocksPerPixel();
+         boolean channelCore = RiversMask.INSTANCE.hasInlandRiverInfluence(context.blockX(), context.blockZ())
+            && riverWidth > 0
+            && riverDistance <= (double)riverWidth / 2.0;
+         if (channelCore) {
+            // The waterline density owns the source channel. Do not restore mapped
+            // mountain lift over its centre, or the terrain fills the river again.
+            riverRelief = 0.0;
+         } else {
+            // Rivers may soften lowland terrain, but preserve the outer mountain bank.
+            double highlandProtection = smoothstep((elevation - (median + 0.14)) / 0.20);
+            riverRelief = riverRelief + (1.0 - riverRelief) * highlandProtection;
+         }
          double deviation = elevation - median;
          double lowland = Math.max(0.0, deviation) * 0.16;
          double mountain = Math.max(0.0, Math.min(1.0, deviation / Math.max(0.01, 1.0 - median)));

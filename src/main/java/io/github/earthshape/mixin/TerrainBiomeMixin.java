@@ -46,8 +46,9 @@ public abstract class TerrainBiomeMixin {
          // EarthShape owns the final biome decision while its map worldgen is active,
          // so cancel every lookup here rather than allowing that RTree to run on
          // locations where the selected vanilla holder happened to be unchanged.
-         Holder<Biome> vanillaResult = this.parameters().findValue(sampler.sample(quartX, quartY, quartZ));
-         Holder<Biome> mapped = this.applyLayerBiome(ClimateLayers.INSTANCE, blockX, blockY, blockZ, vanillaResult);
+         ClimateLayers layers = ClimateLayers.INSTANCE;
+         Holder<Biome> vanillaResult = this.parameters().findValue(this.guidedClimatePoint(layers, blockX, blockZ, sampler.sample(quartX, quartY, quartZ)));
+         Holder<Biome> mapped = this.applyLayerBiome(layers, blockX, blockY, blockZ, vanillaResult);
          if (TERRABLENDER_INTERCEPT_LOGGED.compareAndSet(false, true)) {
             io.github.earthshape.EarthShape.LOGGER.info("[EarthShape] TerraBlender biome lookup intercepted; applying EarthShape layer result before TerraBlender's region RTree.");
          }
@@ -67,8 +68,83 @@ public abstract class TerrainBiomeMixin {
       int blockZ = quartZ << 2;
       if (!EarthShapeCompatibility.disablesWorldgen()) {
          ClimateLayers layers = ClimateLayers.INSTANCE;
-         callback.setReturnValue(this.applyLayerBiome(layers, blockX, blockY, blockZ, (Holder<Biome>)callback.getReturnValue()));
+         Holder<Biome> guided = (Boolean)EarthShapeServerConfig.TERRAIN_BIOMES_ENABLED.get()
+            ? this.parameters().findValue(this.guidedClimatePoint(layers, blockX, blockZ, sampler.sample(quartX, quartY, quartZ)))
+            : (Holder<Biome>)callback.getReturnValue();
+         callback.setReturnValue(this.applyLayerBiome(layers, blockX, blockY, blockZ, guided));
       }
+   }
+
+   /**
+    * Converts the map layers into vanilla's five climate axes.  The biome source
+    * still performs the final nearest-parameter lookup, so normal variant noise and
+    * every mod biome registered in the source remain part of the selection.
+    */
+   private Climate.TargetPoint guidedClimatePoint(ClimateLayers layers, int blockX, int blockZ, Climate.TargetPoint source) {
+      float temperature = (float)layers.temperature(blockX, blockZ);
+      float humidity = switch (layers.treeCover(blockX, blockZ)) {
+         case TROPICAL -> 0.85F;
+         case TEMPERATE -> 0.45F;
+         case NONE -> -0.25F;
+      };
+      float continentalness = RiversMask.INSTANCE.sampleLayerLand(blockX, blockZ) >= 0.5 ? 0.16F : -0.42F;
+      float erosion = 0.30F;
+      float weirdness = Climate.unquantizeCoord(source.weirdness());
+      float depth = Climate.unquantizeCoord(source.depth());
+      // terrain.bmp is the primary land-class mask.  Do not let trees.bmp promote a
+      // mapped plain into a jungle/forest; tree coverage only refines humidity inside
+      // a terrain class that already allows vegetation.
+      ClimateLayers.TerrainKind terrain = layers.terrainKind(blockX, blockZ);
+
+      // The two remaining vanilla noise axes were previously passed through at full
+      // strength. Their valleys and peaks can dominate an otherwise clear terrain
+      // mask (especially in central Africa), producing long unrelated strips. Keep
+      // a small amount for natural variation, but make the map layers decisive.
+      if (terrain != ClimateLayers.TerrainKind.WATER) {
+         weirdness *= 0.35F;
+         depth *= 0.35F;
+      }
+
+      switch (terrain) {
+         case WATER -> continentalness = -0.65F;
+         case DESERT -> {
+            temperature = Math.max(temperature, 0.72F);
+            humidity = -0.68F;
+            // Do not let a low elevation or an unrecognised river-colour pixel turn
+            // an explicit desert mask into a near-coast plains climate. A recognised
+            // source river is still handled by the hard river branch below.
+            continentalness = 0.20F;
+            erosion = 0.22F;
+         }
+         case WETLAND -> {
+            humidity = 0.80F;
+            erosion = 0.68F;
+         }
+         case JUNGLE -> {
+            temperature = Math.max(temperature, 0.78F);
+            humidity = 0.92F;
+         }
+         case FOREST -> humidity = Math.max(humidity, 0.68F);
+         case HILLS -> {
+            continentalness = 0.26F;
+            erosion = -0.58F;
+            weirdness = Math.copySign(Math.max(Math.abs(weirdness), 0.48F), weirdness == 0.0F ? 1.0F : weirdness);
+         }
+         case MOUNTAIN -> {
+            continentalness = 0.38F;
+            erosion = -0.82F;
+            weirdness = Math.copySign(Math.max(Math.abs(weirdness), 0.76F), weirdness == 0.0F ? 1.0F : weirdness);
+         }
+         case PLAINS, CITY, SURROUNDING -> {
+            // H=2 is the vanilla plains/savanna band. This keeps a green tree overlay
+            // from overriding the explicit plains colour in terrain.bmp.
+            humidity = -0.05F;
+            erosion = 0.62F;
+         }
+      }
+
+      if (RiversMask.INSTANCE.isInlandRiver(blockX, blockZ)) continentalness = -0.08F;
+      return Climate.target(temperature, humidity, continentalness, erosion, depth, weirdness);
    }
 
    private Holder<Biome> applyLayerBiome(ClimateLayers layers, int blockX, int blockY, int blockZ, Holder<Biome> current) {
@@ -79,20 +155,29 @@ public abstract class TerrainBiomeMixin {
       if (riverMouth) return this.oceanBiome(layers.temperature(blockX, blockZ), blockX, blockZ, current);
       if (sourceRiver) return this.findBiome(Biomes.RIVER, current);
       if (blockY < 48) return current;
-      if (RiversMask.INSTANCE.sampleLand(blockX, blockZ) >= 0.5 && isInlandWaterBiome(current)) {
+      ClimateLayers.TerrainKind terrain = layers.terrainKind(blockX, blockZ);
+      // The climate point guides selection first.  When a mod's parameter list still
+      // returns a biome from a different terrain class, reject just that mismatch.
+      // This removes isolated noise islands without flattening normal variants inside
+      // a valid terrain class.
+      if (!this.matchesTerrainClass(terrain, current, layers.isMesaRegion(blockX, blockZ))) {
          return this.mapTerrainBiome(layers, blockX, blockY, blockZ, current);
       }
-      // TerraBlender may return a modded holder even when it is only acting as a
-      // region library. In that mode no holder may bypass terrain.bmp selection.
-      if (!isVanillaBiome(current) && !EarthShapeCompatibility.isTerraBlenderLoaded()) return current;
-      if (isVanillaRiver(current)) return this.mapTerrainBiome(layers, blockX, blockY, blockZ, current);
-      if ((Boolean)EarthShapeServerConfig.OCEAN_TEMPERATURE_ENABLED.get() && RiversMask.INSTANCE.sampleLand(blockX, blockZ) < 0.25) {
-         long layerPoint = warpedLayerPoint(blockX, blockZ);
-         return this.oceanBiome(layers.temperature(unpackX(layerPoint), unpackZ(layerPoint)), blockX, blockZ, current);
-      }
-      return ((Boolean)EarthShapeServerConfig.TERRAIN_BIOMES_ENABLED.get() || EarthShapeCompatibility.isTerraBlenderLoaded())
-         ? this.mapTerrainBiome(layers, blockX, blockY, blockZ, current)
-         : current;
+      return current;
+   }
+
+   private boolean matchesTerrainClass(ClimateLayers.TerrainKind terrain, Holder<Biome> biome, boolean mesaRegion) {
+      return switch (terrain) {
+         case WATER -> biome.is(Tags.Biomes.IS_OCEAN);
+         case DESERT -> biome.is(Tags.Biomes.IS_DESERT) || mesaRegion && biome.is(Tags.Biomes.IS_BADLANDS);
+         case WETLAND -> biome.is(Tags.Biomes.IS_SWAMP);
+         case JUNGLE -> biome.is(Tags.Biomes.IS_JUNGLE);
+         case FOREST -> biome.is(Tags.Biomes.IS_FOREST) || biome.is(Tags.Biomes.IS_TAIGA);
+         case HILLS -> biome.is(Tags.Biomes.IS_HILL) || biome.is(Tags.Biomes.IS_MOUNTAIN_SLOPE);
+         case MOUNTAIN -> biome.is(Tags.Biomes.IS_MOUNTAIN) || biome.is(Tags.Biomes.IS_MOUNTAIN_PEAK);
+         case PLAINS -> biome.is(Tags.Biomes.IS_PLAINS);
+         case CITY, SURROUNDING -> true;
+      };
    }
 
    private Holder<Biome> mapTerrainBiome(ClimateLayers layers, int blockX, int blockY, int blockZ, Holder<Biome> fallback) {
