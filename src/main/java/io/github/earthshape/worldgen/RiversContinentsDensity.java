@@ -66,10 +66,14 @@ public record RiversContinentsDensity(DensityFunction argument) implements Densi
                   // a value close to zero leaves only a coloured biome line with dry land.
                   // The channel stays in the normal density pipeline, so no elevated water
                   // is injected above the terrain.
-                  // Keep the channel in the shallow river/near-coast range. The old
-                  // -0.18 target pushed ordinary inland terrain straight into an ocean
-                  // value at the first river pixel, producing a deep trench.
-                  double centreChannel = -0.12;
+                  // Drive the normal terrain spline into the vanilla valley range at
+                  // the painted centreline. The configurable value is bounded to the
+                  // shallow river band so an old extreme config cannot create an ocean
+                  // trench from a one-pixel source line.
+                  double centreChannel = Math.max(
+                     -0.20,
+                     Math.min(-0.12, (Double)EarthShapeServerConfig.RIVER_CHANNEL_CONTINENTALNESS.get())
+                  );
                   double floorWeight = 1.0 - Math.min(1.0, distance / Math.max(1.0, floorRadius));
                   floorWeight = floorWeight * floorWeight * (3.0 - 2.0 * floorWeight);
                   double shoulderWeight = 1.0 - Math.min(1.0, distance / Math.max(1.0, channelRadius));
@@ -84,7 +88,10 @@ public record RiversContinentsDensity(DensityFunction argument) implements Densi
                   // the shallow channel target across the full bank instead of flipping
                   // to a negative continentalness value in one source sample.
                   double target = Math.min(continentalness, centreChannel);
-                  double influence = shoulderWeight * (0.30 + 0.70 * floorWeight);
+                  // Mountain protection applies only to the outer shoulder. The source
+                  // centreline must still reach a valley value, otherwise mountain and
+                  // plateau rivers collapse into disconnected biome-only strokes.
+                  double influence = floorWeight + (1.0 - floorWeight) * shoulderWeight * 0.30;
                   continentalness += (target - continentalness) * influence;
                }
             }

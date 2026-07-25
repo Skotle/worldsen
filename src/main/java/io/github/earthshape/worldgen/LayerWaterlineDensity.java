@@ -46,8 +46,9 @@ public final class LayerWaterlineDensity implements DensityFunction {
       // sea-level trench.  Above the highland threshold, retain progressively more of
       // the height-map relief and leave the local vanilla terrain to form the valley.
       double highlandProtection = highlandProtection(x, z);
-      if (highlandProtection >= 0.98) return 0.0;
-      double carveStrength = 1.0 - highlandProtection;
+      // Do not erase the painted river in highlands. Keep a reduced, shallow channel
+      // there while reserving full protection for its outer banks.
+      double carveStrength = 0.20 + 0.80 * (1.0 - highlandProtection);
 
       double distance = RiversMask.INSTANCE.riverCentrelineDistance(x, z) * (double)RiversMask.INSTANCE.blocksPerPixel();
       double floorRadius = (double)width / 2.0;

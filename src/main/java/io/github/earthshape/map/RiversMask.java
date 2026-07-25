@@ -377,8 +377,8 @@ public final class RiversMask {
       double previousX = startX;
       double previousZ = startZ;
 
-      for (int step = 1; step <= 5; step++) {
-         double t = (double)step / 5.0;
+      for (int step = 1; step <= 9; step++) {
+         double t = (double)step / 9.0;
          double inverse = 1.0 - t;
          double nextX = inverse * inverse * startX + 2.0 * inverse * t * controlX + t * t * endX;
          double nextZ = inverse * inverse * startZ + 2.0 * inverse * t * controlZ + t * t * endZ;
@@ -581,6 +581,25 @@ public final class RiversMask {
          int z = index / width;
          int mask = 0;
          int count = 0;
+
+         // Raster lines at a right-angle corner also touch diagonally.  Counting all
+         // eight neighbours therefore sees three pixels and used to leave the corner
+         // as a hard L.  Prefer the four cardinal directions for a real turn, then
+         // keep the old eight-neighbour fallback for diagonal-only source lines.
+         boolean west = inside(x - 1, z, width, height) && rivers.get(z * width + x - 1);
+         boolean east = inside(x + 1, z, width, height) && rivers.get(z * width + x + 1);
+         boolean north = inside(x, z - 1, width, height) && rivers.get((z - 1) * width + x);
+         boolean south = inside(x, z + 1, width, height) && rivers.get((z + 1) * width + x);
+         int cardinalCount = (west ? 1 : 0) + (east ? 1 : 0) + (north ? 1 : 0) + (south ? 1 : 0);
+         if (cardinalCount == 2 && !(west && east) && !(north && south)) {
+            int cardinalMask = 0;
+            if (west) cardinalMask |= neighbourBit(-1, 0);
+            if (east) cardinalMask |= neighbourBit(1, 0);
+            if (north) cardinalMask |= neighbourBit(0, -1);
+            if (south) cardinalMask |= neighbourBit(0, 1);
+            corners[index] = (byte)cardinalMask;
+            continue;
+         }
 
          for (int dz = -1; dz <= 1; dz++) {
             for (int dx = -1; dx <= 1; dx++) {

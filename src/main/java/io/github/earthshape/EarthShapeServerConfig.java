@@ -119,7 +119,7 @@ public final class EarthShapeServerConfig {
       RIVER_CHANNEL_CONTINENTALNESS = builder.comment(
                       "원본 레이어 강 중심의 대륙성(continentalness) 값. 값이 낮을수록 일반 지형 생성 이전에 안정적인 얕은 수로가 형성됩니다."
               )
-              .defineInRange("channelContinentalness", -0.42, -0.8, -0.05);
+              .defineInRange("channelContinentalness", -0.17, -0.8, -0.05);
       RIVER_BANK_FADE_BLOCKS = builder.comment(
                       "각 강둑을 주변 지형으로 자연스럽게 경사지게 만드는 실제 블록 거리. 맵 픽셀에 비례해서는 안 되며, 그렇지 않으면 blocksPerPixel 값이 클 때 강이 과도하게 커집니다."
               )
