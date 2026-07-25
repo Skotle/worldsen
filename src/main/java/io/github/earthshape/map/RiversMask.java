@@ -111,11 +111,13 @@ public final class RiversMask {
       } else {
          double distance = this.riverCentrelineDistance(blockX, blockZ) * (double)this.blocksPerPixel();
          double riverRadius = (double)this.effectiveRiverWidthBlocks(blockX, blockZ) * 0.5;
-         // Only soften the immediate bank.  A 160+ block relief suppression turns each
-         // river into a visibly excavated strip across otherwise natural terrain.
+         // Keep the source relief intact except immediately around the centreline.
+         // A cubic factor avoids the full-width, flat-bottomed trench that a hard
+         // distance cutoff produces on raster-derived rivers.
          int fadeBlocks = Math.max(24, Math.min(56, (Integer)EarthShapeServerConfig.RIVER_HEIGHT_FADE_BLOCKS.get()));
-         double t = Math.max(0.0, Math.min(1.0, (distance - riverRadius) / (double)fadeBlocks));
-         return t * t * (3.0 - 2.0 * t);
+         double rawFactor = Math.max(0.0, 1.0 - distance / Math.max(1.0, riverRadius + (double)fadeBlocks));
+         double sharpRiverFactor = rawFactor * rawFactor * rawFactor;
+         return 1.0 - sharpRiverFactor;
       }
    }
 

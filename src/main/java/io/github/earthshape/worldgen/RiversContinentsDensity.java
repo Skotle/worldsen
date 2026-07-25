@@ -92,6 +92,7 @@ public record RiversContinentsDensity(DensityFunction argument) implements Densi
                   // centreline must still reach a valley value, otherwise mountain and
                   // plateau rivers collapse into disconnected biome-only strokes.
                   double influence = floorWeight + (1.0 - floorWeight) * shoulderWeight * 0.30;
+                  influence *= slopeDamping(context.blockX(), context.blockZ());
                   continentalness += (target - continentalness) * influence;
                }
             }
@@ -126,5 +127,11 @@ public record RiversContinentsDensity(DensityFunction argument) implements Densi
    private static double smoothstep(double value) {
       value = Math.max(0.0, Math.min(1.0, value));
       return value * value * (3.0 - 2.0 * value);
+   }
+
+   private static double slopeDamping(int x, int z) {
+      double slope = Math.abs(HeightmapLayer.INSTANCE.sample(x + 1, z) - HeightmapLayer.INSTANCE.sample(x - 1, z))
+         + Math.abs(HeightmapLayer.INSTANCE.sample(x, z + 1) - HeightmapLayer.INSTANCE.sample(x, z - 1));
+      return 1.0 / (1.0 + slope * 255.0 * 0.5);
    }
 }
