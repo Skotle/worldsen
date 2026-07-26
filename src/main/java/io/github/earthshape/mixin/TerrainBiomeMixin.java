@@ -3,7 +3,6 @@ package io.github.earthshape.mixin;
 import io.github.earthshape.EarthShapeCompatibility;
 import io.github.earthshape.EarthShapeServerConfig;
 import io.github.earthshape.map.ClimateLayers;
-import io.github.earthshape.map.HeightmapLayer;
 import io.github.earthshape.map.RiversMask;
 import net.minecraft.core.Holder;
 import net.minecraft.resources.ResourceKey;
@@ -98,10 +97,7 @@ public abstract class TerrainBiomeMixin {
       float erosion = 0.48F;
       float depth = Climate.unquantizeCoord(source.depth()) * 0.20F;
       float weirdness = Climate.unquantizeCoord(source.weirdness()) * 0.20F;
-      float relief = (float)Math.max(
-         layers.steepness(blockX, blockZ),
-         Math.max(0.0, (HeightmapLayer.INSTANCE.sample(blockX, blockZ) - 0.50) / 0.50)
-      );
+      float relief = (float)layers.steepness(blockX, blockZ);
 
       // trees.bmp only refines already-vegetated terrain.  It cannot turn an explicit
       // plains or desert colour into a forest/jungle family.
@@ -162,20 +158,22 @@ public abstract class TerrainBiomeMixin {
       ClimateLayers.TerrainKind terrain = layers.terrainKind(blockX, blockZ);
       boolean sourceRiver = (Boolean)EarthShapeServerConfig.RIVER_BIOMES_ENABLED.get() && RiversMask.INSTANCE.isInlandRiver(blockX, blockZ);
       boolean riverMouth = RiversMask.INSTANCE.isRiverMouth(blockX, blockZ);
-      int group = sourceRiver ? 1 : (riverMouth || terrain == ClimateLayers.TerrainKind.WATER ? 2 : terrain.ordinal() + 3);
+      boolean frozenPeaksAllowed = layers.isUltraMountain(blockX, blockZ) || layers.isPolarTemperatureZone(blockX, blockZ);
+      int group = (sourceRiver ? 1 : (riverMouth || terrain == ClimateLayers.TerrainKind.WATER ? 2 : terrain.ordinal() + 3)) * 2
+         + (frozenPeaksAllowed ? 1 : 0);
       Climate.ParameterList<Holder<Biome>> candidates = this.earthshape$filteredParameterLists.computeIfAbsent(
          group,
-         ignored -> this.createFilteredParameterList(terrain, sourceRiver, riverMouth)
+         ignored -> this.createFilteredParameterList(terrain, sourceRiver, riverMouth, frozenPeaksAllowed)
       );
       return candidates.findValue(point);
    }
 
    private Climate.ParameterList<Holder<Biome>> createFilteredParameterList(
-      ClimateLayers.TerrainKind terrain, boolean sourceRiver, boolean riverMouth
+      ClimateLayers.TerrainKind terrain, boolean sourceRiver, boolean riverMouth, boolean frozenPeaksAllowed
    ) {
       List<com.mojang.datafixers.util.Pair<Climate.ParameterPoint, Holder<Biome>>> allowed = new ArrayList<>();
       for (var entry : this.parameters().values()) {
-         if (this.isAllowedTerrainCandidate(terrain, sourceRiver, riverMouth, entry.getSecond())) {
+         if (this.isAllowedTerrainCandidate(terrain, sourceRiver, riverMouth, frozenPeaksAllowed, entry.getSecond())) {
             allowed.add(entry);
          }
       }
@@ -184,7 +182,8 @@ public abstract class TerrainBiomeMixin {
       return allowed.isEmpty() ? this.parameters() : new Climate.ParameterList<>(List.copyOf(allowed));
    }
 
-   private boolean isAllowedTerrainCandidate(ClimateLayers.TerrainKind terrain, boolean sourceRiver, boolean riverMouth, Holder<Biome> biome) {
+   private boolean isAllowedTerrainCandidate(ClimateLayers.TerrainKind terrain, boolean sourceRiver, boolean riverMouth, boolean frozenPeaksAllowed, Holder<Biome> biome) {
+      if (biome.is(Biomes.FROZEN_PEAKS) && !frozenPeaksAllowed) return false;
       if (sourceRiver) return biome.is(Tags.Biomes.IS_RIVER) || isVanillaRiver(biome);
       if (riverMouth || terrain == ClimateLayers.TerrainKind.WATER) return biome.is(Tags.Biomes.IS_OCEAN);
       return switch (terrain) {
@@ -193,7 +192,10 @@ public abstract class TerrainBiomeMixin {
          case FOREST -> biome.is(Tags.Biomes.IS_FOREST) || biome.is(Tags.Biomes.IS_TAIGA);
          case JUNGLE -> biome.is(Tags.Biomes.IS_JUNGLE);
          case HILLS -> biome.is(Tags.Biomes.IS_HILL) || biome.is(Tags.Biomes.IS_MOUNTAIN_SLOPE);
-         case MOUNTAIN -> biome.is(Tags.Biomes.IS_MOUNTAIN) || biome.is(Tags.Biomes.IS_MOUNTAIN_PEAK);
+         // A normal terrain-layer mountain must not become a snowy peak merely because
+         // vanilla's altitude noise picked a peak entry. Only white ultra-mountains or
+         // the mapped polar temperature band are allowed to select Frozen Peaks.
+         case MOUNTAIN -> frozenPeaksAllowed ? biome.is(Biomes.FROZEN_PEAKS) : biome.is(Biomes.STONY_PEAKS);
          case PLAINS, CITY, SURROUNDING -> biome.is(Tags.Biomes.IS_PLAINS)
             || biome.is(Biomes.SAVANNA) || biome.is(Biomes.SAVANNA_PLATEAU)
             || biome.is(Biomes.SNOWY_PLAINS) || biome.is(Biomes.ICE_SPIKES);
@@ -232,6 +234,7 @@ public abstract class TerrainBiomeMixin {
       ClimateLayers.TerrainKind terrain = this.surfaceTerrain(layers, blockX, blockZ);
       double temperature = layers.temperature(layerX, layerZ);
       boolean snowAllowed = allowsSnow(blockY, temperature);
+      boolean frozenPeaksAllowed = layers.isUltraMountain(blockX, blockZ) || layers.isPolarTemperatureZone(blockX, blockZ);
       int region = regionalVariant(blockX, blockZ);
       boolean nextToLayerRiver = RiversMask.INSTANCE.isNearInlandRiver(blockX, blockZ, 32);
       if (!nextToLayerRiver && isCoastalLand(blockX, blockZ)) {
@@ -247,7 +250,7 @@ public abstract class TerrainBiomeMixin {
             return this.findBiome(snowAllowed ? Biomes.SNOWY_BEACH : Biomes.BEACH, fallback);
          }
       }
-      Holder<Biome> terraBiome = this.terraBlenderTerrainBiome(terrain, snowAllowed, blockX, blockZ);
+      Holder<Biome> terraBiome = this.terraBlenderTerrainBiome(terrain, snowAllowed, frozenPeaksAllowed, blockX, blockZ);
       if (terraBiome != null) return terraBiome;
       return switch (terrain) {
          case DESERT -> layers.isMesaRegion(blockX, blockZ)
@@ -259,9 +262,7 @@ public abstract class TerrainBiomeMixin {
          case HILLS -> snowAllowed
          ? this.findBiome(temperature < -0.55 ? Biomes.SNOWY_SLOPES : Biomes.GROVE, fallback)
          : this.findBiome(temperature > 0.45 ? Biomes.WINDSWEPT_SAVANNA : (region % 5 == 0 ? Biomes.WINDSWEPT_FOREST : Biomes.WINDSWEPT_HILLS), fallback);
-         case MOUNTAIN -> snowAllowed
-         ? this.findBiome(temperature < -0.55 ? Biomes.FROZEN_PEAKS : Biomes.JAGGED_PEAKS, fallback)
-         : this.findBiome(Biomes.STONY_PEAKS, fallback);
+         case MOUNTAIN -> this.findBiome(frozenPeaksAllowed ? Biomes.FROZEN_PEAKS : Biomes.STONY_PEAKS, fallback);
          case PLAINS, CITY, SURROUNDING -> this.plainsBiome(temperature, snowAllowed, region, fallback);
          case WATER -> this.oceanBiome(temperature, blockX, blockZ, fallback);
       };
@@ -353,7 +354,7 @@ public abstract class TerrainBiomeMixin {
          return packPoint(blockX, blockZ);
       } else {
          int strength = Math.min((Integer)EarthShapeServerConfig.BIOME_BOUNDARY_WARP_BLOCKS.get(), Math.max(4, RiversMask.INSTANCE.blocksPerPixel() * 3 / 4));
-         if (strength == 0) {
+         if (strength == 0 || ClimateLayers.INSTANCE.isTerrainBoundary(blockX, blockZ, Math.max(8, strength * 2))) {
             return packPoint(blockX, blockZ);
          } else {
             int warpedX = blockX + (int)Math.round(smoothNoise(blockX, blockZ, 7640891576956012809L) * (double)strength);
@@ -409,7 +410,7 @@ public abstract class TerrainBiomeMixin {
     * select them. EarthShape selects only holders whose published biome tag matches
     * the terrain.bmp class at this exact map position.
     */
-   private Holder<Biome> terraBlenderTerrainBiome(ClimateLayers.TerrainKind terrain, boolean snowAllowed, int blockX, int blockZ) {
+   private Holder<Biome> terraBlenderTerrainBiome(ClimateLayers.TerrainKind terrain, boolean snowAllowed, boolean frozenPeaksAllowed, int blockX, int blockZ) {
       if (!EarthShapeCompatibility.isTerraBlenderLoaded()) return null;
       return switch (terrain) {
          case DESERT -> this.terraBlenderTaggedBiome(ClimateLayers.INSTANCE.isMesaRegion(blockX, blockZ) ? Tags.Biomes.IS_BADLANDS : Tags.Biomes.IS_DESERT, blockX, blockZ);
@@ -417,7 +418,7 @@ public abstract class TerrainBiomeMixin {
          case JUNGLE -> this.terraBlenderTaggedBiome(Tags.Biomes.IS_JUNGLE, blockX, blockZ);
          case FOREST -> this.terraBlenderTaggedBiome(snowAllowed ? Tags.Biomes.IS_TAIGA : Tags.Biomes.IS_FOREST, blockX, blockZ);
          case HILLS -> this.terraBlenderTaggedBiome(Tags.Biomes.IS_MOUNTAIN_SLOPE, blockX, blockZ);
-         case MOUNTAIN -> this.terraBlenderTaggedBiome(snowAllowed ? Tags.Biomes.IS_MOUNTAIN_PEAK : Tags.Biomes.IS_MOUNTAIN, blockX, blockZ);
+         case MOUNTAIN -> frozenPeaksAllowed ? this.terraBlenderTaggedBiome(Tags.Biomes.IS_MOUNTAIN_PEAK, blockX, blockZ) : null;
          case WATER -> this.terraBlenderTaggedBiome(Tags.Biomes.IS_OCEAN, blockX, blockZ);
          case PLAINS, CITY, SURROUNDING -> null;
       };

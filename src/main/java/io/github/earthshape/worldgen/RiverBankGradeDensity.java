@@ -35,7 +35,10 @@ public final class RiverBankGradeDensity implements DensityFunction {
                   // Keep the actual carved bed to a single additional block.  The
                   // continentalness shoulder handles the broad valley; applying a second
                   // deep density carve here is what made rivers turn into ravines.
-                  double maximumDrop = (double)Math.min(1, (Integer)EarthShapeServerConfig.RIVER_MAXIMUM_DEPTH_BLOCKS.get()) / 64.0;
+                  // Never allow an old or hand-edited config to make a source river
+                  // deeper than the supported seven-block bed.  The grade itself stays
+                  // shallow; continentalness supplies the remaining vanilla valley.
+                  double maximumDrop = (double)Math.min(1, Math.min(7, (Integer)EarthShapeServerConfig.RIVER_MAXIMUM_DEPTH_BLOCKS.get())) / 64.0;
                   if (distanceBlocks <= floorRadius) {
                      // The shoreline starts at the surrounding terrain height and slopes
                      // into the centre of the watercourse instead of dropping vertically.

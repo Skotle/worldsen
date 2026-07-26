@@ -10,8 +10,10 @@ public final class EarthShapeServerConfig {
    public static final ModConfigSpec SPEC;
    public static final IntValue BLOCKS_PER_PIXEL;
    public static final BooleanValue CONTINENTS_ENABLED;
-   public static final BooleanValue HEIGHTMAP_ENABLED;
+   public static final BooleanValue TERRAIN_NOISE_ENABLED;
    public static final BooleanValue TERRAIN_BIOMES_ENABLED;
+   public static final IntValue TERRAIN_BIOME_MINIMUM_REGION_PIXELS;
+   public static final IntValue TERRAIN_BIOME_ISOLATED_MINIMUM_REGION_PIXELS;
    public static final BooleanValue OCEAN_TEMPERATURE_ENABLED;
    public static final BooleanValue TUNDRA_TEMPERATURE_ENABLED;
    public static final DoubleValue TUNDRA_TEMPERATURE_THRESHOLD;
@@ -23,7 +25,7 @@ public final class EarthShapeServerConfig {
    public static final IntValue BIOME_BOUNDARY_WARP_BLOCKS;
    public static final IntValue COAST_HEIGHT_FADE_BLOCKS;
    public static final IntValue RIVER_HEIGHT_FADE_BLOCKS;
-   public static final DoubleValue HEIGHTMAP_MEDIAN;
+   public static final IntValue MOUNTAIN_NOISE_MAXIMUM_HEIGHT_BLOCKS;
    public static final IntValue RIVER_MAXIMUM_DEPTH_BLOCKS;
    public static final IntValue RIVER_WIDTH_000064;
    public static final IntValue RIVER_WIDTH_000096;
@@ -55,9 +57,13 @@ public final class EarthShapeServerConfig {
       builder.pop();
       builder.push("layers");
       CONTINENTS_ENABLED = builder.comment("rivers.bmp를 대륙(육지/바다) 마스크로 사용합니다.").define("continentsEnabled", true);
-      HEIGHTMAP_ENABLED = builder.comment("heightmap.bmp를 지형 높이와 산맥 기복에 사용합니다.").define("heightmapEnabled", true);
+      TERRAIN_NOISE_ENABLED = builder.comment("바닐라 밀도 노이즈에 산맥·구릉용 연속 노이즈를 더합니다.").define("terrainNoiseEnabled", true);
       TERRAIN_BIOMES_ENABLED = builder.comment("기후에 맞는 바이옴을 선택하기 전, terrain.bmp를 세부 지역 지형 분류에 사용합니다.")
               .define("terrainBiomesEnabled", true);
+      TERRAIN_BIOME_MINIMUM_REGION_PIXELS = builder.comment("Minimum connected terrain.bmp region area in source pixels. Smaller fragments merge into surrounding terrain.")
+              .defineInRange("terrainBiomeMinimumRegionPixels", 4, 1, 4096);
+      TERRAIN_BIOME_ISOLATED_MINIMUM_REGION_PIXELS = builder.comment("Minimum source-pixel area for a terrain island surrounded by one terrain family.")
+              .defineInRange("terrainBiomeIsolatedMinimumRegionPixels", 12, 1, 4096);
       OCEAN_TEMPERATURE_ENABLED = builder.comment("해양 바이옴의 온도를 선택할 때만 earth_temperature.png를 사용합니다.").define("oceanTemperatureEnabled", true);
       TUNDRA_TEMPERATURE_ENABLED = builder.comment("충분히 추운 육지에서 툰드라, 타이가, 설산 바이옴을 선택할 때 earth_temperature.png를 사용합니다.")
               .define("tundraTemperatureEnabled", true);
@@ -87,16 +93,14 @@ public final class EarthShapeServerConfig {
               .defineInRange("biomeBoundaryWarpBlocks", 12, 0, 64);
       builder.pop();
       builder.push("terrain_shaping");
-      COAST_HEIGHT_FADE_BLOCKS = builder.comment("해안선의 음(-)의 경사에서 heightmap 기복이 상승하기 시작하는 해안으로부터의 거리.")
+      COAST_HEIGHT_FADE_BLOCKS = builder.comment("해안선 대륙붕 경사가 완만하게 이어지는 해안으로부터의 거리.")
               .defineInRange("coastHeightFadeBlocks", 320, 20, 1024);
-      RIVER_HEIGHT_FADE_BLOCKS = builder.comment("수면 높이에서 heightmap 기복이 상승하기 시작하는 원본 강둑으로부터의 거리.")
+      RIVER_HEIGHT_FADE_BLOCKS = builder.comment("강변 경사가 완만하게 이어지는 원본 강둑으로부터의 거리.")
               .defineInRange("riverHeightFadeBlocks", 160, 20, 1024);
-      HEIGHTMAP_MEDIAN = builder.comment(
-                      "정규화된 heightmap 중간값. 이 값보다 낮으면 음(-)의 기복을, 높으면 점점 더 강한 양(+)의 기복을 받습니다."
-              )
-              .defineInRange("heightmapMedian", 0.5, 0.05, 0.95);
+      MOUNTAIN_NOISE_MAXIMUM_HEIGHT_BLOCKS = builder.comment("terrain.bmp 산악 등급 안에서 연속 노이즈가 더할 수 있는 최대 고도(블록).")
+              .defineInRange("mountainNoiseMaximumHeightBlocks", 120, 32, 192);
       RIVER_MAXIMUM_DEPTH_BLOCKS = builder.comment("바닐라 대수층 및 지표 생성 이전, 원본 강 바닥이 내려가는 최대 블록 수.")
-              .defineInRange("riverMaximumDepthBlocks", 6, 2, 32);
+              .defineInRange("riverMaximumDepthBlocks", 7, 1, 7);
       builder.pop();
       builder.push("river_widths");
       RIVER_WIDTH_000064 = builder.comment("rivers.bmp 색상 #000064의 강 너비(블록 단위).").defineInRange("color_000064", 27, 1, 256);

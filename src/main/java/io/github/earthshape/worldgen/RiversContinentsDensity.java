@@ -4,7 +4,6 @@ import com.mojang.serialization.MapCodec;
 import com.mojang.serialization.codecs.RecordCodecBuilder;
 import io.github.earthshape.EarthShapeCompatibility;
 import io.github.earthshape.EarthShapeServerConfig;
-import io.github.earthshape.map.HeightmapLayer;
 import io.github.earthshape.map.RiversMask;
 import net.minecraft.util.KeyDispatchDataCodec;
 import net.minecraft.world.level.levelgen.DensityFunction;
@@ -21,30 +20,15 @@ public record RiversContinentsDensity(DensityFunction argument) implements Densi
    public double compute(FunctionContext context) {
       if (!EarthShapeCompatibility.disablesWorldgen() && (Boolean)EarthShapeServerConfig.CONTINENTS_ENABLED.get()) {
          double land = RiversMask.INSTANCE.sampleLayerLand(context.blockX(), context.blockZ());
-         // Keep the land mask authoritative.  Averaging it on both sides of a shore can
-         // raise a narrow strait or an inland sea to land level and close it entirely.
-         double softenedLand = land * land * (3.0 - 2.0 * land);
-         double continentalness = -0.65 + softenedLand * 0.85;
-         if (land >= 0.5) {
-            // Both sides of every mapped shore meet at the same water-safe coast value.
-            // Keeping separate land/ocean anchor values here creates a density step at
-            // every shoreline, which is visible as an artificial coastal wall.
-            double inlandness = RiversMask.INSTANCE.sampleCoastInlandness(
-               context.blockX(), context.blockZ(), Math.max(480, (Integer)EarthShapeServerConfig.COAST_HEIGHT_FADE_BLOCKS.get())
-            );
-            // -0.20 stays on the ocean side of vanilla's land threshold. Land then
-            // rises gradually to the normal near-inland value rather than receiving a
-            // separate coast carve.
-            continentalness = -0.20 + 0.23 * inlandness;
-         } else {
-            // Use the matching water-side distance field. At the shoreline this is
-            // exactly the land-side -0.20; only farther offshore does it descend into
-            // deep-ocean continentalness.
-            double shore = RiversMask.INSTANCE.sampleWaterShoreProximity(
-               context.blockX(), context.blockZ(), Math.max(480, (Integer)EarthShapeServerConfig.COAST_HEIGHT_FADE_BLOCKS.get())
-            );
-            continentalness = -0.65 + 0.45 * shore;
-         }
+         double vanillaContinentalness = this.argument.compute(context);
+         // The source image is only a hard land/water authority.  Do not replace the
+         // vanilla continentalness field with coast-distance ramps: doing that makes
+         // every inland area share one near-zero value and turns whole continents into
+         // artificial flat tables.  Retain vanilla's full local variation, clamping
+         // only enough to honour the land/ocean mask.
+         double continentalness = land >= 0.5
+            ? Math.max(0.0, vanillaContinentalness)
+            : Math.min(-0.19, vanillaContinentalness);
          if ((Boolean)EarthShapeServerConfig.RIVER_BIOMES_ENABLED.get()
             && land > 0.5
             && RiversMask.INSTANCE.hasInlandRiverInfluence(context.blockX(), context.blockZ())) {
@@ -59,7 +43,7 @@ public record RiversContinentsDensity(DensityFunction argument) implements Densi
                // flattens an entire corridor beside every river and looks artificially
                // excavated from above.
                double channelRadius = floorRadius
-                  + (double)Math.max(96, Math.min(160, (Integer)EarthShapeServerConfig.RIVER_CHANNEL_EDGE_FADE_BLOCKS.get()));
+                  + (double)Math.max(24, Math.min(56, (Integer)EarthShapeServerConfig.RIVER_HEIGHT_FADE_BLOCKS.get()));
                if (distance < channelRadius) {
                   // A river needs to reach the vanilla water table, not merely select the
                   // RIVER biome.  Keep this independent from an old persisted config value:
@@ -78,21 +62,11 @@ public record RiversContinentsDensity(DensityFunction argument) implements Densi
                   floorWeight = floorWeight * floorWeight * (3.0 - 2.0 * floorWeight);
                   double shoulderWeight = 1.0 - Math.min(1.0, distance / Math.max(1.0, channelRadius));
                   shoulderWeight = shoulderWeight * shoulderWeight * (3.0 - 2.0 * shoulderWeight);
-                  // Do not force a high mountain down to the river density target.  The
-                  // suppression is gradual, so ordinary hills still receive a readable
-                  // riverbed while genuine mountain terrain keeps its outer profile.
-                  double median = (Double)EarthShapeServerConfig.HEIGHTMAP_MEDIAN.get();
-                  double highlandProtection = smoothstep((HeightmapLayer.INSTANCE.sample(context.blockX(), context.blockZ()) - (median + 0.14)) / 0.20);
-                  shoulderWeight *= 1.0 - highlandProtection;
                   // Never raise an already-low coastal value. Inland terrain eases into
                   // the shallow channel target across the full bank instead of flipping
                   // to a negative continentalness value in one source sample.
                   double target = Math.min(continentalness, centreChannel);
-                  // Mountain protection applies only to the outer shoulder. The source
-                  // centreline must still reach a valley value, otherwise mountain and
-                  // plateau rivers collapse into disconnected biome-only strokes.
                   double influence = floorWeight + (1.0 - floorWeight) * shoulderWeight * 0.30;
-                  influence *= slopeDamping(context.blockX(), context.blockZ());
                   continentalness += (target - continentalness) * influence;
                }
             }
@@ -129,9 +103,4 @@ public record RiversContinentsDensity(DensityFunction argument) implements Densi
       return value * value * (3.0 - 2.0 * value);
    }
 
-   private static double slopeDamping(int x, int z) {
-      double slope = Math.abs(HeightmapLayer.INSTANCE.sample(x + 1, z) - HeightmapLayer.INSTANCE.sample(x - 1, z))
-         + Math.abs(HeightmapLayer.INSTANCE.sample(x, z + 1) - HeightmapLayer.INSTANCE.sample(x, z - 1));
-      return 1.0 / (1.0 + slope * 255.0 * 0.5);
-   }
 }

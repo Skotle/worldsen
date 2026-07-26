@@ -3,8 +3,6 @@ package io.github.earthshape.worldgen;
 import com.mojang.serialization.MapCodec;
 import io.github.earthshape.EarthShapeCompatibility;
 import io.github.earthshape.EarthShapeServerConfig;
-import io.github.earthshape.map.HeightmapLayer;
-import io.github.earthshape.map.RiversMask;
 import net.minecraft.util.KeyDispatchDataCodec;
 import net.minecraft.world.level.levelgen.DensityFunction;
 import net.minecraft.world.level.levelgen.DensityFunction.ContextProvider;
