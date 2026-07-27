@@ -56,19 +56,6 @@ public final class RiversMask {
       return total / weight;
    }
 
-   public double sampleHeightmapInlandness(int blockX, int blockZ) {
-      RiversMask.Data loaded = this.data();
-      int fadeBlocks = Math.max(320, (Integer)EarthShapeServerConfig.COAST_HEIGHT_FADE_BLOCKS.get());
-      int x = (int)Math.floor((double)blockX / (double)this.blocksPerPixel() + (double)loaded.width * 0.5);
-      int z = (int)Math.floor((double)blockZ / (double)this.blocksPerPixel() + (double)loaded.height * 0.5);
-      if (x >= 0 && z >= 0 && x < loaded.width && z < loaded.height) {
-         double t = Math.min(1.0, (double)(loaded.coastDistance[z * loaded.width + x] & 255) * (double)this.blocksPerPixel() / (double)fadeBlocks);
-         return t * t * (3.0 - 2.0 * t);
-      } else {
-         return 0.0;
-      }
-   }
-
    /**
     * Smooth land-side distance from the shoreline.  Unlike sampleCoastLand this never
     * averages water into a narrow strait; it is used only to grade a land bank upward.
@@ -111,11 +98,13 @@ public final class RiversMask {
       } else {
          double distance = this.riverCentrelineDistance(blockX, blockZ) * (double)this.blocksPerPixel();
          double riverRadius = (double)this.effectiveRiverWidthBlocks(blockX, blockZ) * 0.5;
-         // Only soften the immediate bank.  A 160+ block relief suppression turns each
-         // river into a visibly excavated strip across otherwise natural terrain.
+         // Keep the source relief intact except immediately around the centreline.
+         // A cubic factor avoids the full-width, flat-bottomed trench that a hard
+         // distance cutoff produces on raster-derived rivers.
          int fadeBlocks = Math.max(24, Math.min(56, (Integer)EarthShapeServerConfig.RIVER_HEIGHT_FADE_BLOCKS.get()));
-         double t = Math.max(0.0, Math.min(1.0, (distance - riverRadius) / (double)fadeBlocks));
-         return t * t * (3.0 - 2.0 * t);
+         double rawFactor = Math.max(0.0, 1.0 - distance / Math.max(1.0, riverRadius + (double)fadeBlocks));
+         double sharpRiverFactor = rawFactor * rawFactor * rawFactor;
+         return 1.0 - sharpRiverFactor;
       }
    }
 
@@ -316,7 +305,9 @@ public final class RiversMask {
                   if (loaded.river(x, z)) {
                      int cornerMask = loaded.riverCornerMask(x, z);
                      if (cornerMask == 0) {
-                        best = Math.min(best, Math.sqrt(distanceSquared(imageX, imageZ, (double)x + 0.5, (double)z + 0.5, (double)x + 0.5, (double)z + 0.5)));
+                        double pathX = riverPathX(loaded, x, z);
+                        double pathZ = riverPathZ(loaded, x, z);
+                        best = Math.min(best, Math.sqrt(distanceSquared(imageX, imageZ, pathX, pathZ, pathX, pathZ)));
                      } else {
                         best = Math.min(best, Math.sqrt(roundedCornerDistanceSquared(imageX, imageZ, x, z, cornerMask)));
                      }
@@ -325,10 +316,10 @@ public final class RiversMask {
                         for (int dx = -1; dx <= 1; dx++) {
                            if ((dx > 0 || dx == 0 && dz > 0) && loaded.river(x + dx, z + dz)) {
                               int neighbourCornerMask = loaded.riverCornerMask(x + dx, z + dz);
-                              double startX = (double)x + 0.5 + ((cornerMask & neighbourBit(dx, dz)) != 0 ? (double)dx * 0.32 : 0.0);
-                              double startZ = (double)z + 0.5 + ((cornerMask & neighbourBit(dx, dz)) != 0 ? (double)dz * 0.32 : 0.0);
-                              double endX = (double)(x + dx) + 0.5 + ((neighbourCornerMask & neighbourBit(-dx, -dz)) != 0 ? (double)(-dx) * 0.32 : 0.0);
-                              double endZ = (double)(z + dz) + 0.5 + ((neighbourCornerMask & neighbourBit(-dx, -dz)) != 0 ? (double)(-dz) * 0.32 : 0.0);
+                              double startX = riverPathX(loaded, x, z) + ((cornerMask & neighbourBit(dx, dz)) != 0 ? (double)dx * 0.32 : 0.0);
+                              double startZ = riverPathZ(loaded, x, z) + ((cornerMask & neighbourBit(dx, dz)) != 0 ? (double)dz * 0.32 : 0.0);
+                              double endX = riverPathX(loaded, x + dx, z + dz) + ((neighbourCornerMask & neighbourBit(-dx, -dz)) != 0 ? (double)(-dx) * 0.32 : 0.0);
+                              double endZ = riverPathZ(loaded, x + dx, z + dz) + ((neighbourCornerMask & neighbourBit(-dx, -dz)) != 0 ? (double)(-dz) * 0.32 : 0.0);
                               best = Math.min(best, Math.sqrt(distanceSquared(imageX, imageZ, startX, startZ, endX, endZ)));
                            }
                         }
@@ -342,6 +333,39 @@ public final class RiversMask {
       } else {
          return Double.POSITIVE_INFINITY;
       }
+   }
+
+   /**
+    * A one-pixel-wide vertical/horizontal source stroke otherwise becomes a visually
+    * endless ruler-straight river at world scale.  Offset only simple axial runs by a
+    * sub-pixel, smoothly varying amount; junctions and already diagonal/cornered data
+    * are left untouched so the layer's topology remains authoritative.
+    */
+   private static double riverPathX(RiversMask.Data data, int x, int z) {
+      boolean northSouth = data.river(x, z - 1) || data.river(x, z + 1);
+      boolean eastWest = data.river(x - 1, z) || data.river(x + 1, z);
+      return (double)x + 0.5 + (northSouth && !eastWest ? 0.22 * axialNoise(z, x, 0x51A7L) : 0.0);
+   }
+
+   private static double riverPathZ(RiversMask.Data data, int x, int z) {
+      boolean northSouth = data.river(x, z - 1) || data.river(x, z + 1);
+      boolean eastWest = data.river(x - 1, z) || data.river(x + 1, z);
+      return (double)z + 0.5 + (eastWest && !northSouth ? 0.22 * axialNoise(x, z, 0xA715L) : 0.0);
+   }
+
+   private static double axialNoise(int coordinate, int line, long salt) {
+      int cell = Math.floorDiv(coordinate, 6);
+      double t = (double)Math.floorMod(coordinate, 6) / 6.0;
+      t = t * t * (3.0 - 2.0 * t);
+      return lerp(axialValue(cell, line, salt), axialValue(cell + 1, line, salt), t);
+   }
+
+   private static double axialValue(int cell, int line, long salt) {
+      long value = salt ^ (long)cell * 341873128712L ^ (long)line * 132897987541L;
+      value ^= value >>> 33;
+      value *= 0xff51afd7ed558ccdL;
+      value ^= value >>> 33;
+      return (double)(value >>> 11 & 2097151L) / 1048575.5 - 1.0;
    }
 
    private static double distanceSquared(double px, double pz, double ax, double az, double bx, double bz) {
@@ -377,8 +401,8 @@ public final class RiversMask {
       double previousX = startX;
       double previousZ = startZ;
 
-      for (int step = 1; step <= 5; step++) {
-         double t = (double)step / 5.0;
+      for (int step = 1; step <= 9; step++) {
+         double t = (double)step / 9.0;
          double inverse = 1.0 - t;
          double nextX = inverse * inverse * startX + 2.0 * inverse * t * controlX + t * t * endX;
          double nextZ = inverse * inverse * startZ + 2.0 * inverse * t * controlZ + t * t * endZ;
@@ -586,6 +610,25 @@ public final class RiversMask {
          int z = index / width;
          int mask = 0;
          int count = 0;
+
+         // Raster lines at a right-angle corner also touch diagonally.  Counting all
+         // eight neighbours therefore sees three pixels and used to leave the corner
+         // as a hard L.  Prefer the four cardinal directions for a real turn, then
+         // keep the old eight-neighbour fallback for diagonal-only source lines.
+         boolean west = inside(x - 1, z, width, height) && rivers.get(z * width + x - 1);
+         boolean east = inside(x + 1, z, width, height) && rivers.get(z * width + x + 1);
+         boolean north = inside(x, z - 1, width, height) && rivers.get((z - 1) * width + x);
+         boolean south = inside(x, z + 1, width, height) && rivers.get((z + 1) * width + x);
+         int cardinalCount = (west ? 1 : 0) + (east ? 1 : 0) + (north ? 1 : 0) + (south ? 1 : 0);
+         if (cardinalCount == 2 && !(west && east) && !(north && south)) {
+            int cardinalMask = 0;
+            if (west) cardinalMask |= neighbourBit(-1, 0);
+            if (east) cardinalMask |= neighbourBit(1, 0);
+            if (north) cardinalMask |= neighbourBit(0, -1);
+            if (south) cardinalMask |= neighbourBit(0, 1);
+            corners[index] = (byte)cardinalMask;
+            continue;
+         }
 
          for (int dz = -1; dz <= 1; dz++) {
             for (int dx = -1; dx <= 1; dx++) {

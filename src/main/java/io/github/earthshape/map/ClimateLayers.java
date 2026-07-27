@@ -1,6 +1,7 @@
 package io.github.earthshape.map;
 
 import io.github.earthshape.EarthShape;
+import io.github.earthshape.EarthShapeServerConfig;
 import java.awt.image.BufferedImage;
 import java.io.IOException;
 import java.io.InputStream;
@@ -9,6 +10,10 @@ import javax.imageio.ImageIO;
 public final class ClimateLayers {
    private static final int TREES_REGION_WIDTH = 5632;
    private static final int TREES_REGION_HEIGHT = 2048;
+   private static final int MOUNTAIN_LOW = 10;
+   private static final int MOUNTAIN_MID = 11;
+   private static final int MOUNTAIN_HIGH = 12;
+   private static final int MOUNTAIN_ULTRA = 13;
    public static final ClimateLayers INSTANCE = new ClimateLayers();
    private volatile ClimateLayers.Data temperature;
    private volatile ClimateLayers.Data trees;
@@ -61,9 +66,57 @@ public final class ClimateLayers {
       } else {
          int imageX = sourceX(layer, x);
          int imageZ = sourceZ(layer, z);
-         ClimateLayers.TerrainKind kind = ClimateLayers.TerrainKind.byCode(layer.values[imageZ * layer.width + imageX] & 255);
+         int code = layer.values[imageZ * layer.width + imageX] & 255;
+         ClimateLayers.TerrainKind kind = isMountainElevationCode(code) ? ClimateLayers.TerrainKind.MOUNTAIN : ClimateLayers.TerrainKind.byCode(code);
          return kind != ClimateLayers.TerrainKind.CITY && kind != ClimateLayers.TerrainKind.SURROUNDING ? kind : surroundingLandKind(layer, imageX, imageZ);
       }
+   }
+
+   /**
+    * Elevation class encoded by terrain.bmp.  It is intentionally separate from the
+    * biome family: a warm mountain remains stony/forested until its generated Y level
+    * reaches the configured snow altitude.
+    */
+   public double mountainElevationWeight(int x, int z) {
+      ClimateLayers.Data layer = this.terrain();
+      if (!RiversMask.INSTANCE.isInsideLegacyLayer(x, z, layer.width, layer.height)) return 0.0;
+      int code = layer.values[sourceZ(layer, z) * layer.width + sourceX(layer, x)] & 255;
+      return switch (code) {
+         case MOUNTAIN_LOW -> 0.38;
+         case MOUNTAIN_MID -> 0.58;
+         case MOUNTAIN_HIGH -> 0.78;
+         case MOUNTAIN_ULTRA -> 1.0;
+         default -> 0.0;
+      };
+   }
+
+   /** White (#FFFFFF) is the sole ultra-high terrain colour. */
+   public boolean isUltraMountain(int x, int z) {
+      ClimateLayers.Data layer = this.terrain();
+      return RiversMask.INSTANCE.isInsideLegacyLayer(x, z, layer.width, layer.height)
+         && (layer.values[sourceZ(layer, z) * layer.width + sourceX(layer, x)] & 255) == MOUNTAIN_ULTRA;
+   }
+
+   /**
+    * #48D0C9 (72,208,201) is the warm edge of the polar blue/teal temperature
+    * band.  Band two and colder are therefore the only non-white-source locations
+    * allowed to request Frozen Peaks.
+    */
+   public boolean isPolarTemperatureZone(int x, int z) {
+      return this.temperature(x, z) <= -0.50;
+   }
+
+   /** Do not warp a climate sample across a terrain-layer boundary. */
+   public boolean isTerrainBoundary(int x, int z, int distanceBlocks) {
+      ClimateLayers.TerrainKind centre = this.terrainKind(x, z);
+      return centre != this.terrainKind(x - distanceBlocks, z)
+         || centre != this.terrainKind(x + distanceBlocks, z)
+         || centre != this.terrainKind(x, z - distanceBlocks)
+         || centre != this.terrainKind(x, z + distanceBlocks);
+   }
+
+   private static boolean isMountainElevationCode(int code) {
+      return code >= MOUNTAIN_LOW && code <= MOUNTAIN_ULTRA;
    }
 
    public double desert(int x, int z) {
@@ -228,6 +281,21 @@ public final class ClimateLayers {
                }
             }
 
+            // HOI4 terrain.bmp contains province-scale colour noise.  Treating every
+            // isolated source pixel as a separate biome produces a checkerboard of
+            // mountains/forests in-game.  Remove only small islands of a class while
+            // leaving genuine multi-pixel ranges and regional boundaries intact.
+            if (kind == ClimateLayers.Kind.TERRAIN_CLASS) {
+               values = smoothTerrainClasses(values, width, height);
+               values = smoothTerrainClasses(values, width, height);
+               values = removeSmallTerrainRegions(
+                  values, width, height, (Integer)EarthShapeServerConfig.TERRAIN_BIOME_ISOLATED_MINIMUM_REGION_PIXELS.get(), true
+               );
+               values = removeSmallTerrainRegions(
+                  values, width, height, (Integer)EarthShapeServerConfig.TERRAIN_BIOME_MINIMUM_REGION_PIXELS.get(), false
+               );
+            }
+
             EarthShape.LOGGER.info("[EarthShape] {} climate layer loaded: {}x{}.", new Object[]{name, width, height});
             var14x = new ClimateLayers.Data(width, height, values, coverage);
          }
@@ -240,6 +308,133 @@ public final class ClimateLayers {
 
    private static double lerp(double a, double b, double t) {
       return a + (b - a) * t;
+   }
+
+   private static byte[] smoothTerrainClasses(byte[] source, int width, int height) {
+      byte[] result = source.clone();
+      int[] counts = new int[ClimateLayers.TerrainKind.values().length];
+
+      for (int z = 1; z < height - 1; z++) {
+         for (int x = 1; x < width - 1; x++) {
+            java.util.Arrays.fill(counts, 0);
+            int current = source[z * width + x] & 255;
+            int currentKind = terrainKindForSmoothing(current);
+            if (currentKind < 0) continue;
+
+            for (int dz = -1; dz <= 1; dz++) {
+               for (int dx = -1; dx <= 1; dx++) {
+                  int kind = terrainKindForSmoothing(source[(z + dz) * width + x + dx] & 255);
+                  if (kind >= 0) counts[kind]++;
+               }
+            }
+
+            int winner = currentKind;
+            for (int kind = 0; kind < counts.length; kind++) {
+               if (counts[kind] > counts[winner]) winner = kind;
+            }
+
+            // Require a clear five-of-nine local majority and only replace a class
+            // that has at most two supporting pixels. This prevents broad terrain
+            // features from being eroded while removing scattered province fragments.
+            if (winner != currentKind && counts[winner] >= 5 && counts[currentKind] <= 2) {
+               result[z * width + x] = (byte)representativeTerrainCode(source, width, x, z, winner);
+            }
+         }
+      }
+
+      return result;
+   }
+
+   private static int terrainKindForSmoothing(int code) {
+      if (code >= MOUNTAIN_LOW && code <= MOUNTAIN_ULTRA) return ClimateLayers.TerrainKind.MOUNTAIN.code;
+      ClimateLayers.TerrainKind kind = ClimateLayers.TerrainKind.byCode(code);
+      return kind == ClimateLayers.TerrainKind.CITY || kind == ClimateLayers.TerrainKind.SURROUNDING || kind == ClimateLayers.TerrainKind.WATER ? -1 : kind.code;
+   }
+
+   private static int representativeTerrainCode(byte[] source, int width, int x, int z, int kind) {
+      if (kind != ClimateLayers.TerrainKind.MOUNTAIN.code) return kind;
+
+      int[] mountainCounts = new int[4];
+      for (int dz = -1; dz <= 1; dz++) {
+         for (int dx = -1; dx <= 1; dx++) {
+            int code = source[(z + dz) * width + x + dx] & 255;
+            if (code >= MOUNTAIN_LOW && code <= MOUNTAIN_ULTRA) mountainCounts[code - MOUNTAIN_LOW]++;
+         }
+      }
+      int best = 0;
+      for (int index = 1; index < mountainCounts.length; index++) {
+         if (mountainCounts[index] > mountainCounts[best]) best = index;
+      }
+      return MOUNTAIN_LOW + best;
+   }
+
+   private static byte[] removeSmallTerrainRegions(byte[] source, int width, int height, int minimumArea, boolean isolatedOnly) {
+      if (minimumArea <= 1) return source;
+      byte[] result = source.clone();
+      boolean[] visited = new boolean[source.length];
+      TerrainRegionQueue region = new TerrainRegionQueue();
+      int[] neighbours = new int[ClimateLayers.TerrainKind.values().length];
+
+      for (int start = 0; start < source.length; start++) {
+         if (visited[start]) continue;
+         int terrain = terrainKindForSmoothing(source[start] & 255);
+         if (terrain < 0) {
+            visited[start] = true;
+            continue;
+         }
+
+         region.clear();
+         region.add(start);
+         visited[start] = true;
+         java.util.Arrays.fill(neighbours, 0);
+         for (int cursor = 0; cursor < region.size(); cursor++) {
+            int index = region.get(cursor);
+            int x = index % width;
+            int z = index / width;
+            if (x > 0) collectTerrainNeighbour(source, visited, region, index - 1, terrain, neighbours);
+            if (x + 1 < width) collectTerrainNeighbour(source, visited, region, index + 1, terrain, neighbours);
+            if (z > 0) collectTerrainNeighbour(source, visited, region, index - width, terrain, neighbours);
+            if (z + 1 < height) collectTerrainNeighbour(source, visited, region, index + width, terrain, neighbours);
+         }
+
+         int surrounding = -1;
+         int surroundingKinds = 0;
+         for (int kind = 0; kind < neighbours.length; kind++) {
+            if (neighbours[kind] > 0) {
+               surroundingKinds++;
+               if (surrounding < 0 || neighbours[kind] > neighbours[surrounding]) surrounding = kind;
+            }
+         }
+         if (region.size() < minimumArea && surrounding >= 0 && (!isolatedOnly || surroundingKinds == 1)) {
+            for (int cursor = 0; cursor < region.size(); cursor++) result[region.get(cursor)] = (byte)surrounding;
+         }
+      }
+      return result;
+   }
+
+   private static void collectTerrainNeighbour(byte[] source, boolean[] visited, TerrainRegionQueue region, int index, int terrain, int[] neighbours) {
+      int neighbour = terrainKindForSmoothing(source[index] & 255);
+      if (neighbour < 0) return;
+      if (neighbour != terrain) {
+         neighbours[neighbour]++;
+      } else if (!visited[index]) {
+         visited[index] = true;
+         region.add(index);
+      }
+   }
+
+   private static final class TerrainRegionQueue {
+      private int[] values = new int[64];
+      private int size;
+
+      void clear() { this.size = 0; }
+      int size() { return this.size; }
+      int get(int index) { return this.values[index]; }
+
+      void add(int value) {
+         if (this.size == this.values.length) this.values = java.util.Arrays.copyOf(this.values, this.values.length * 2);
+         this.values[this.size++] = value;
+      }
    }
 
    private static double latitudeTemperature(int blockZ) {
@@ -286,7 +481,7 @@ public final class ClimateLayers {
       TERRAIN_CLASS {
          @Override
          int value(int c) {
-            return ClimateLayers.TerrainKind.fromColor(c).code;
+            return terrainElevationCode(c);
          }
       },
       NORMAL {
@@ -383,6 +578,21 @@ public final class ClimateLayers {
 
                return values[best];
          }
+      }
+
+      private static int terrainElevationCode(int color) {
+         int rgb = color & 16777215;
+         // Guide C: white is the only ultra-high class; the two brown/grey shades
+         // are high and mid-high terrain. #493B0D is accepted alongside the source
+         // palette's #493B0F so its near-identical BMP colour cannot become a stray
+         // low-altitude snowy peak through nearest-colour fallback.
+         return switch (rgb) {
+            case 16777215 -> MOUNTAIN_ULTRA;
+            case 6050636 -> MOUNTAIN_HIGH;
+            case 7359007 -> MOUNTAIN_MID;
+            case 4799245, 4799247 -> MOUNTAIN_LOW;
+            default -> ClimateLayers.TerrainKind.fromColor(color).code;
+         };
       }
 
       private static int colourDistance(int first, int second) {

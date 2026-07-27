@@ -34,14 +34,15 @@ public final class TemperatureSurfaceBiomeMixin {
          } else {
             double temperature = layers.temperature(x, z);
             if (!RiversMask.INSTANCE.isInlandRiver(x, z)) {
-               callback.setReturnValue(this.land(layers.terrainKind(x, z), temperature, (Holder<Biome>)callback.getReturnValue()));
+               callback.setReturnValue(this.land(layers, layers.terrainKind(x, z), temperature, x, z, (Holder<Biome>)callback.getReturnValue()));
             }
          }
       }
    }
 
-   private Holder<Biome> land(ClimateLayers.TerrainKind terrain, double t, Holder<Biome> fallback) {
+   private Holder<Biome> land(ClimateLayers layers, ClimateLayers.TerrainKind terrain, double t, int x, int z, Holder<Biome> fallback) {
       int band = temperatureBand(t);
+      boolean frozenPeaksAllowed = layers.isUltraMountain(x, z) || layers.isPolarTemperatureZone(x, z);
 
       return switch (terrain) {
          case DESERT -> this.biome(
@@ -92,28 +93,7 @@ public final class TemperatureSurfaceBiomeMixin {
             ),
          fallback
       );
-         case MOUNTAIN -> this.biome(
-         band == 0
-            ? Biomes.FROZEN_PEAKS
-            : (
-               band == 1
-                  ? Biomes.JAGGED_PEAKS
-                  : (
-                     band == 2
-                        ? Biomes.SNOWY_SLOPES
-                        : (
-                           band <= 4
-                              ? Biomes.STONY_PEAKS
-                              : (
-                                 band == 5
-                                    ? Biomes.WINDSWEPT_HILLS
-                                    : (band == 6 ? Biomes.WINDSWEPT_SAVANNA : (band == 7 ? Biomes.ERODED_BADLANDS : Biomes.DESERT))
-                              )
-                        )
-                  )
-            ),
-         fallback
-      );
+         case MOUNTAIN -> this.biome(frozenPeaksAllowed ? Biomes.FROZEN_PEAKS : Biomes.STONY_PEAKS, fallback);
          case PLAINS, CITY, SURROUNDING -> this.plains(band, fallback);
          case WATER -> this.ocean(band, fallback);
       };
