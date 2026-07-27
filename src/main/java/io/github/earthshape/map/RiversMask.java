@@ -19,6 +19,7 @@ public final class RiversMask {
     private static final double RIVER_CORNER_TRIM = 0.32;
     private volatile Data data;
     private final ThreadLocal<RiverWidthCache> riverWidthCache = ThreadLocal.withInitial(RiverWidthCache::new);
+    private final ThreadLocal<RiverDistanceCache> riverDistanceCache = ThreadLocal.withInitial(RiverDistanceCache::new);
 
     private RiversMask() {
     }
@@ -247,42 +248,50 @@ public final class RiversMask {
 
     public double riverCentrelineDistance(int blockX, int blockZ) {
         Data loaded = this.data();
+        RiverDistanceCache cache = this.riverDistanceCache.get();
+        if (cache.data == loaded && cache.blockX == blockX && cache.blockZ == blockZ) {
+            return cache.distance;
+        }
+        double result = Double.POSITIVE_INFINITY;
         double imageX = (double)blockX / (double)this.blocksPerPixel() + (double)loaded.width * 0.5;
         double imageZ = (double)blockZ / (double)this.blocksPerPixel() + (double)loaded.height * 0.5;
         if (!(imageX < 1.0 || imageZ < 1.0 || imageX >= (double)loaded.width - 1.0 || imageZ >= (double)loaded.height - 1.0)) {
             int centreX = (int)Math.floor(imageX);
             int centreZ = (int)Math.floor(imageZ);
-            if (!loaded.riverInfluence.get(centreZ * loaded.width + centreX)) {
-                return Double.POSITIVE_INFINITY;
-            }
-            double best = Double.POSITIVE_INFINITY;
-            for (int z = centreZ - 4; z <= centreZ + 4; ++z) {
-                for (int x = centreX - 4; x <= centreX + 4; ++x) {
-                    if (!loaded.river(x, z)) continue;
-                    int cornerMask = loaded.riverCornerMask(x, z);
-                    if (cornerMask == 0) {
-                        double pathX = RiversMask.riverPathX(loaded, x, z);
-                        double pathZ = RiversMask.riverPathZ(loaded, x, z);
-                        best = Math.min(best, Math.sqrt(RiversMask.distanceSquared(imageX, imageZ, pathX, pathZ, pathX, pathZ)));
-                    } else {
-                        best = Math.min(best, Math.sqrt(RiversMask.roundedCornerDistanceSquared(imageX, imageZ, x, z, cornerMask)));
-                    }
-                    for (int dz = -1; dz <= 1; ++dz) {
-                        for (int dx = -1; dx <= 1; ++dx) {
-                            if (dx <= 0 && (dx != 0 || dz <= 0) || !loaded.river(x + dx, z + dz)) continue;
-                            int neighbourCornerMask = loaded.riverCornerMask(x + dx, z + dz);
-                            double startX = RiversMask.riverPathX(loaded, x, z) + ((cornerMask & RiversMask.neighbourBit(dx, dz)) != 0 ? (double)dx * 0.32 : 0.0);
-                            double startZ = RiversMask.riverPathZ(loaded, x, z) + ((cornerMask & RiversMask.neighbourBit(dx, dz)) != 0 ? (double)dz * 0.32 : 0.0);
-                            double endX = RiversMask.riverPathX(loaded, x + dx, z + dz) + ((neighbourCornerMask & RiversMask.neighbourBit(-dx, -dz)) != 0 ? (double)(-dx) * 0.32 : 0.0);
-                            double endZ = RiversMask.riverPathZ(loaded, x + dx, z + dz) + ((neighbourCornerMask & RiversMask.neighbourBit(-dx, -dz)) != 0 ? (double)(-dz) * 0.32 : 0.0);
-                            best = Math.min(best, Math.sqrt(RiversMask.distanceSquared(imageX, imageZ, startX, startZ, endX, endZ)));
+            if (loaded.riverInfluence.get(centreZ * loaded.width + centreX)) {
+                double best = Double.POSITIVE_INFINITY;
+                for (int z = centreZ - 4; z <= centreZ + 4; ++z) {
+                    for (int x = centreX - 4; x <= centreX + 4; ++x) {
+                        if (!loaded.river(x, z)) continue;
+                        int cornerMask = loaded.riverCornerMask(x, z);
+                        if (cornerMask == 0) {
+                            double pathX = RiversMask.riverPathX(loaded, x, z);
+                            double pathZ = RiversMask.riverPathZ(loaded, x, z);
+                            best = Math.min(best, Math.sqrt(RiversMask.distanceSquared(imageX, imageZ, pathX, pathZ, pathX, pathZ)));
+                        } else {
+                            best = Math.min(best, Math.sqrt(RiversMask.roundedCornerDistanceSquared(imageX, imageZ, x, z, cornerMask)));
+                        }
+                        for (int dz = -1; dz <= 1; ++dz) {
+                            for (int dx = -1; dx <= 1; ++dx) {
+                                if (dx <= 0 && (dx != 0 || dz <= 0) || !loaded.river(x + dx, z + dz)) continue;
+                                int neighbourCornerMask = loaded.riverCornerMask(x + dx, z + dz);
+                                double startX = RiversMask.riverPathX(loaded, x, z) + ((cornerMask & RiversMask.neighbourBit(dx, dz)) != 0 ? (double)dx * 0.32 : 0.0);
+                                double startZ = RiversMask.riverPathZ(loaded, x, z) + ((cornerMask & RiversMask.neighbourBit(dx, dz)) != 0 ? (double)dz * 0.32 : 0.0);
+                                double endX = RiversMask.riverPathX(loaded, x + dx, z + dz) + ((neighbourCornerMask & RiversMask.neighbourBit(-dx, -dz)) != 0 ? (double)(-dx) * 0.32 : 0.0);
+                                double endZ = RiversMask.riverPathZ(loaded, x + dx, z + dz) + ((neighbourCornerMask & RiversMask.neighbourBit(-dx, -dz)) != 0 ? (double)(-dz) * 0.32 : 0.0);
+                                best = Math.min(best, Math.sqrt(RiversMask.distanceSquared(imageX, imageZ, startX, startZ, endX, endZ)));
+                            }
                         }
                     }
                 }
+                result = best;
             }
-            return best;
         }
-        return Double.POSITIVE_INFINITY;
+        cache.data = loaded;
+        cache.blockX = blockX;
+        cache.blockZ = blockZ;
+        cache.distance = result;
+        return result;
     }
 
     private static double riverPathX(Data data, int x, int z) {
@@ -928,6 +937,16 @@ public final class RiversMask {
         private int width;
 
         private RiverWidthCache() {
+        }
+    }
+
+    private static final class RiverDistanceCache {
+        private Data data;
+        private int blockX;
+        private int blockZ;
+        private double distance;
+
+        private RiverDistanceCache() {
         }
     }
 
