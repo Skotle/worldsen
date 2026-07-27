@@ -1,3 +1,16 @@
+/*
+ * Decompiled with CFR 0.152.
+ * 
+ * Could not load the following classes:
+ *  net.minecraft.core.BlockPos
+ *  net.minecraft.world.level.levelgen.feature.FeaturePlaceContext
+ *  net.minecraft.world.level.levelgen.feature.IcebergFeature
+ *  net.minecraft.world.level.levelgen.feature.configurations.BlockStateConfiguration
+ *  org.spongepowered.asm.mixin.Mixin
+ *  org.spongepowered.asm.mixin.injection.At
+ *  org.spongepowered.asm.mixin.injection.Inject
+ *  org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable
+ */
 package io.github.earthshape.mixin;
 
 import io.github.earthshape.EarthShapeServerConfig;
@@ -12,18 +25,13 @@ import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
 
-@Mixin({IcebergFeature.class})
+@Mixin(value={IcebergFeature.class})
 public final class OceanIcebergMixin {
-   @Inject(
-      method = {"place"},
-      at = {@At("HEAD")},
-      cancellable = true
-   )
-   private void earthshape$requireFrozenOcean(FeaturePlaceContext<BlockStateConfiguration> context, CallbackInfoReturnable<Boolean> callback) {
-      BlockPos origin = context.origin();
-      if (RiversMask.INSTANCE.sampleLand(origin.getX(), origin.getZ()) < 0.25
-         && ClimateLayers.INSTANCE.temperature(origin.getX(), origin.getZ()) > (Double)EarthShapeServerConfig.SNOW_TEMPERATURE_THRESHOLD.get()) {
-         callback.setReturnValue(false);
-      }
-   }
+    @Inject(method={"place"}, at={@At(value="HEAD")}, cancellable=true)
+    private void earthshape$requireFrozenOcean(FeaturePlaceContext<BlockStateConfiguration> context, CallbackInfoReturnable<Boolean> callback) {
+        BlockPos origin = context.origin();
+        if (RiversMask.INSTANCE.sampleLand(origin.getX(), origin.getZ()) < 0.25 && ClimateLayers.INSTANCE.temperature(origin.getX(), origin.getZ()) > (Double)EarthShapeServerConfig.SNOW_TEMPERATURE_THRESHOLD.get()) {
+            callback.setReturnValue(false);
+        }
+    }
 }
