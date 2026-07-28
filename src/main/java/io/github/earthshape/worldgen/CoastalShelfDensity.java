@@ -15,7 +15,9 @@ import net.minecraft.world.level.levelgen.DensityFunction.Visitor;
  * vanilla ocean terrain. It does not place water; the vanilla aquifer does.
  */
 public final class CoastalShelfDensity implements DensityFunction {
-   private static final int SHORE_FLOOR_Y = 62;
+   // seaLevel=63 means the top water block is Y=62. A one-block-deep
+   // standable shoreline therefore needs its solid floor at Y=61.
+   private static final int SHORE_FLOOR_Y = 61;
    private static final int OUTER_SHELF_FLOOR_Y = 32;
    private static final MapCodec<CoastalShelfDensity> DATA_CODEC = MapCodec.unit(new CoastalShelfDensity());
    public static final KeyDispatchDataCodec<CoastalShelfDensity> CODEC = KeyDispatchDataCodec.of(DATA_CODEC);

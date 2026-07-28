@@ -95,9 +95,9 @@ public final class EarthShapeServerConfig {
               )
               .define("biomeBoundaryWarpEnabled", true);
       BIOME_BOUNDARY_WARP_BLOCKS = builder.comment(
-                      "온도 변형 바이옴 경계의 최대 좌우 이동 거리. terrain.bmp와 trees.bmp 영역을 넘지 않도록 원본 맵 픽셀 1개 미만으로 제한됩니다."
+                      "terrain.bmp와 trees.bmp의 픽셀 격자를 자연스럽게 휘게 만드는 최대 이동 거리. 해안선과 강 위치는 이동하지 않습니다."
               )
-              .defineInRange("biomeBoundaryWarpBlocks", 12, 0, 64);
+              .defineInRange("biomeBoundaryWarpBlocks", 24, 0, 64);
       builder.pop();
       builder.push("terrain_shaping");
       COAST_HEIGHT_FADE_BLOCKS = builder.comment("해안선 대륙붕 경사가 완만하게 이어지는 해안으로부터의 거리.")

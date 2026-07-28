@@ -47,8 +47,11 @@ public final class ClimateLayers {
 
    public ClimateLayers.TreeCover treeCover(int x, int z) {
       ClimateLayers.Data layer = this.trees();
-      double worldX = (double)x / (double)RiversMask.INSTANCE.blocksPerPixel() + 2816.0;
-      double worldZ = (double)z / (double)RiversMask.INSTANCE.blocksPerPixel() + 1024.0;
+      long point = warpedTerrainPoint(x, z);
+      int sampleX = unpackX(point);
+      int sampleZ = unpackZ(point);
+      double worldX = (double)sampleX / (double)RiversMask.INSTANCE.blocksPerPixel() + 2816.0;
+      double worldZ = (double)sampleZ / (double)RiversMask.INSTANCE.blocksPerPixel() + 1024.0;
       if (!(worldX < 0.0) && !(worldZ < 0.0) && !(worldX >= 5632.0) && !(worldZ >= 2048.0)) {
          int imageX = Math.min(layer.width - 1, (int)(worldX / 5632.0 * (double)layer.width));
          int imageZ = Math.min(layer.height - 1, (int)(worldZ / 2048.0 * (double)layer.height));
@@ -61,11 +64,14 @@ public final class ClimateLayers {
 
    public ClimateLayers.TerrainKind terrainKind(int x, int z) {
       ClimateLayers.Data layer = this.terrain();
-      if (!RiversMask.INSTANCE.isInsideLegacyLayer(x, z, layer.width, layer.height)) {
+      long point = warpedTerrainPoint(x, z);
+      int sampleX = unpackX(point);
+      int sampleZ = unpackZ(point);
+      if (!RiversMask.INSTANCE.isInsideLegacyLayer(sampleX, sampleZ, layer.width, layer.height)) {
          return ClimateLayers.TerrainKind.PLAINS;
       } else {
-         int imageX = sourceX(layer, x);
-         int imageZ = sourceZ(layer, z);
+         int imageX = sourceX(layer, sampleX);
+         int imageZ = sourceZ(layer, sampleZ);
          int code = layer.values[imageZ * layer.width + imageX] & 255;
          ClimateLayers.TerrainKind kind = isMountainElevationCode(code) ? ClimateLayers.TerrainKind.MOUNTAIN : ClimateLayers.TerrainKind.byCode(code);
          return kind != ClimateLayers.TerrainKind.CITY && kind != ClimateLayers.TerrainKind.SURROUNDING ? kind : surroundingLandKind(layer, imageX, imageZ);
@@ -75,8 +81,11 @@ public final class ClimateLayers {
    /** White (#FFFFFF) is the sole ultra-high terrain colour. */
    public boolean isUltraMountain(int x, int z) {
       ClimateLayers.Data layer = this.terrain();
-      return RiversMask.INSTANCE.isInsideLegacyLayer(x, z, layer.width, layer.height)
-         && (layer.values[sourceZ(layer, z) * layer.width + sourceX(layer, x)] & 255) == MOUNTAIN_ULTRA;
+      long point = warpedTerrainPoint(x, z);
+      int sampleX = unpackX(point);
+      int sampleZ = unpackZ(point);
+      return RiversMask.INSTANCE.isInsideLegacyLayer(sampleX, sampleZ, layer.width, layer.height)
+         && (layer.values[sourceZ(layer, sampleZ) * layer.width + sourceX(layer, sampleX)] & 255) == MOUNTAIN_ULTRA;
    }
 
    /**
@@ -115,7 +124,9 @@ public final class ClimateLayers {
     */
    public double terrainRelief(int x, int z) {
       ClimateLayers.Data layer = this.terrain();
-      return layer.relief == null ? 0.0 : sample(layer, layer.relief, x, z);
+      if (layer.relief == null) return 0.0;
+      long point = warpedTerrainPoint(x, z);
+      return sample(layer, layer.relief, unpackX(point), unpackZ(point));
    }
 
    /**
@@ -124,8 +135,11 @@ public final class ClimateLayers {
     */
    public double mountainRegionHeightScale(int x, int z) {
       ClimateLayers.Data layer = this.terrain();
-      if (layer.mountainScale == null || !RiversMask.INSTANCE.isInsideLegacyLayer(x, z, layer.width, layer.height)) return -1.0;
-      int index = sourceZ(layer, z) * layer.width + sourceX(layer, x);
+      long point = warpedTerrainPoint(x, z);
+      int sampleX = unpackX(point);
+      int sampleZ = unpackZ(point);
+      if (layer.mountainScale == null || !RiversMask.INSTANCE.isInsideLegacyLayer(sampleX, sampleZ, layer.width, layer.height)) return -1.0;
+      int index = sourceZ(layer, sampleZ) * layer.width + sourceX(layer, sampleX);
       if (!isMountainElevationCode(layer.values[index] & 255)) return -1.0;
       return (double)(layer.mountainScale[index] & 255) / 255.0;
    }
@@ -335,6 +349,66 @@ public final class ClimateLayers {
 
    private static double lerp(double a, double b, double t) {
       return a + (b - a) * t;
+   }
+
+   private static long warpedTerrainPoint(int blockX, int blockZ) {
+      if (!(Boolean)EarthShapeServerConfig.BIOME_BOUNDARY_WARP_ENABLED.get()) {
+         return packPoint(blockX, blockZ);
+      }
+
+      int configured = (Integer)EarthShapeServerConfig.BIOME_BOUNDARY_WARP_BLOCKS.get();
+      int blocksPerPixel = RiversMask.INSTANCE.blocksPerPixel();
+      int strength = Math.min(configured, Math.max(4, blocksPerPixel * 3 / 2));
+      if (strength <= 0 || RiversMask.INSTANCE.isNearInlandRiver(blockX, blockZ, strength + 8)) {
+         return packPoint(blockX, blockZ);
+      }
+
+      double warpX = smoothNoise(blockX, blockZ, 160, 0x6A09E667F3BCC909L) * 0.68
+         + smoothNoise(blockX, blockZ, 64, 0xBB67AE8584CAA73BL) * 0.32;
+      double warpZ = smoothNoise(blockX, blockZ, 160, 0x3C6EF372FE94F82BL) * 0.68
+         + smoothNoise(blockX, blockZ, 64, 0xA54FF53A5F1D36F1L) * 0.32;
+      int warpedX = blockX + (int)Math.round(warpX * (double)strength);
+      int warpedZ = blockZ + (int)Math.round(warpZ * (double)strength);
+
+      // terrain.bmp may curve inside a continent, but rivers.bmp remains the
+      // authoritative coastline. Never warp a sample across its land/ocean side.
+      boolean originalLand = RiversMask.INSTANCE.sampleLayerLand(blockX, blockZ) >= 0.5;
+      boolean warpedLand = RiversMask.INSTANCE.sampleLayerLand(warpedX, warpedZ) >= 0.5;
+      return originalLand == warpedLand ? packPoint(warpedX, warpedZ) : packPoint(blockX, blockZ);
+   }
+
+   private static double smoothNoise(int blockX, int blockZ, int cellSize, long salt) {
+      int cellX = Math.floorDiv(blockX, cellSize);
+      int cellZ = Math.floorDiv(blockZ, cellSize);
+      double tx = (double)Math.floorMod(blockX, cellSize) / (double)cellSize;
+      double tz = (double)Math.floorMod(blockZ, cellSize) / (double)cellSize;
+      tx = tx * tx * (3.0 - 2.0 * tx);
+      tz = tz * tz * (3.0 - 2.0 * tz);
+      double top = lerp(noiseValue(cellX, cellZ, salt), noiseValue(cellX + 1, cellZ, salt), tx);
+      double bottom = lerp(noiseValue(cellX, cellZ + 1, salt), noiseValue(cellX + 1, cellZ + 1, salt), tx);
+      return lerp(top, bottom, tz);
+   }
+
+   private static double noiseValue(int x, int z, long salt) {
+      long value = salt ^ (long)x * 341873128712L ^ (long)z * 132897987541L;
+      value ^= value >>> 33;
+      value *= 0xff51afd7ed558ccdL;
+      value ^= value >>> 33;
+      value *= 0xc4ceb9fe1a85ec53L;
+      value ^= value >>> 33;
+      return (double)(value >>> 11 & 2097151L) / 1048575.5 - 1.0;
+   }
+
+   private static long packPoint(int x, int z) {
+      return (long)x << 32 | (long)z & 0xFFFFFFFFL;
+   }
+
+   private static int unpackX(long point) {
+      return (int)(point >> 32);
+   }
+
+   private static int unpackZ(long point) {
+      return (int)point;
    }
 
    private static byte[] smoothTerrainClasses(byte[] source, int width, int height) {
@@ -549,6 +623,17 @@ public final class ClimateLayers {
             : (terrainKindForSmoothing(code) == TerrainKind.HILLS.code ? 128 : 0));
       }
 
+      // Three short box passes approximate an isotropic Gaussian. A single wide
+      // square kernel preserves right-angled contours from the source bitmap.
+      int passRadius = Math.max(1, (radius + 2) / 3);
+      byte[] result = source;
+      for (int pass = 0; pass < 3; pass++) {
+         result = boxBlur(result, width, height, passRadius);
+      }
+      return result;
+   }
+
+   private static byte[] boxBlur(byte[] source, int width, int height, int radius) {
       byte[] horizontal = new byte[source.length];
       for (int z = 0; z < height; z++) {
          int row = z * width;

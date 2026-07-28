@@ -22,6 +22,7 @@ public final class SurfaceAquiferGuardMixin {
       BlockState result = (BlockState)callback.getReturnValue();
       boolean layerRiver = (Boolean)EarthShapeServerConfig.RIVER_BIOMES_ENABLED.get()
          && RiversMask.INSTANCE.isInlandRiver(context.blockX(), context.blockZ());
+      boolean layerOcean = RiversMask.INSTANCE.sampleLayerLand(context.blockX(), context.blockZ()) < 0.5;
       // Aquifer noise is especially likely to return dry air in hot biomes.  Once the
       // density router has opened a painted river at sea level, guarantee its water
       // column instead of letting the desert-water guard erase it again.
@@ -29,11 +30,18 @@ public final class SurfaceAquiferGuardMixin {
          callback.setReturnValue(Blocks.WATER.defaultBlockState());
          return;
       }
+      // The mapped ocean is authoritative. Hot-biome aquifer noise and the
+      // land-side surface-water guard must not leave dry holes or vertical water
+      // walls in the shelf. Solid density is untouched; only empty cells fill.
+      if (layerOcean && substance < 0.0 && result == null && context.blockY() >= 32 && context.blockY() <= 62) {
+         callback.setReturnValue(Blocks.WATER.defaultBlockState());
+         return;
+      }
       if ((Boolean)EarthShapeServerConfig.DESERT_WATER_REDUCTION_ENABLED.get()
          && result != null
          && result.is(Blocks.WATER)
          && context.blockY() >= 52
-         && RiversMask.INSTANCE.sampleLand(context.blockX(), context.blockZ()) >= 0.5
+         && RiversMask.INSTANCE.sampleLayerLand(context.blockX(), context.blockZ()) >= 0.5
          && !layerRiver) {
          callback.setReturnValue(null);
       }

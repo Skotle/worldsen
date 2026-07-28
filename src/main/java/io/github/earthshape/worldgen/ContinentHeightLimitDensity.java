@@ -29,9 +29,9 @@ public final class ContinentHeightLimitDensity implements DensityFunction {
       int blockX = context.blockX();
       int blockZ = context.blockZ();
       if (RiversMask.INSTANCE.sampleLayerLand(blockX, blockZ) < 0.5) {
-         // Sea level is Y=63. Keeping the highest possible ocean solid at Y=62
-         // guarantees that a shallow continental shelf remains submerged.
-         return context.blockY() >= 63 ? ABOVE_LIMIT_PENALTY : 0.0;
+         // seaLevel=63 places the top water block at Y=62. Keeping the highest
+         // possible ocean solid at Y=61 preserves at least one full water block.
+         return context.blockY() >= 62 ? ABOVE_LIMIT_PENALTY : 0.0;
       }
 
       if (!(Boolean)EarthShapeServerConfig.CONTINENT_HEIGHT_LIMIT_ENABLED.get()) return 0.0;
