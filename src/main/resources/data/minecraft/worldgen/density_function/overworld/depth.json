@@ -19,7 +19,13 @@
         }
       },
       "argument2": {
-        "type": "earthshape:terrain_noise_offset"
+        "type": "minecraft:add",
+        "argument1": {
+          "type": "earthshape:continent_height_limit"
+        },
+        "argument2": {
+          "type": "earthshape:coastal_shelf"
+        }
       }
     },
     "argument2": {

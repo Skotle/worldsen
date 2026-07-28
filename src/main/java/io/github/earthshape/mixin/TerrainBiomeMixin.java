@@ -99,7 +99,9 @@ public abstract class TerrainBiomeMixin {
       float continentalness = RiversMask.INSTANCE.sampleLayerLand(blockX, blockZ) >= 0.5 ? 0.14F : -0.50F;
       float erosion = 0.48F;
       float depth = Climate.unquantizeCoord(source.depth()) * 0.20F;
-      float weirdness = Climate.unquantizeCoord(source.weirdness()) * 0.20F;
+      float sourceErosion = Climate.unquantizeCoord(source.erosion());
+      float sourceWeirdness = Climate.unquantizeCoord(source.weirdness());
+      float weirdness = sourceWeirdness * 0.20F;
       float relief = (float)layers.steepness(blockX, blockZ);
 
       // trees.bmp only refines already-vegetated terrain.  It cannot turn an explicit
@@ -127,13 +129,13 @@ public abstract class TerrainBiomeMixin {
          }
          case HILLS -> {
             continentalness = 0.24F;
-            erosion = -0.55F;
-            weirdness = 0.46F;
+            erosion = sourceErosion;
+            weirdness = sourceWeirdness;
          }
          case MOUNTAIN -> {
             continentalness = 0.36F;
-            erosion = -0.82F;
-            weirdness = 0.76F;
+            erosion = sourceErosion;
+            weirdness = sourceWeirdness;
          }
          case PLAINS, CITY, SURROUNDING -> {
             humidity = -0.06F;
@@ -212,7 +214,9 @@ public abstract class TerrainBiomeMixin {
          // A normal terrain-layer mountain must not become a snowy peak merely because
          // vanilla's altitude noise picked a peak entry. Only white ultra-mountains or
          // the mapped polar temperature band are allowed to select Frozen Peaks.
-         case MOUNTAIN -> frozenPeaksAllowed ? biome.is(Biomes.FROZEN_PEAKS) : biome.is(Biomes.STONY_PEAKS);
+         case MOUNTAIN -> biome.is(Tags.Biomes.IS_MOUNTAIN_SLOPE)
+            || biome.is(Tags.Biomes.IS_HILL)
+            || (frozenPeaksAllowed ? biome.is(Tags.Biomes.IS_MOUNTAIN_PEAK) : biome.is(Biomes.STONY_PEAKS));
          case PLAINS, CITY, SURROUNDING -> biome.is(Tags.Biomes.IS_PLAINS)
             || biome.is(Biomes.SAVANNA) || biome.is(Biomes.SAVANNA_PLATEAU)
             || biome.is(Biomes.SNOWY_PLAINS) || biome.is(Biomes.ICE_SPIKES);

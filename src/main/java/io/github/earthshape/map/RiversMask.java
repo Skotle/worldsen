@@ -35,16 +35,15 @@ public final class RiversMask {
          : 0.0;
    }
 
-   /** Returns the configured mountain-height ceiling for this connected continent. */
-   public int continentMountainMaximumHeightBlocks(int blockX, int blockZ) {
+   /** Returns the absolute vanilla-surface ceiling for this connected land mass. */
+   public int continentMaximumSurfaceY(int blockX, int blockZ) {
       RiversMask.Data loaded = this.data();
       int x = (int)Math.floor((double)blockX / (double)this.blocksPerPixel() + (double)loaded.width * 0.5);
       int z = (int)Math.floor((double)blockZ / (double)this.blocksPerPixel() + (double)loaded.height * 0.5);
-      int global = (Integer)EarthShapeServerConfig.MOUNTAIN_NOISE_MAXIMUM_HEIGHT_BLOCKS.get();
       int tier = loaded.continents.tier(x, z);
-      if (tier == 0) return Math.min(global, (Integer)EarthShapeServerConfig.ISLAND_MOUNTAIN_MAXIMUM_HEIGHT_BLOCKS.get());
-      if (tier == 1) return Math.min(global, (Integer)EarthShapeServerConfig.REGIONAL_MOUNTAIN_MAXIMUM_HEIGHT_BLOCKS.get());
-      return global;
+      if (tier == 0) return (Integer)EarthShapeServerConfig.ISLAND_MAXIMUM_SURFACE_Y.get();
+      if (tier == 1) return (Integer)EarthShapeServerConfig.REGIONAL_MAXIMUM_SURFACE_Y.get();
+      return (Integer)EarthShapeServerConfig.CONTINENT_MAXIMUM_SURFACE_Y.get();
    }
 
    public double sampleCoastLand(int blockX, int blockZ) {
@@ -75,13 +74,17 @@ public final class RiversMask {
     */
    public double sampleCoastInlandness(int blockX, int blockZ, int fadeBlocks) {
       RiversMask.Data loaded = this.data();
-      int x = (int)Math.floor((double)blockX / (double)this.blocksPerPixel() + (double)loaded.width * 0.5);
-      int z = (int)Math.floor((double)blockZ / (double)this.blocksPerPixel() + (double)loaded.height * 0.5);
+      int blocksPerPixel = this.blocksPerPixel();
+      double imageX = (double)blockX / (double)blocksPerPixel + (double)loaded.width * 0.5;
+      double imageZ = (double)blockZ / (double)blocksPerPixel + (double)loaded.height * 0.5;
+      int x = (int)Math.floor(imageX);
+      int z = (int)Math.floor(imageZ);
       if (x < 0 || z < 0 || x >= loaded.width || z >= loaded.height || !loaded.land.get(z * loaded.width + x)) {
          return 0.0;
       }
 
-      double t = Math.min(1.0, (double)(loaded.coastDistance[z * loaded.width + x] & 255) * (double)this.blocksPerPixel() / (double)Math.max(1, fadeBlocks));
+      double distance = sampleDistance(loaded.coastDistance, loaded.width, loaded.height, imageX, imageZ, null);
+      double t = Math.min(1.0, distance * (double)blocksPerPixel / (double)Math.max(1, fadeBlocks));
       return t * t * (3.0 - 2.0 * t);
    }
 
@@ -92,15 +95,46 @@ public final class RiversMask {
     */
    public double sampleWaterShoreProximity(int blockX, int blockZ, int fadeBlocks) {
       RiversMask.Data loaded = this.data();
-      int x = (int)Math.floor((double)blockX / (double)this.blocksPerPixel() + (double)loaded.width * 0.5);
-      int z = (int)Math.floor((double)blockZ / (double)this.blocksPerPixel() + (double)loaded.height * 0.5);
+      int blocksPerPixel = this.blocksPerPixel();
+      double imageX = (double)blockX / (double)blocksPerPixel + (double)loaded.width * 0.5;
+      double imageZ = (double)blockZ / (double)blocksPerPixel + (double)loaded.height * 0.5;
+      int x = (int)Math.floor(imageX);
+      int z = (int)Math.floor(imageZ);
       if (x < 0 || z < 0 || x >= loaded.width || z >= loaded.height || loaded.land.get(z * loaded.width + x)) {
          return 0.0;
       }
 
-      double distance = (double)(loaded.waterCoastDistance[z * loaded.width + x] & 255) * (double)this.blocksPerPixel();
+      double distance = sampleDistance(loaded.waterCoastDistance, loaded.width, loaded.height, imageX, imageZ, loaded.land)
+         * (double)blocksPerPixel;
       double t = 1.0 - Math.min(1.0, distance / (double)Math.max(1, fadeBlocks));
       return t * t * (3.0 - 2.0 * t);
+   }
+
+   private static double sampleDistance(
+      byte[] distances, int width, int height, double imageX, double imageZ, BitSet zeroMask
+   ) {
+      double clampedX = Math.max(0.0, Math.min((double)width - 1.001, imageX));
+      double clampedZ = Math.max(0.0, Math.min((double)height - 1.001, imageZ));
+      int x = (int)clampedX;
+      int z = (int)clampedZ;
+      double tx = clampedX - (double)x;
+      double tz = clampedZ - (double)z;
+      double top = lerp(
+         distanceValue(distances, width, x, z, zeroMask),
+         distanceValue(distances, width, x + 1, z, zeroMask),
+         tx
+      );
+      double bottom = lerp(
+         distanceValue(distances, width, x, z + 1, zeroMask),
+         distanceValue(distances, width, x + 1, z + 1, zeroMask),
+         tx
+      );
+      return lerp(top, bottom, tz);
+   }
+
+   private static double distanceValue(byte[] distances, int width, int x, int z, BitSet zeroMask) {
+      int index = z * width + x;
+      return zeroMask != null && zeroMask.get(index) ? 0.0 : (double)(distances[index] & 255);
    }
 
    public double sampleRiverReliefFactor(int blockX, int blockZ) {

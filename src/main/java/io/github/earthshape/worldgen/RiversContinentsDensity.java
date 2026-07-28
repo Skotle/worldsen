@@ -4,6 +4,7 @@ import com.mojang.serialization.MapCodec;
 import com.mojang.serialization.codecs.RecordCodecBuilder;
 import io.github.earthshape.EarthShapeCompatibility;
 import io.github.earthshape.EarthShapeServerConfig;
+import io.github.earthshape.map.ClimateLayers;
 import io.github.earthshape.map.RiversMask;
 import net.minecraft.util.KeyDispatchDataCodec;
 import net.minecraft.world.level.levelgen.DensityFunction;
@@ -26,14 +27,32 @@ public record RiversContinentsDensity(DensityFunction argument) implements Densi
          if (cache.argument == this.argument && cache.x == x && cache.z == z) return cache.value;
          double land = RiversMask.INSTANCE.sampleLayerLand(x, z);
          double vanillaContinentalness = this.argument.compute(context);
-         // The source image is only a hard land/water authority.  Do not replace the
-         // vanilla continentalness field with coast-distance ramps: doing that makes
-         // every inland area share one near-zero value and turns whole continents into
-         // artificial flat tables.  Retain vanilla's full local variation, clamping
-         // only enough to honour the land/ocean mask.
-         double continentalness = land >= 0.5
-            ? Math.max(0.0, vanillaContinentalness)
-            : Math.min(-0.19, vanillaContinentalness);
+         int coastFadeBlocks = (Integer)EarthShapeServerConfig.COAST_HEIGHT_FADE_BLOCKS.get();
+         double inlandness = land >= 0.5
+            ? RiversMask.INSTANCE.sampleCoastInlandness(x, z, coastFadeBlocks)
+            : 0.0;
+         double continentalness;
+         if (land >= 0.5) {
+            // Begin in vanilla's coast band and recover the complete seed-driven
+            // inland signal over the configured land-side distance.
+            double inland = Math.max(0.0, vanillaContinentalness);
+            continentalness = lerp(-0.10, inland, inlandness);
+         } else {
+            // Raise only the submerged near-shore continentalness. Deep water keeps
+            // its vanilla variation while the shelf approaches the same coast band.
+            double shelf = RiversMask.INSTANCE.sampleWaterShoreProximity(x, z, coastFadeBlocks);
+            double ocean = Math.min(-0.19, vanillaContinentalness);
+            continentalness = lerp(ocean, -0.12, shelf);
+         }
+         if (land >= 0.5 && (Boolean)EarthShapeServerConfig.TERRAIN_BIOMES_ENABLED.get()) {
+            // Only guide vanilla's terrain spline inputs. The source relief is
+            // blurred in ClimateLayers so bitmap edges cannot become cliffs.
+            double relief = ClimateLayers.INSTANCE.terrainRelief(x, z);
+            double coverage = smoothstep(Math.min(1.0, relief * 2.0)) * inlandness;
+            double mountain = smoothstep(Math.max(0.0, (relief - 0.5) * 2.0));
+            double target = 0.24 + 0.12 * mountain;
+            continentalness = lerp(continentalness, Math.max(continentalness, target), coverage);
+         }
          if ((Boolean)EarthShapeServerConfig.RIVER_BIOMES_ENABLED.get()
             && land > 0.5
             && RiversMask.INSTANCE.hasInlandRiverInfluence(context.blockX(), context.blockZ())) {
@@ -107,6 +126,10 @@ public record RiversContinentsDensity(DensityFunction argument) implements Densi
    private static double smoothstep(double value) {
       value = Math.max(0.0, Math.min(1.0, value));
       return value * value * (3.0 - 2.0 * value);
+   }
+
+   private static double lerp(double a, double b, double amount) {
+      return a + (b - a) * amount;
    }
 
    private static final class ColumnCache {

@@ -10,7 +10,7 @@ public final class EarthShapeServerConfig {
    public static final ModConfigSpec SPEC;
    public static final IntValue BLOCKS_PER_PIXEL;
    public static final BooleanValue CONTINENTS_ENABLED;
-   public static final BooleanValue TERRAIN_NOISE_ENABLED;
+   public static final BooleanValue CONTINENT_HEIGHT_LIMIT_ENABLED;
    public static final BooleanValue TERRAIN_BIOMES_ENABLED;
    public static final IntValue TERRAIN_BIOME_MINIMUM_REGION_PIXELS;
    public static final IntValue TERRAIN_BIOME_ISOLATED_MINIMUM_REGION_PIXELS;
@@ -25,9 +25,11 @@ public final class EarthShapeServerConfig {
    public static final IntValue BIOME_BOUNDARY_WARP_BLOCKS;
    public static final IntValue COAST_HEIGHT_FADE_BLOCKS;
    public static final IntValue RIVER_HEIGHT_FADE_BLOCKS;
-   public static final IntValue MOUNTAIN_NOISE_MAXIMUM_HEIGHT_BLOCKS;
-   public static final IntValue ISLAND_MOUNTAIN_MAXIMUM_HEIGHT_BLOCKS;
-   public static final IntValue REGIONAL_MOUNTAIN_MAXIMUM_HEIGHT_BLOCKS;
+   public static final IntValue ISLAND_MAXIMUM_SURFACE_Y;
+   public static final IntValue REGIONAL_MAXIMUM_SURFACE_Y;
+   public static final IntValue CONTINENT_MAXIMUM_SURFACE_Y;
+   public static final IntValue MOUNTAIN_REGION_MINIMUM_SURFACE_Y;
+   public static final IntValue MOUNTAIN_REGION_FULL_HEIGHT_SPAN_BLOCKS;
    public static final IntValue RIVER_MAXIMUM_DEPTH_BLOCKS;
    public static final IntValue RIVER_WIDTH_000064;
    public static final IntValue RIVER_WIDTH_000096;
@@ -59,7 +61,10 @@ public final class EarthShapeServerConfig {
       builder.pop();
       builder.push("layers");
       CONTINENTS_ENABLED = builder.comment("rivers.bmp를 대륙(육지/바다) 마스크로 사용합니다.").define("continentsEnabled", true);
-      TERRAIN_NOISE_ENABLED = builder.comment("바닐라 밀도 노이즈에 산맥·구릉용 연속 노이즈를 더합니다.").define("terrainNoiseEnabled", true);
+      CONTINENT_HEIGHT_LIMIT_ENABLED = builder.comment(
+                      "바닐라가 지형 고도를 전부 결정한 뒤, 연결된 육지의 규모별 최대 지표 Y만 제한합니다."
+              )
+              .define("continentHeightLimitEnabled", true);
       TERRAIN_BIOMES_ENABLED = builder.comment("기후에 맞는 바이옴을 선택하기 전, terrain.bmp를 세부 지역 지형 분류에 사용합니다.")
               .define("terrainBiomesEnabled", true);
       TERRAIN_BIOME_MINIMUM_REGION_PIXELS = builder.comment("Minimum connected terrain.bmp region area in source pixels. Smaller fragments merge into surrounding terrain.")
@@ -99,12 +104,20 @@ public final class EarthShapeServerConfig {
               .defineInRange("coastHeightFadeBlocks", 320, 20, 1024);
       RIVER_HEIGHT_FADE_BLOCKS = builder.comment("강변 경사가 완만하게 이어지는 원본 강둑으로부터의 거리.")
               .defineInRange("riverHeightFadeBlocks", 160, 20, 1024);
-      MOUNTAIN_NOISE_MAXIMUM_HEIGHT_BLOCKS = builder.comment("terrain.bmp 산악 등급 안에서 연속 노이즈가 더할 수 있는 최대 고도(블록).")
-              .defineInRange("mountainNoiseMaximumHeightBlocks", 120, 32, 192);
-      ISLAND_MOUNTAIN_MAXIMUM_HEIGHT_BLOCKS = builder.comment("Small isolated continents and islands cannot raise mapped mountain plateaus above this height.")
-              .defineInRange("islandMountainMaximumHeightBlocks", 64, 16, 192);
-      REGIONAL_MOUNTAIN_MAXIMUM_HEIGHT_BLOCKS = builder.comment("Medium continental regions use this mountain height ceiling; large continents use mountainNoiseMaximumHeightBlocks.")
-              .defineInRange("regionalMountainMaximumHeightBlocks", 96, 16, 192);
+      ISLAND_MAXIMUM_SURFACE_Y = builder.comment("작은 섬과 소형 육지에서 허용되는 최대 지표 Y.")
+              .defineInRange("islandMaximumSurfaceY", 127, 64, 319);
+      REGIONAL_MAXIMUM_SURFACE_Y = builder.comment("중형 대륙에서 허용되는 최대 지표 Y.")
+              .defineInRange("regionalMaximumSurfaceY", 159, 64, 319);
+      CONTINENT_MAXIMUM_SURFACE_Y = builder.comment("대형 대륙에서 허용되는 최대 지표 Y.")
+              .defineInRange("continentMaximumSurfaceY", 183, 64, 319);
+      MOUNTAIN_REGION_MINIMUM_SURFACE_Y = builder.comment(
+                      "가장 작은 개별 산악 영역에서 허용되는 최대 지표 Y. 영역이 커질수록 해당 대륙의 최대 지표 Y까지 증가합니다."
+              )
+              .defineInRange("mountainRegionMinimumSurfaceY", 96, 64, 319);
+      MOUNTAIN_REGION_FULL_HEIGHT_SPAN_BLOCKS = builder.comment(
+                      "개별 산악 영역이 대륙 최대 고도를 전부 사용할 수 있게 되는 대표 월드 폭. blocksPerPixel이 커지면 같은 원본 영역도 더 높은 한계를 받습니다."
+              )
+              .defineInRange("mountainRegionFullHeightSpanBlocks", 1200, 160, 8192);
       RIVER_MAXIMUM_DEPTH_BLOCKS = builder.comment("바닐라 대수층 및 지표 생성 이전, 원본 강 바닥이 내려가는 최대 블록 수.")
               .defineInRange("riverMaximumDepthBlocks", 7, 1, 7);
       builder.pop();
