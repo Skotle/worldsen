@@ -9,21 +9,9 @@
   },
   "argument2": {
     "type": "minecraft:add",
-    "argument1": {
-      "type": "minecraft:add",
-      "argument1": {
-        "type": "minecraft:add",
-        "argument1": "minecraft:overworld/offset",
-        "argument2": {
-          "type": "earthshape:terrain_noise_offset"
-        }
-      },
-      "argument2": {
-        "type": "earthshape:river_bank_grade"
-      }
-    },
+    "argument1": "minecraft:overworld/offset",
     "argument2": {
-      "type": "earthshape:layer_waterline"
+      "type": "earthshape:terrain_noise_offset"
     }
   }
 }
