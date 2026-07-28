@@ -16,10 +16,15 @@ public record RiversContinentsDensity(DensityFunction argument) implements Densi
       i -> i.group(DensityFunction.HOLDER_HELPER_CODEC.fieldOf("argument").forGetter(RiversContinentsDensity::argument)).apply(i, RiversContinentsDensity::new)
    );
    public static final KeyDispatchDataCodec<RiversContinentsDensity> CODEC = KeyDispatchDataCodec.of(DATA_CODEC);
+   private static final ThreadLocal<ColumnCache> COLUMN_CACHE = ThreadLocal.withInitial(ColumnCache::new);
 
    public double compute(FunctionContext context) {
       if (!EarthShapeCompatibility.disablesWorldgen() && (Boolean)EarthShapeServerConfig.CONTINENTS_ENABLED.get()) {
-         double land = RiversMask.INSTANCE.sampleLayerLand(context.blockX(), context.blockZ());
+         int x = context.blockX();
+         int z = context.blockZ();
+         ColumnCache cache = COLUMN_CACHE.get();
+         if (cache.argument == this.argument && cache.x == x && cache.z == z) return cache.value;
+         double land = RiversMask.INSTANCE.sampleLayerLand(x, z);
          double vanillaContinentalness = this.argument.compute(context);
          // The source image is only a hard land/water authority.  Do not replace the
          // vanilla continentalness field with coast-distance ramps: doing that makes
@@ -72,6 +77,7 @@ public record RiversContinentsDensity(DensityFunction argument) implements Densi
             }
          }
 
+         cache.set(this.argument, x, z, continentalness);
          return continentalness;
       } else {
          return this.argument.compute(context);
@@ -101,6 +107,19 @@ public record RiversContinentsDensity(DensityFunction argument) implements Densi
    private static double smoothstep(double value) {
       value = Math.max(0.0, Math.min(1.0, value));
       return value * value * (3.0 - 2.0 * value);
+   }
+
+   private static final class ColumnCache {
+      private DensityFunction argument;
+      private int x = Integer.MIN_VALUE;
+      private int z = Integer.MIN_VALUE;
+      private double value;
+      void set(DensityFunction argument, int x, int z, double value) {
+         this.argument = argument;
+         this.x = x;
+         this.z = z;
+         this.value = value;
+      }
    }
 
 }

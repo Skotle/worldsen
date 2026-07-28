@@ -18,13 +18,19 @@ import net.minecraft.world.level.levelgen.DensityFunction.Visitor;
 public final class TerrainNoiseOffsetDensity implements DensityFunction {
    private static final MapCodec<TerrainNoiseOffsetDensity> DATA_CODEC = MapCodec.unit(new TerrainNoiseOffsetDensity());
    public static final KeyDispatchDataCodec<TerrainNoiseOffsetDensity> CODEC = KeyDispatchDataCodec.of(DATA_CODEC);
+   private final ThreadLocal<ColumnCache> columnCache = ThreadLocal.withInitial(ColumnCache::new);
 
    public double compute(FunctionContext context) {
       if (EarthShapeCompatibility.disablesWorldgen() || !(Boolean)EarthShapeServerConfig.TERRAIN_NOISE_ENABLED.get()) return 0.0;
       int x = context.blockX();
       int z = context.blockZ();
+      ColumnCache cache = this.columnCache.get();
+      if (cache.x == x && cache.z == z) return cache.value;
       double land = RiversMask.INSTANCE.sampleLayerLand(x, z);
-      if (land <= 0.0) return 0.0;
+      if (land <= 0.0) {
+         cache.set(x, z, 0.0);
+         return 0.0;
+      }
 
       // No layer-derived height floor, coastal ramp, or terrain flattening is applied
       // here.  Vanilla density noise remains the base terrain.  The terrain layer only
@@ -42,12 +48,26 @@ public final class TerrainNoiseOffsetDensity implements DensityFunction {
 
       double mountain = 0.0;
       if (terrain == ClimateLayers.TerrainKind.MOUNTAIN) {
-         // Mountain colour permits a mountain range, but its height and silhouette
-         // still come from continuous procedural noise rather than image brightness.
-         double ridge = 0.20 + 0.80 * (valueNoise(x, z, 192, 0x17C45L) + 1.0) * 0.5;
-         mountain = ridge * (double)EarthShapeServerConfig.MOUNTAIN_NOISE_MAXIMUM_HEIGHT_BLOCKS.get() * (3.0 / 384.0);
+         // Build a broad highland first, then vary only its top.  The old 192-block
+         // ridge multiplied the whole configured height at every local crest, making
+         // mountain pixels rise as narrow walls and spires.  The terrain elevation
+         // class controls the plateau level; low-frequency noise only shapes its
+         // gentle summit and shallow saddles.
+         double elevation = ClimateLayers.INSTANCE.mountainElevationWeight(x, z);
+         double regionScale = ClimateLayers.INSTANCE.mountainRegionScale(x, z);
+         double broadSummit = valueNoise(x, z, 896, 0x17C45L);
+         double summitDetail = valueNoise(x, z, 320, 0x61A9DL);
+         double plateau = 0.28 + 0.44 * elevation;
+         double variation = broadSummit * (0.055 + 0.035 * elevation)
+            + summitDetail * 0.018;
+         mountain = Math.max(0.0, plateau + variation)
+            * (double)RiversMask.INSTANCE.continentMountainMaximumHeightBlocks(x, z)
+            / 192.0
+            * regionScale;
       }
-      return smoothstep(land) * (rolling * rollingStrength + mountain);
+      double result = smoothstep(land) * (rolling * rollingStrength + mountain);
+      cache.set(x, z, result);
+      return result;
    }
 
    private static double valueNoise(int x, int z, int cellSize, long salt) {
@@ -84,4 +104,15 @@ public final class TerrainNoiseOffsetDensity implements DensityFunction {
    public double minValue() { return -0.02; }
    public double maxValue() { return 1.5; }
    public KeyDispatchDataCodec<? extends DensityFunction> codec() { return CODEC; }
+
+   private static final class ColumnCache {
+      private int x = Integer.MIN_VALUE;
+      private int z = Integer.MIN_VALUE;
+      private double value;
+      void set(int x, int z, double value) {
+         this.x = x;
+         this.z = z;
+         this.value = value;
+      }
+   }
 }

@@ -20,12 +20,21 @@ public final class SurfaceAquiferGuardMixin {
    )
    private void earthshape$removeUnmappedSurfaceAquiferWater(FunctionContext context, double substance, CallbackInfoReturnable<BlockState> callback) {
       BlockState result = (BlockState)callback.getReturnValue();
+      boolean layerRiver = (Boolean)EarthShapeServerConfig.RIVER_BIOMES_ENABLED.get()
+         && RiversMask.INSTANCE.isInlandRiver(context.blockX(), context.blockZ());
+      // Aquifer noise is especially likely to return dry air in hot biomes.  Once the
+      // density router has opened a painted river at sea level, guarantee its water
+      // column instead of letting the desert-water guard erase it again.
+      if (layerRiver && substance < 0.0 && result == null && context.blockY() >= 61 && context.blockY() <= 63) {
+         callback.setReturnValue(Blocks.WATER.defaultBlockState());
+         return;
+      }
       if ((Boolean)EarthShapeServerConfig.DESERT_WATER_REDUCTION_ENABLED.get()
          && result != null
          && result.is(Blocks.WATER)
          && context.blockY() >= 52
          && RiversMask.INSTANCE.sampleLand(context.blockX(), context.blockZ()) >= 0.5
-         && !RiversMask.INSTANCE.isInlandRiver(context.blockX(), context.blockZ())) {
+         && !layerRiver) {
          callback.setReturnValue(null);
       }
    }

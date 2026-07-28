@@ -90,6 +90,18 @@ public final class ClimateLayers {
       };
    }
 
+   /**
+    * Relative height budget for the connected mountain system containing this point.
+    * Small isolated mountain patches deliberately never receive the same summit height
+    * as a continent-scale range.
+    */
+   public double mountainRegionScale(int x, int z) {
+      ClimateLayers.Data layer = this.terrain();
+      if (layer.mountainRegionScale == null || !RiversMask.INSTANCE.isInsideLegacyLayer(x, z, layer.width, layer.height)) return 0.0;
+      int index = sourceZ(layer, z) * layer.width + sourceX(layer, x);
+      return (double)(layer.mountainRegionScale[index] & 255) / 255.0;
+   }
+
    /** White (#FFFFFF) is the sole ultra-high terrain colour. */
    public boolean isUltraMountain(int x, int z) {
       ClimateLayers.Data layer = this.terrain();
@@ -285,6 +297,7 @@ public final class ClimateLayers {
             // isolated source pixel as a separate biome produces a checkerboard of
             // mountains/forests in-game.  Remove only small islands of a class while
             // leaving genuine multi-pixel ranges and regional boundaries intact.
+            byte[] mountainRegionScale = null;
             if (kind == ClimateLayers.Kind.TERRAIN_CLASS) {
                values = smoothTerrainClasses(values, width, height);
                values = smoothTerrainClasses(values, width, height);
@@ -294,10 +307,16 @@ public final class ClimateLayers {
                values = removeSmallTerrainRegions(
                   values, width, height, (Integer)EarthShapeServerConfig.TERRAIN_BIOME_MINIMUM_REGION_PIXELS.get(), false
                );
+               // A few source-map desert pixels occur inside otherwise continuous
+               // rocky ranges.  Leaving them intact makes vanilla surface rules put
+               // isolated sand flecks between stone peaks.  Merge only pockets fully
+               // enclosed by mountains; real desert-to-mountain borders remain intact.
+               values = removeMountainDesertPockets(values, width, height, 96);
+               mountainRegionScale = mountainRegionScales(values, width, height);
             }
 
             EarthShape.LOGGER.info("[EarthShape] {} climate layer loaded: {}x{}.", new Object[]{name, width, height});
-            var14x = new ClimateLayers.Data(width, height, values, coverage);
+            var14x = new ClimateLayers.Data(width, height, values, coverage, mountainRegionScale);
          }
 
          return var14x;
@@ -423,6 +442,89 @@ public final class ClimateLayers {
       }
    }
 
+   private static byte[] removeMountainDesertPockets(byte[] source, int width, int height, int maximumArea) {
+      byte[] result = source.clone();
+      boolean[] visited = new boolean[source.length];
+      TerrainRegionQueue region = new TerrainRegionQueue();
+      for (int start = 0; start < source.length; start++) {
+         if (visited[start] || terrainKindForSmoothing(source[start] & 255) != TerrainKind.DESERT.code) continue;
+         region.clear();
+         region.add(start);
+         visited[start] = true;
+         int mountainEdges = 0;
+         int otherEdges = 0;
+         for (int cursor = 0; cursor < region.size(); cursor++) {
+            int index = region.get(cursor);
+            int x = index % width;
+            int z = index / width;
+            for (int direction = 0; direction < 4; direction++) {
+               int neighbour = switch (direction) {
+                  case 0 -> x > 0 ? index - 1 : -1;
+                  case 1 -> x + 1 < width ? index + 1 : -1;
+                  case 2 -> z > 0 ? index - width : -1;
+                  default -> z + 1 < height ? index + width : -1;
+               };
+               if (neighbour < 0) {
+                  otherEdges++;
+                  continue;
+               }
+               int kind = terrainKindForSmoothing(source[neighbour] & 255);
+               if (kind == TerrainKind.DESERT.code) {
+                  if (!visited[neighbour]) {
+                     visited[neighbour] = true;
+                     region.add(neighbour);
+                  }
+               } else if (kind == TerrainKind.MOUNTAIN.code) {
+                  mountainEdges++;
+               } else {
+                  otherEdges++;
+               }
+            }
+         }
+         if (region.size() <= maximumArea && mountainEdges > 0 && otherEdges == 0) {
+            for (int cursor = 0; cursor < region.size(); cursor++) result[region.get(cursor)] = (byte)MOUNTAIN_LOW;
+         }
+      }
+      return result;
+   }
+
+   private static byte[] mountainRegionScales(byte[] source, int width, int height) {
+      byte[] scales = new byte[source.length];
+      boolean[] visited = new boolean[source.length];
+      TerrainRegionQueue region = new TerrainRegionQueue();
+
+      for (int start = 0; start < source.length; start++) {
+         if (visited[start] || !isMountainElevationCode(source[start] & 255)) continue;
+         region.clear();
+         region.add(start);
+         visited[start] = true;
+         for (int cursor = 0; cursor < region.size(); cursor++) {
+            int index = region.get(cursor);
+            int x = index % width;
+            int z = index / width;
+            collectMountainNeighbour(source, visited, region, x > 0 ? index - 1 : -1);
+            collectMountainNeighbour(source, visited, region, x + 1 < width ? index + 1 : -1);
+            collectMountainNeighbour(source, visited, region, z > 0 ? index - width : -1);
+            collectMountainNeighbour(source, visited, region, z + 1 < height ? index + width : -1);
+         }
+         // The square-root response keeps medium ranges distinct while preventing a
+         // huge continental range from producing a disproportionately taller peak.
+         double size = Math.sqrt((double)region.size()) / 24.0;
+         double t = Math.max(0.0, Math.min(1.0, size));
+         double scale = 0.35 + 0.65 * (t * t * (3.0 - 2.0 * t));
+         byte encoded = (byte)Math.round(scale * 255.0);
+         for (int cursor = 0; cursor < region.size(); cursor++) scales[region.get(cursor)] = encoded;
+      }
+      return scales;
+   }
+
+   private static void collectMountainNeighbour(byte[] source, boolean[] visited, TerrainRegionQueue region, int index) {
+      if (index >= 0 && !visited[index] && isMountainElevationCode(source[index] & 255)) {
+         visited[index] = true;
+         region.add(index);
+      }
+   }
+
    private static final class TerrainRegionQueue {
       private int[] values = new int[64];
       private int size;
@@ -443,7 +545,7 @@ public final class ClimateLayers {
       return 0.55 - 1.35 * latitude * latitude;
    }
 
-   private static record Data(int width, int height, byte[] values, byte[] coverage) {
+   private static record Data(int width, int height, byte[] values, byte[] coverage, byte[] mountainRegionScale) {
       double value(int x, int z) {
          return (double)(this.values[z * this.width + x] & 255) / 255.0;
       }

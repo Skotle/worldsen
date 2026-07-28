@@ -26,6 +26,8 @@ public final class EarthShapeServerConfig {
    public static final IntValue COAST_HEIGHT_FADE_BLOCKS;
    public static final IntValue RIVER_HEIGHT_FADE_BLOCKS;
    public static final IntValue MOUNTAIN_NOISE_MAXIMUM_HEIGHT_BLOCKS;
+   public static final IntValue ISLAND_MOUNTAIN_MAXIMUM_HEIGHT_BLOCKS;
+   public static final IntValue REGIONAL_MOUNTAIN_MAXIMUM_HEIGHT_BLOCKS;
    public static final IntValue RIVER_MAXIMUM_DEPTH_BLOCKS;
    public static final IntValue RIVER_WIDTH_000064;
    public static final IntValue RIVER_WIDTH_000096;
@@ -99,6 +101,10 @@ public final class EarthShapeServerConfig {
               .defineInRange("riverHeightFadeBlocks", 160, 20, 1024);
       MOUNTAIN_NOISE_MAXIMUM_HEIGHT_BLOCKS = builder.comment("terrain.bmp 산악 등급 안에서 연속 노이즈가 더할 수 있는 최대 고도(블록).")
               .defineInRange("mountainNoiseMaximumHeightBlocks", 120, 32, 192);
+      ISLAND_MOUNTAIN_MAXIMUM_HEIGHT_BLOCKS = builder.comment("Small isolated continents and islands cannot raise mapped mountain plateaus above this height.")
+              .defineInRange("islandMountainMaximumHeightBlocks", 64, 16, 192);
+      REGIONAL_MOUNTAIN_MAXIMUM_HEIGHT_BLOCKS = builder.comment("Medium continental regions use this mountain height ceiling; large continents use mountainNoiseMaximumHeightBlocks.")
+              .defineInRange("regionalMountainMaximumHeightBlocks", 96, 16, 192);
       RIVER_MAXIMUM_DEPTH_BLOCKS = builder.comment("바닐라 대수층 및 지표 생성 이전, 원본 강 바닥이 내려가는 최대 블록 수.")
               .defineInRange("riverMaximumDepthBlocks", 7, 1, 7);
       builder.pop();

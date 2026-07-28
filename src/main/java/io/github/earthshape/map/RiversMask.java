@@ -16,6 +16,7 @@ public final class RiversMask {
    private static final double RIVER_CORNER_TRIM = 0.32;
    private volatile RiversMask.Data data;
    private final ThreadLocal<RiversMask.RiverWidthCache> riverWidthCache = ThreadLocal.withInitial(RiversMask.RiverWidthCache::new);
+   private final ThreadLocal<RiversMask.RiverDistanceCache> riverDistanceCache = ThreadLocal.withInitial(RiversMask.RiverDistanceCache::new);
 
    private RiversMask() {
    }
@@ -32,6 +33,18 @@ public final class RiversMask {
       return !(imageX < 0.0) && !(imageZ < 0.0) && !(imageX >= (double)loaded.width) && !(imageZ >= (double)loaded.height)
          ? loaded.land((int)Math.floor(imageX), (int)Math.floor(imageZ))
          : 0.0;
+   }
+
+   /** Returns the configured mountain-height ceiling for this connected continent. */
+   public int continentMountainMaximumHeightBlocks(int blockX, int blockZ) {
+      RiversMask.Data loaded = this.data();
+      int x = (int)Math.floor((double)blockX / (double)this.blocksPerPixel() + (double)loaded.width * 0.5);
+      int z = (int)Math.floor((double)blockZ / (double)this.blocksPerPixel() + (double)loaded.height * 0.5);
+      int global = (Integer)EarthShapeServerConfig.MOUNTAIN_NOISE_MAXIMUM_HEIGHT_BLOCKS.get();
+      int tier = loaded.continents.tier(x, z);
+      if (tier == 0) return Math.min(global, (Integer)EarthShapeServerConfig.ISLAND_MOUNTAIN_MAXIMUM_HEIGHT_BLOCKS.get());
+      if (tier == 1) return Math.min(global, (Integer)EarthShapeServerConfig.REGIONAL_MOUNTAIN_MAXIMUM_HEIGHT_BLOCKS.get());
+      return global;
    }
 
    public double sampleCoastLand(int blockX, int blockZ) {
@@ -290,12 +303,15 @@ public final class RiversMask {
 
    public double riverCentrelineDistance(int blockX, int blockZ) {
       RiversMask.Data loaded = this.data();
+      RiversMask.RiverDistanceCache cache = this.riverDistanceCache.get();
+      if (cache.data == loaded && cache.blockX == blockX && cache.blockZ == blockZ) return cache.distance;
       double imageX = (double)blockX / (double)this.blocksPerPixel() + (double)loaded.width * 0.5;
       double imageZ = (double)blockZ / (double)this.blocksPerPixel() + (double)loaded.height * 0.5;
       if (!(imageX < 1.0) && !(imageZ < 1.0) && !(imageX >= (double)loaded.width - 1.0) && !(imageZ >= (double)loaded.height - 1.0)) {
          int centreX = (int)Math.floor(imageX);
          int centreZ = (int)Math.floor(imageZ);
          if (!loaded.riverInfluence.get(centreZ * loaded.width + centreX)) {
+            cache.set(loaded, blockX, blockZ, Double.POSITIVE_INFINITY);
             return Double.POSITIVE_INFINITY;
          } else {
             double best = Double.POSITIVE_INFINITY;
@@ -328,9 +344,11 @@ public final class RiversMask {
                }
             }
 
+            cache.set(loaded, blockX, blockZ, best);
             return best;
          }
       } else {
+         cache.set(loaded, blockX, blockZ, Double.POSITIVE_INFINITY);
          return Double.POSITIVE_INFINITY;
       }
    }
@@ -495,12 +513,13 @@ public final class RiversMask {
             BitSet riverInfluence = createRiverInfluence(width, height, land, rivers);
             byte[] coastDistance = createCoastDistance(width, height, land, rivers);
             byte[] waterCoastDistance = createWaterCoastDistance(width, height, land);
+            RiversMask.ContinentRegions continents = RiversMask.ContinentRegions.create(width, height, land);
             EarthShape.LOGGER
                .info(
                   "[EarthShape] worldmap_river.png land/ocean and river mask loaded: {}x{} in {} ms.",
                   new Object[]{width, height, (System.nanoTime() - started) / 1000000L}
                );
-            var21x = new RiversMask.Data(width, height, land, rivers, riverWidths, riverCorners, riverMouths, riverInfluence, coastDistance, waterCoastDistance);
+            var21x = new RiversMask.Data(width, height, land, rivers, riverWidths, riverCorners, riverMouths, riverInfluence, coastDistance, waterCoastDistance, continents);
          }
 
          return var21x;
@@ -1019,7 +1038,8 @@ public final class RiversMask {
       BitSet riverMouths,
       BitSet riverInfluence,
       byte[] coastDistance,
-      byte[] waterCoastDistance
+      byte[] waterCoastDistance,
+      RiversMask.ContinentRegions continents
    ) {
       double land(int x, int z) {
          return this.land.get(z * this.width + x) ? 1.0 : 0.0;
@@ -1039,6 +1059,87 @@ public final class RiversMask {
 
       int riverCornerMask(int x, int z) {
          return x >= 0 && z >= 0 && x < this.width && z < this.height ? this.riverCorners[z * this.width + x] & 0xFF : 0;
+      }
+   }
+
+   /**
+    * Coarse connected-component map for land masses.  Keeping this at one cell per
+    * 8x8 source pixels avoids a second full-resolution label map while still making
+    * islands, regional land masses, and continents distinct height domains.
+    */
+   private static final class ContinentRegions {
+      private static final int CELL_PIXELS = 8;
+      private static final int ISLAND_MAX_CELLS = 128;
+      private static final int REGIONAL_MAX_CELLS = 2048;
+      private final int width;
+      private final int height;
+      private final byte[] tiers;
+
+      private ContinentRegions(int width, int height, byte[] tiers) {
+         this.width = width;
+         this.height = height;
+         this.tiers = tiers;
+      }
+
+      static RiversMask.ContinentRegions create(int sourceWidth, int sourceHeight, BitSet land) {
+         int width = (sourceWidth + CELL_PIXELS - 1) / CELL_PIXELS;
+         int height = (sourceHeight + CELL_PIXELS - 1) / CELL_PIXELS;
+         int cells = width * height;
+         BitSet landCells = new BitSet(cells);
+         for (int source = land.nextSetBit(0); source >= 0; source = land.nextSetBit(source + 1)) {
+            int x = source % sourceWidth / CELL_PIXELS;
+            int z = source / sourceWidth / CELL_PIXELS;
+            landCells.set(z * width + x);
+         }
+         byte[] tiers = new byte[cells];
+         Arrays.fill(tiers, (byte)-1);
+         BitSet visited = new BitSet(cells);
+         IntQueue region = new IntQueue();
+         for (int start = landCells.nextSetBit(0); start >= 0; start = landCells.nextSetBit(start + 1)) {
+            if (visited.get(start)) continue;
+            region.clear();
+            region.add(start);
+            visited.set(start);
+            for (int cursor = 0; cursor < region.size(); cursor++) {
+               int index = region.get(cursor);
+               int x = index % width;
+               int z = index / width;
+               addLandNeighbour(landCells, visited, region, x > 0 ? index - 1 : -1);
+               addLandNeighbour(landCells, visited, region, x + 1 < width ? index + 1 : -1);
+               addLandNeighbour(landCells, visited, region, z > 0 ? index - width : -1);
+               addLandNeighbour(landCells, visited, region, z + 1 < height ? index + width : -1);
+            }
+            byte tier = (byte)(region.size() <= ISLAND_MAX_CELLS ? 0 : (region.size() <= REGIONAL_MAX_CELLS ? 1 : 2));
+            for (int cursor = 0; cursor < region.size(); cursor++) tiers[region.get(cursor)] = tier;
+         }
+         return new RiversMask.ContinentRegions(width, height, tiers);
+      }
+
+      int tier(int sourceX, int sourceZ) {
+         if (sourceX < 0 || sourceZ < 0) return 0;
+         int x = sourceX / CELL_PIXELS;
+         int z = sourceZ / CELL_PIXELS;
+         return x >= 0 && z >= 0 && x < this.width && z < this.height && this.tiers[z * this.width + x] >= 0 ? this.tiers[z * this.width + x] : 0;
+      }
+
+      private static void addLandNeighbour(BitSet land, BitSet visited, RiversMask.IntQueue region, int index) {
+         if (index >= 0 && land.get(index) && !visited.get(index)) {
+            visited.set(index);
+            region.add(index);
+         }
+      }
+   }
+
+   private static final class IntQueue {
+      private int[] values = new int[256];
+      private int size;
+
+      void clear() { this.size = 0; }
+      int size() { return this.size; }
+      int get(int index) { return this.values[index]; }
+      void add(int value) {
+         if (this.size == this.values.length) this.values = Arrays.copyOf(this.values, this.values.length * 2);
+         this.values[this.size++] = value;
       }
    }
 
@@ -1186,5 +1287,19 @@ public final class RiversMask {
       private int blockX;
       private int blockZ;
       private int width;
+   }
+
+   private static final class RiverDistanceCache {
+      private RiversMask.Data data;
+      private int blockX;
+      private int blockZ;
+      private double distance;
+
+      void set(RiversMask.Data data, int blockX, int blockZ, double distance) {
+         this.data = data;
+         this.blockX = blockX;
+         this.blockZ = blockZ;
+         this.distance = distance;
+      }
    }
 }

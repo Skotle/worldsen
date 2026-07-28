@@ -4,6 +4,7 @@ import io.github.earthshape.EarthShapeCompatibility;
 import io.github.earthshape.EarthShapeServerConfig;
 import io.github.earthshape.map.ClimateLayers;
 import io.github.earthshape.map.RiversMask;
+import io.github.earthshape.worldgen.BiomeLookupCache;
 import net.minecraft.core.Holder;
 import net.minecraft.resources.ResourceKey;
 import net.minecraft.tags.TagKey;
@@ -34,7 +35,9 @@ public abstract class TerrainBiomeMixin {
    // One RTree per layer family is built lazily. The old implementation evaluated
    // every vanilla parameter point for every quart biome sample.
    @Unique
-   private final ConcurrentHashMap<Integer, Climate.ParameterList<Holder<Biome>>> earthshape$filteredParameterLists = new ConcurrentHashMap<>();
+   private static final ConcurrentHashMap<Climate.ParameterList<Holder<Biome>>, ConcurrentHashMap<Integer, Climate.ParameterList<Holder<Biome>>>> earthshape$filteredParameterLists = new ConcurrentHashMap<>();
+   @Unique
+   private static final ThreadLocal<BiomeLookupCache> earthshape$lookupCache = ThreadLocal.withInitial(BiomeLookupCache::new);
 
    @Shadow(remap = false)
    public abstract Climate.ParameterList<Holder<Biome>> parameters();
@@ -138,7 +141,9 @@ public abstract class TerrainBiomeMixin {
          }
       }
 
-      if ((Boolean)EarthShapeServerConfig.RIVER_BIOMES_ENABLED.get() && RiversMask.INSTANCE.isInlandRiver(blockX, blockZ)) {
+      boolean sourceRiver = (Boolean)EarthShapeServerConfig.RIVER_BIOMES_ENABLED.get() && RiversMask.INSTANCE.isInlandRiver(blockX, blockZ);
+      earthshape$lookupCache.get().set(blockX, blockZ, terrain, sourceRiver);
+      if (sourceRiver) {
          // Exact valley values from OverworldBiomeBuilder's river range. Temperature
          // stays layer-driven, so frozen source rivers resolve to FROZEN_RIVER.
          continentalness = -0.05F;
@@ -155,13 +160,25 @@ public abstract class TerrainBiomeMixin {
     * hash-based variant is chosen here.
     */
    private Holder<Biome> selectLayerCandidate(ClimateLayers layers, int blockX, int blockY, int blockZ, Climate.TargetPoint point) {
-      ClimateLayers.TerrainKind terrain = layers.terrainKind(blockX, blockZ);
-      boolean sourceRiver = (Boolean)EarthShapeServerConfig.RIVER_BIOMES_ENABLED.get() && RiversMask.INSTANCE.isInlandRiver(blockX, blockZ);
+      BiomeLookupCache lookup = earthshape$lookupCache.get();
+      ClimateLayers.TerrainKind terrain;
+      boolean sourceRiver;
+      if (lookup.matches(blockX, blockZ)) {
+         terrain = lookup.terrain();
+         sourceRiver = lookup.sourceRiver();
+      } else {
+         terrain = layers.terrainKind(blockX, blockZ);
+         sourceRiver = (Boolean)EarthShapeServerConfig.RIVER_BIOMES_ENABLED.get() && RiversMask.INSTANCE.isInlandRiver(blockX, blockZ);
+         lookup.set(blockX, blockZ, terrain, sourceRiver);
+      }
       boolean riverMouth = RiversMask.INSTANCE.isRiverMouth(blockX, blockZ);
       boolean frozenPeaksAllowed = layers.isUltraMountain(blockX, blockZ) || layers.isPolarTemperatureZone(blockX, blockZ);
       int group = (sourceRiver ? 1 : (riverMouth || terrain == ClimateLayers.TerrainKind.WATER ? 2 : terrain.ordinal() + 3)) * 2
          + (frozenPeaksAllowed ? 1 : 0);
-      Climate.ParameterList<Holder<Biome>> candidates = this.earthshape$filteredParameterLists.computeIfAbsent(
+      ConcurrentHashMap<Integer, Climate.ParameterList<Holder<Biome>>> filtered = earthshape$filteredParameterLists.computeIfAbsent(
+         this.parameters(), ignored -> new ConcurrentHashMap<>()
+      );
+      Climate.ParameterList<Holder<Biome>> candidates = filtered.computeIfAbsent(
          group,
          ignored -> this.createFilteredParameterList(terrain, sourceRiver, riverMouth, frozenPeaksAllowed)
       );
