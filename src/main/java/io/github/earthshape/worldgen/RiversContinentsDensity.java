@@ -58,17 +58,12 @@ public record RiversContinentsDensity(DensityFunction argument) implements Densi
             && RiversMask.INSTANCE.hasInlandRiverInfluence(context.blockX(), context.blockZ())) {
             int widthBlocks = RiversMask.INSTANCE.effectiveRiverWidthBlocks(context.blockX(), context.blockZ());
             if (widthBlocks > 0) {
-               double floorRadius = (double)Math.max(4, widthBlocks) / 2.0;
+               double floorRadius = (double)widthBlocks / 2.0;
                double distance = RiversMask.INSTANCE.riverCentrelineDistance(context.blockX(), context.blockZ()) * (double)RiversMask.INSTANCE.blocksPerPixel();
-               // Water remains limited to the painted width; this controls only the terrain
-               // grade beside it.  A broad continuous transition prevents the source mask
-               // boundary from becoming a vertical canyon wall.
-               // Keep the density shoulder close to the water.  A continent-scale fade
-               // flattens an entire corridor beside every river and looks artificially
-               // excavated from above.
-               double channelRadius = floorRadius
-                  + (double)Math.max(24, Math.min(56, (Integer)EarthShapeServerConfig.RIVER_HEIGHT_FADE_BLOCKS.get()));
-               if (distance < channelRadius) {
+               // The river layer guides only the normal terrain-noise inputs inside
+               // its painted water core.  Do not flatten a broad artificial plain
+               // beside every river; vanilla's own erosion noise shapes the banks.
+               if (distance < floorRadius) {
                   // A river needs to reach the vanilla water table, not merely select the
                   // RIVER biome.  Keep this independent from an old persisted config value:
                   // a value close to zero leaves only a coloured biome line with dry land.
@@ -84,14 +79,11 @@ public record RiversContinentsDensity(DensityFunction argument) implements Densi
                   );
                   double floorWeight = 1.0 - Math.min(1.0, distance / Math.max(1.0, floorRadius));
                   floorWeight = floorWeight * floorWeight * (3.0 - 2.0 * floorWeight);
-                  double shoulderWeight = 1.0 - Math.min(1.0, distance / Math.max(1.0, channelRadius));
-                  shoulderWeight = shoulderWeight * shoulderWeight * (3.0 - 2.0 * shoulderWeight);
-                  // Never raise an already-low coastal value. Inland terrain eases into
-                  // the shallow channel target across the full bank instead of flipping
-                  // to a negative continentalness value in one source sample.
+                  // Never raise an already-low coastal value. The smooth core weight
+                  // feeds the existing terrain spline rather than adding a separate
+                  // height/flatness correction around the channel.
                   double target = Math.min(continentalness, centreChannel);
-                  double influence = floorWeight + (1.0 - floorWeight) * shoulderWeight * 0.30;
-                  continentalness += (target - continentalness) * influence;
+                  continentalness = lerp(continentalness, target, floorWeight);
                }
             }
          }

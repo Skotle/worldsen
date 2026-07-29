@@ -41,20 +41,23 @@ public final class LayerWaterlineDensity implements DensityFunction {
       if (width <= 0) return 0.0;
       double distance = cache.distance;
       double floorRadius = (double)width * 0.5;
-      double bankRadius = floorRadius + (double)Math.max(24, Math.min(64, (Integer)EarthShapeServerConfig.RIVER_BANK_FADE_BLOCKS.get()));
-      if (distance >= bankRadius) return 0.0;
-      double bankWeight = smoothstep(1.0 - distance / bankRadius);
+      if (distance >= floorRadius) return 0.0;
       double coreWeight = smoothstep(1.0 - Math.min(1.0, distance / Math.max(1.0, floorRadius)));
-      // Only the painted core receives the decisive waterline carve.  The bank is a
-      // short shoulder, so this cannot turn hot-region rivers into broad lakes.
-      double channelWeight = 0.18 * bankWeight + 0.82 * coreWeight;
-      int y = context.blockY();
-      if (y > 63) {
-         double aboveSea = Math.min(1.0, ((double)y - 63.0) / 32.0);
-         return -1.35 * channelWeight * (0.55 + 0.45 * aboveSea);
-      }
-      if (y < 61) return 0.72 * coreWeight;
-      return 0.0;
+      // Keep physical water in the source-painted core only. Terrain outside it is
+      // now entirely shaped by the regular continentalness/erosion noise pipeline.
+      double channelWeight = coreWeight;
+      double y = (double)context.blockY();
+      // Blend the floor support into the above-water carve over five Y levels.
+      // The old Y<61 / Y>63 branches were individually smooth in X/Z but created
+      // a visibly squared ledge wherever the channel crossed uneven terrain.
+      double upward = smoothstep((y - 60.0) / 5.0);
+      double belowSea = smoothstep((61.0 - y) / 4.0);
+      double aboveSea = Math.min(1.0, Math.max(0.0, (y - 63.0) / 32.0));
+      // The core must overcome high, dry terrain noise as well as open a shallow
+      // valley in plains. It remains confined to the configured source width.
+      double carve = -2.35 * channelWeight * upward * (0.55 + 0.45 * aboveSea);
+      double support = 0.72 * coreWeight * belowSea;
+      return carve + support;
    }
 
    private static double smoothstep(double value) {
@@ -64,7 +67,7 @@ public final class LayerWaterlineDensity implements DensityFunction {
 
    public void fillArray(double[] values, ContextProvider provider) { provider.fillAllDirectly(values, this); }
    public DensityFunction mapAll(Visitor visitor) { return visitor.apply(this); }
-   public double minValue() { return -3.0; }
+   public double minValue() { return -3.5; }
    public double maxValue() { return 2.0; }
    public KeyDispatchDataCodec<? extends DensityFunction> codec() { return CODEC; }
 

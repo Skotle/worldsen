@@ -26,13 +26,11 @@ public final class RiversMask {
    }
 
    public double sampleLayerLand(int blockX, int blockZ) {
-      RiversMask.Data loaded = this.data();
-      int blocksPerPixel = this.blocksPerPixel();
-      double imageX = (double)blockX / (double)blocksPerPixel + (double)loaded.width * 0.5;
-      double imageZ = (double)blockZ / (double)blocksPerPixel + (double)loaded.height * 0.5;
-      return !(imageX < 0.0) && !(imageZ < 0.0) && !(imageX >= (double)loaded.width) && !(imageZ >= (double)loaded.height)
-         ? loaded.land((int)Math.floor(imageX), (int)Math.floor(imageZ))
-         : 0.0;
+      // All coastline consumers must use the same sub-pixel field.  Sampling the
+      // raw cell here expanded every source pixel into a block-aligned rectangle,
+      // especially visible on small islands. Bilinear coverage keeps the original
+      // map outline while moving the 0.5 shoreline through a continuous contour.
+      return this.sampleLand(this.data(), blockX, blockZ);
    }
 
    /** Returns the absolute vanilla-surface ceiling for this connected land mass. */
@@ -79,7 +77,7 @@ public final class RiversMask {
       double imageZ = (double)blockZ / (double)blocksPerPixel + (double)loaded.height * 0.5;
       int x = (int)Math.floor(imageX);
       int z = (int)Math.floor(imageZ);
-      if (x < 0 || z < 0 || x >= loaded.width || z >= loaded.height || !loaded.land.get(z * loaded.width + x)) {
+      if (x < 0 || z < 0 || x >= loaded.width || z >= loaded.height || this.sampleLand(loaded, blockX, blockZ) < 0.5) {
          return 0.0;
       }
 
@@ -100,7 +98,7 @@ public final class RiversMask {
       double imageZ = (double)blockZ / (double)blocksPerPixel + (double)loaded.height * 0.5;
       int x = (int)Math.floor(imageX);
       int z = (int)Math.floor(imageZ);
-      if (x < 0 || z < 0 || x >= loaded.width || z >= loaded.height || loaded.land.get(z * loaded.width + x)) {
+      if (x < 0 || z < 0 || x >= loaded.width || z >= loaded.height || this.sampleLand(loaded, blockX, blockZ) >= 0.5) {
          return 0.0;
       }
 
@@ -108,6 +106,19 @@ public final class RiversMask {
          * (double)blocksPerPixel;
       double t = 1.0 - Math.min(1.0, distance / (double)Math.max(1, fadeBlocks));
       return t * t * (3.0 - 2.0 * t);
+   }
+
+   /** Exact horizontal distance from a mapped water cell to the mapped coastline. */
+   public double waterCoastDistanceBlocks(int blockX, int blockZ) {
+      RiversMask.Data loaded = this.data();
+      int blocksPerPixel = this.blocksPerPixel();
+      double imageX = (double)blockX / (double)blocksPerPixel + (double)loaded.width * 0.5;
+      double imageZ = (double)blockZ / (double)blocksPerPixel + (double)loaded.height * 0.5;
+      int x = (int)Math.floor(imageX);
+      int z = (int)Math.floor(imageZ);
+      if (x < 0 || z < 0 || x >= loaded.width || z >= loaded.height || this.sampleLand(loaded, blockX, blockZ) >= 0.5) return Double.POSITIVE_INFINITY;
+      return sampleDistance(loaded.waterCoastDistance, loaded.width, loaded.height, imageX, imageZ, loaded.land)
+         * (double)blocksPerPixel;
    }
 
    private static double sampleDistance(
@@ -222,8 +233,10 @@ public final class RiversMask {
       if (widthBlocks == 0) {
          return false;
       } else {
-         double halfWidthPixels = (double)Math.max(4, widthBlocks) / (2.0 * (double)this.blocksPerPixel());
-         return this.riverCentrelineDistance(blockX, blockZ) <= halfWidthPixels;
+         double distanceBlocks = this.riverCentrelineDistance(blockX, blockZ) * (double)this.blocksPerPixel();
+         // A source stroke supplies only the path centre. Its physical water core
+         // is exactly the configured width, independent of map scale or sampling.
+         return distanceBlocks <= (double)widthBlocks * 0.5;
       }
    }
 
@@ -329,10 +342,9 @@ public final class RiversMask {
 
    public int effectiveRiverWidthBlocks(int blockX, int blockZ) {
       int width = this.riverWidthBlocks(blockX, blockZ);
-      // Biomes are sampled every four blocks.  A thinner source stroke becomes a single
-      // biome sample and renders as a broken turquoise line instead of a watercourse.
-      // Keep three samples across even when an older server config still requests less.
-      return width > 0 ? Math.max(width, Math.max(12, (Integer)EarthShapeServerConfig.RIVER_MINIMUM_WIDTH_BLOCKS.get())) : 0;
+      // Do not inflate narrow configured channels to a global minimum. Every river
+      // colour is interpreted as a centreline plus its exact configured block width.
+      return width;
    }
 
    public double riverCentrelineDistance(int blockX, int blockZ) {
@@ -396,20 +408,30 @@ public final class RiversMask {
    private static double riverPathX(RiversMask.Data data, int x, int z) {
       boolean northSouth = data.river(x, z - 1) || data.river(x, z + 1);
       boolean eastWest = data.river(x - 1, z) || data.river(x + 1, z);
-      return (double)x + 0.5 + (northSouth && !eastWest ? 0.22 * axialNoise(z, x, 0x51A7L) : 0.0);
+      return (double)x + 0.5 + (northSouth && !eastWest ? meanderAmplitude() * axialNoise(z, x, 0x51A7L) : 0.0);
    }
 
    private static double riverPathZ(RiversMask.Data data, int x, int z) {
       boolean northSouth = data.river(x, z - 1) || data.river(x, z + 1);
       boolean eastWest = data.river(x - 1, z) || data.river(x + 1, z);
-      return (double)z + 0.5 + (eastWest && !northSouth ? 0.22 * axialNoise(x, z, 0xA715L) : 0.0);
+      return (double)z + 0.5 + (eastWest && !northSouth ? meanderAmplitude() * axialNoise(x, z, 0xA715L) : 0.0);
    }
 
    private static double axialNoise(int coordinate, int line, long salt) {
-      int cell = Math.floorDiv(coordinate, 6);
-      double t = (double)Math.floorMod(coordinate, 6) / 6.0;
+      int cellSize = Math.max(1, Math.min(8, 96 / Math.max(1, RiversMask.INSTANCE.blocksPerPixel())));
+      int cell = Math.floorDiv(coordinate, cellSize);
+      double t = (double)Math.floorMod(coordinate, cellSize) / (double)cellSize;
       t = t * t * (3.0 - 2.0 * t);
       return lerp(axialValue(cell, line, salt), axialValue(cell + 1, line, salt), t);
+   }
+
+   /**
+    * Source-pixel offset for a simple axial line. Both the wavelength above and
+    * this amplitude are expressed relative to map scale, so an enlarged world map
+    * retains gentle bends instead of turning each source segment into a ruler line.
+    */
+   private static double meanderAmplitude() {
+      return Math.min(0.38, 0.18 + (double)RiversMask.INSTANCE.blocksPerPixel() / 1024.0);
    }
 
    private static double axialValue(int cell, int line, long salt) {
@@ -544,7 +566,7 @@ public final class RiversMask {
             restoreOnlyInlandRiverPixels(width, height, land, rivers);
             BitSet riverMouths = createRiverMouths(width, height, land, rivers);
             byte[] riverCorners = createRiverCornerMasks(width, height, rivers);
-            BitSet riverInfluence = createRiverInfluence(width, height, land, rivers);
+            BitSet riverInfluence = createRiverInfluence(width, height, land, rivers, riverWidths);
             byte[] coastDistance = createCoastDistance(width, height, land, rivers);
             byte[] waterCoastDistance = createWaterCoastDistance(width, height, land);
             RiversMask.ContinentRegions continents = RiversMask.ContinentRegions.create(width, height, land);
@@ -593,22 +615,50 @@ public final class RiversMask {
             }
          }
 
-         if (support >= 16) {
+         // A river pixel at the coast can have plenty of land in its 5x5
+         // neighbourhood. Restoring it anyway creates a one-pixel land plug that
+         // becomes a tiny island after scaling. Keep every river pixel touching
+         // non-river water as water so the ocean reaches the river channel.
+         if (support >= 16 && !touchesNonRiverWater(x, z, width, height, land, rivers, 2)) {
             land.set(index);
          }
       }
    }
 
-   private static BitSet createRiverInfluence(int width, int height, BitSet land, BitSet rivers) {
-      BitSet influence = new BitSet(width * height);
+   private static boolean touchesNonRiverWater(
+      int centreX, int centreZ, int width, int height, BitSet land, BitSet rivers, int radius
+   ) {
+      for (int dz = -radius; dz <= radius; dz++) {
+         for (int dx = -radius; dx <= radius; dx++) {
+            int x = centreX + dx;
+            int z = centreZ + dz;
+            if (inside(x, z, width, height)) {
+               int index = z * width + x;
+               if (!land.get(index) && !rivers.get(index)) return true;
+            }
+         }
+      }
+      return false;
+   }
+
+   private static BitSet createRiverInfluence(int width, int height, BitSet land, BitSet rivers, byte[] riverWidths) {
+            BitSet influence = new BitSet(width * height);
 
       for (int index = rivers.nextSetBit(0); index >= 0; index = rivers.nextSetBit(index + 1)) {
-         if (land.get(index)) {
+         // Some valid painted river pixels remain water-coloured at the immediate
+         // shoreline or in a thin land corridor. They still need a channel; the
+         // separate open-ocean removal keeps sea-only ink out of this set.
+         if (land.get(index) || touchesLand(index % width, index / width, width, height, land, 2)) {
             int centreX = index % width;
             int centreZ = index / width;
 
-            for (int dz = -4; dz <= 4; dz++) {
-               for (int dx = -4; dx <= 4; dx++) {
+            // Keep the runtime distance lookup active only where this source
+            // stroke can physically reach after its configured width is applied.
+            // A fixed +/-4 source-pixel area becomes hundreds of blocks wide when
+            // map scale rises and was the cause of river-section CPS drops.
+            int radius = riverInfluenceRadiusPixels(riverWidths[index] & 255);
+            for (int dz = -radius; dz <= radius; dz++) {
+               for (int dx = -radius; dx <= radius; dx++) {
                   int x = centreX + dx;
                   int z = centreZ + dz;
                   if (inside(x, z, width, height)) {
@@ -620,6 +670,22 @@ public final class RiversMask {
       }
 
       return influence;
+   }
+
+   private static boolean touchesLand(int centreX, int centreZ, int width, int height, BitSet land, int radius) {
+      for (int dz = -radius; dz <= radius; dz++) {
+         for (int dx = -radius; dx <= radius; dx++) {
+            int x = centreX + dx;
+            int z = centreZ + dz;
+            if (inside(x, z, width, height) && land.get(z * width + x)) return true;
+         }
+      }
+      return false;
+   }
+
+   private static int riverInfluenceRadiusPixels(int widthBlocks) {
+      int blocksPerPixel = Math.max(1, RiversMask.INSTANCE.blocksPerPixel());
+      return Math.max(1, (int)Math.ceil((double)widthBlocks / (2.0 * (double)blocksPerPixel)) + 1);
    }
 
    private static BitSet createRiverMouths(int width, int height, BitSet land, BitSet rivers) {

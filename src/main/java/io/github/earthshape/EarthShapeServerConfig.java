@@ -24,6 +24,9 @@ public final class EarthShapeServerConfig {
    public static final BooleanValue BIOME_BOUNDARY_WARP_ENABLED;
    public static final IntValue BIOME_BOUNDARY_WARP_BLOCKS;
    public static final IntValue COAST_HEIGHT_FADE_BLOCKS;
+   public static final IntValue COAST_SHALLOW_SHELF_WIDTH_BLOCKS;
+   public static final IntValue COAST_SHELF_TRANSITION_BLOCKS;
+   public static final IntValue COAST_SHELF_DEEP_FLOOR_Y;
    public static final IntValue RIVER_HEIGHT_FADE_BLOCKS;
    public static final IntValue ISLAND_MAXIMUM_SURFACE_Y;
    public static final IntValue REGIONAL_MAXIMUM_SURFACE_Y;
@@ -102,6 +105,12 @@ public final class EarthShapeServerConfig {
       builder.push("terrain_shaping");
       COAST_HEIGHT_FADE_BLOCKS = builder.comment("해안선 대륙붕 경사가 완만하게 이어지는 해안으로부터의 거리.")
               .defineInRange("coastHeightFadeBlocks", 320, 20, 1024);
+      COAST_SHALLOW_SHELF_WIDTH_BLOCKS = builder.comment("해안 직후 Y=61(수심 1블록)으로 고정되는 얕은 대륙붕 폭.")
+              .defineInRange("coastShallowShelfWidthBlocks", 6, 4, 8);
+      COAST_SHELF_TRANSITION_BLOCKS = builder.comment("얕은 대륙붕 끝에서 깊은 해저로 완만히 내려가는 거리.")
+              .defineInRange("coastShelfTransitionBlocks", 16, 4, 128);
+      COAST_SHELF_DEEP_FLOOR_Y = builder.comment("대륙붕 전이 구간이 향하는 기본 깊은 해저 바닥 Y.")
+              .defineInRange("coastShelfDeepFloorY", 51, -64, 61);
       RIVER_HEIGHT_FADE_BLOCKS = builder.comment("강변 경사가 완만하게 이어지는 원본 강둑으로부터의 거리.")
               .defineInRange("riverHeightFadeBlocks", 160, 20, 1024);
       ISLAND_MAXIMUM_SURFACE_Y = builder.comment("작은 섬과 소형 육지에서 허용되는 최대 지표 Y.")

@@ -22,7 +22,7 @@ public final class DesertLakeMixin {
       if ((Boolean)EarthShapeServerConfig.DESERT_WATER_REDUCTION_ENABLED.get()) {
          BlockPos origin = context.origin();
          if (origin.getY() >= 52
-            && RiversMask.INSTANCE.sampleLand(origin.getX(), origin.getZ()) >= 0.5
+            && RiversMask.INSTANCE.sampleLayerLand(origin.getX(), origin.getZ()) >= 0.5
             && !RiversMask.INSTANCE.isInlandRiver(origin.getX(), origin.getZ())) {
             callback.setReturnValue(false);
          }

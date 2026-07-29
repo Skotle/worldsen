@@ -106,6 +106,14 @@ public final class ClimateLayers {
          || centre != this.terrainKind(x, z + distanceBlocks);
    }
 
+   /** True only for non-mountain cells in the immediate foothill band. */
+   public boolean isNearMountain(int x, int z, int distanceBlocks) {
+      return this.terrainKind(x - distanceBlocks, z) == TerrainKind.MOUNTAIN
+         || this.terrainKind(x + distanceBlocks, z) == TerrainKind.MOUNTAIN
+         || this.terrainKind(x, z - distanceBlocks) == TerrainKind.MOUNTAIN
+         || this.terrainKind(x, z + distanceBlocks) == TerrainKind.MOUNTAIN;
+   }
+
    private static boolean isMountainElevationCode(int code) {
       return code >= MOUNTAIN_LOW && code <= MOUNTAIN_ULTRA;
    }

@@ -33,7 +33,7 @@ public final class SurfaceAquiferGuardMixin {
       // The mapped ocean is authoritative. Hot-biome aquifer noise and the
       // land-side surface-water guard must not leave dry holes or vertical water
       // walls in the shelf. Solid density is untouched; only empty cells fill.
-      if (layerOcean && substance < 0.0 && result == null && context.blockY() >= 32 && context.blockY() <= 62) {
+      if (layerOcean && substance < 0.0 && context.blockY() >= 32 && context.blockY() <= 62) {
          callback.setReturnValue(Blocks.WATER.defaultBlockState());
          return;
       }

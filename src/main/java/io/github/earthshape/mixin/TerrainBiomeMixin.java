@@ -173,26 +173,60 @@ public abstract class TerrainBiomeMixin {
          sourceRiver = (Boolean)EarthShapeServerConfig.RIVER_BIOMES_ENABLED.get() && RiversMask.INSTANCE.isInlandRiver(blockX, blockZ);
          lookup.set(blockX, blockZ, terrain, sourceRiver);
       }
+      // Temperate forest directly below a mapped mountain otherwise repeatedly
+      // resolves to the same lush/cherry-like forest candidates.  Convert only a
+      // stable subset of this foothill band to plains candidates, yielding broad
+      // meadow clearings instead of scattered tree-free pixels.
+      if (terrain == ClimateLayers.TerrainKind.FOREST
+         && layers.treeCover(blockX, blockZ) != ClimateLayers.TreeCover.TROPICAL
+         && layers.isNearMountain(blockX, blockZ, 80)
+         && regionalVariant(blockX, blockZ) % 3 == 0) {
+         terrain = ClimateLayers.TerrainKind.PLAINS;
+      }
+      final ClimateLayers.TerrainKind selectedTerrain = terrain;
       boolean riverMouth = RiversMask.INSTANCE.isRiverMouth(blockX, blockZ);
-      boolean frozenPeaksAllowed = layers.isUltraMountain(blockX, blockZ) || layers.isPolarTemperatureZone(blockX, blockZ);
-      int group = (sourceRiver ? 1 : (riverMouth || terrain == ClimateLayers.TerrainKind.WATER ? 2 : terrain.ordinal() + 3)) * 2
-         + (frozenPeaksAllowed ? 1 : 0);
+      // Use broad deterministic patches, rather than a per-quart random roll, so
+      // only parts of a suitable coastline become beach biomes without speckling
+      // the shoreline. River mouths retain their ocean/river transition.
+      boolean beachEligible = !sourceRiver
+         && !riverMouth
+         && selectedTerrain != ClimateLayers.TerrainKind.WATER
+         && isCoastalLand(blockX, blockZ)
+         && regionalVariant(blockX, blockZ) % 5 == 0;
+      // Cherry groves are included in several mountain-slope tag sets. Keep them
+      // as an exceptional temperate mountain biome rather than letting each mapped
+      // mountain resolve to a pink forest.
+      boolean cherryGroveAllowed = selectedTerrain == ClimateLayers.TerrainKind.MOUNTAIN
+         && layers.treeCover(blockX, blockZ) == ClimateLayers.TreeCover.TEMPERATE
+         && layers.temperature(blockX, blockZ) > -0.25
+         && layers.temperature(blockX, blockZ) < 0.35
+         && regionalVariant(blockX, blockZ) % 24 == 0;
+      boolean snowySlopeAllowed = allowsSnow(blockY, layers.temperature(blockX, blockZ));
+      // A cold/white pixel alone must not make every small ridge a snowy peak.
+      // mountainRegionHeightScale is derived from the connected mapped mountain
+      // area, so peak biomes are reserved for substantial mountain systems.
+      boolean largeMountainSystem = layers.mountainRegionHeightScale(blockX, blockZ) >= 0.55;
+      boolean frozenPeaksAllowed = largeMountainSystem
+         && (layers.isUltraMountain(blockX, blockZ) || layers.isPolarTemperatureZone(blockX, blockZ));
+      int group = (((sourceRiver ? 1 : (riverMouth || selectedTerrain == ClimateLayers.TerrainKind.WATER ? 2 : selectedTerrain.ordinal() + 3)) * 2
+         + (frozenPeaksAllowed ? 1 : 0)) * 4 + (beachEligible ? 2 : 0) + (cherryGroveAllowed ? 1 : 0)) * 2
+         + (snowySlopeAllowed ? 1 : 0);
       ConcurrentHashMap<Integer, Climate.ParameterList<Holder<Biome>>> filtered = earthshape$filteredParameterLists.computeIfAbsent(
          this.parameters(), ignored -> new ConcurrentHashMap<>()
       );
       Climate.ParameterList<Holder<Biome>> candidates = filtered.computeIfAbsent(
          group,
-         ignored -> this.createFilteredParameterList(terrain, sourceRiver, riverMouth, frozenPeaksAllowed)
+         ignored -> this.createFilteredParameterList(selectedTerrain, sourceRiver, riverMouth, frozenPeaksAllowed, beachEligible, cherryGroveAllowed, snowySlopeAllowed)
       );
       return candidates.findValue(point);
    }
 
    private Climate.ParameterList<Holder<Biome>> createFilteredParameterList(
-      ClimateLayers.TerrainKind terrain, boolean sourceRiver, boolean riverMouth, boolean frozenPeaksAllowed
+      ClimateLayers.TerrainKind terrain, boolean sourceRiver, boolean riverMouth, boolean frozenPeaksAllowed, boolean beachEligible, boolean cherryGroveAllowed, boolean snowySlopeAllowed
    ) {
       List<com.mojang.datafixers.util.Pair<Climate.ParameterPoint, Holder<Biome>>> allowed = new ArrayList<>();
       for (var entry : this.parameters().values()) {
-         if (this.isAllowedTerrainCandidate(terrain, sourceRiver, riverMouth, frozenPeaksAllowed, entry.getSecond())) {
+         if (this.isAllowedTerrainCandidate(terrain, sourceRiver, riverMouth, frozenPeaksAllowed, beachEligible, cherryGroveAllowed, snowySlopeAllowed, entry.getSecond())) {
             allowed.add(entry);
          }
       }
@@ -201,10 +235,15 @@ public abstract class TerrainBiomeMixin {
       return allowed.isEmpty() ? this.parameters() : new Climate.ParameterList<>(List.copyOf(allowed));
    }
 
-   private boolean isAllowedTerrainCandidate(ClimateLayers.TerrainKind terrain, boolean sourceRiver, boolean riverMouth, boolean frozenPeaksAllowed, Holder<Biome> biome) {
+   private boolean isAllowedTerrainCandidate(ClimateLayers.TerrainKind terrain, boolean sourceRiver, boolean riverMouth, boolean frozenPeaksAllowed, boolean beachEligible, boolean cherryGroveAllowed, boolean snowySlopeAllowed, Holder<Biome> biome) {
       if (biome.is(Biomes.FROZEN_PEAKS) && !frozenPeaksAllowed) return false;
+      if (biome.is(Biomes.CHERRY_GROVE) && !cherryGroveAllowed) return false;
+      if ((biome.is(Biomes.SNOWY_SLOPES) || biome.is(Biomes.GROVE)) && !snowySlopeAllowed) return false;
       if (sourceRiver) return biome.is(Tags.Biomes.IS_RIVER) || isVanillaRiver(biome);
       if (riverMouth || terrain == ClimateLayers.TerrainKind.WATER) return biome.is(Tags.Biomes.IS_OCEAN);
+      if (beachEligible && (biome.is(Tags.Biomes.IS_BEACH)
+         || biome.is(Biomes.SNOWY_BEACH)
+         || biome.is(Biomes.STONY_SHORE))) return true;
       return switch (terrain) {
          case DESERT -> biome.is(Tags.Biomes.IS_DESERT) || biome.is(Tags.Biomes.IS_BADLANDS);
          case WETLAND -> biome.is(Tags.Biomes.IS_SWAMP);
@@ -255,7 +294,8 @@ public abstract class TerrainBiomeMixin {
       ClimateLayers.TerrainKind terrain = this.surfaceTerrain(layers, blockX, blockZ);
       double temperature = layers.temperature(layerX, layerZ);
       boolean snowAllowed = allowsSnow(blockY, temperature);
-      boolean frozenPeaksAllowed = layers.isUltraMountain(blockX, blockZ) || layers.isPolarTemperatureZone(blockX, blockZ);
+      boolean frozenPeaksAllowed = layers.mountainRegionHeightScale(blockX, blockZ) >= 0.55
+         && (layers.isUltraMountain(blockX, blockZ) || layers.isPolarTemperatureZone(blockX, blockZ));
       int region = regionalVariant(blockX, blockZ);
       boolean nextToLayerRiver = RiversMask.INSTANCE.isNearInlandRiver(blockX, blockZ, 32);
       if (!nextToLayerRiver && isCoastalLand(blockX, blockZ)) {

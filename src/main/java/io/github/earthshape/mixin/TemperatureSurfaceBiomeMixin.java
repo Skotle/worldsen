@@ -30,7 +30,7 @@ public final class TemperatureSurfaceBiomeMixin {
       if (y >= 48 && isVanilla((Holder<Biome>)callback.getReturnValue())) {
          ClimateLayers layers = ClimateLayers.INSTANCE;
          if (RiversMask.INSTANCE.sampleLand(x, z) < 0.5) {
-            callback.setReturnValue(this.ocean(layers.temperature(x, z), (Holder<Biome>)callback.getReturnValue()));
+            callback.setReturnValue(this.ocean(layers.temperature(x, z), x, z, (Holder<Biome>)callback.getReturnValue()));
          } else {
             double temperature = layers.temperature(x, z);
             if (!RiversMask.INSTANCE.isInlandRiver(x, z)) {
@@ -95,7 +95,7 @@ public final class TemperatureSurfaceBiomeMixin {
       );
          case MOUNTAIN -> this.biome(frozenPeaksAllowed ? Biomes.FROZEN_PEAKS : Biomes.STONY_PEAKS, fallback);
          case PLAINS, CITY, SURROUNDING -> this.plains(band, fallback);
-         case WATER -> this.ocean(band, fallback);
+         case WATER -> this.ocean(band, x, z, fallback);
       };
    }
 
@@ -149,25 +149,22 @@ public final class TemperatureSurfaceBiomeMixin {
       );
    }
 
-   private Holder<Biome> ocean(double t, Holder<Biome> fallback) {
-      return this.ocean(temperatureBand(t), fallback);
+   private Holder<Biome> ocean(double t, int x, int z, Holder<Biome> fallback) {
+      return this.ocean(temperatureBand(t), x, z, fallback);
    }
 
-   private Holder<Biome> ocean(int band, Holder<Biome> fallback) {
-      return this.biome(
-         band == 0
-            ? Biomes.DEEP_FROZEN_OCEAN
-            : (
-               band == 1
-                  ? Biomes.FROZEN_OCEAN
-                  : (
-                     band == 2
-                        ? Biomes.DEEP_COLD_OCEAN
-                        : (band == 3 ? Biomes.COLD_OCEAN : (band == 4 ? Biomes.OCEAN : (band == 5 ? Biomes.LUKEWARM_OCEAN : Biomes.WARM_OCEAN)))
-                  )
-            ),
-         fallback
-      );
+   private Holder<Biome> ocean(int band, int x, int z, Holder<Biome> fallback) {
+      boolean deep = isOpenOcean(x, z);
+      ResourceKey<Biome> biome = switch (band) {
+         // Warm Ocean has no vanilla deep counterpart. Every other temperature
+         // band uses its deep variant only in genuinely open ocean.
+         case 0, 1 -> deep ? Biomes.DEEP_FROZEN_OCEAN : Biomes.FROZEN_OCEAN;
+         case 2, 3 -> deep ? Biomes.DEEP_COLD_OCEAN : Biomes.COLD_OCEAN;
+         case 4 -> deep ? Biomes.DEEP_OCEAN : Biomes.OCEAN;
+         case 5, 6 -> deep ? Biomes.DEEP_LUKEWARM_OCEAN : Biomes.LUKEWARM_OCEAN;
+         default -> Biomes.WARM_OCEAN;
+      };
+      return this.biome(biome, fallback);
    }
 
    private static int temperatureBand(double t) {
@@ -192,6 +189,14 @@ public final class TemperatureSurfaceBiomeMixin {
 
    private Holder<Biome> biome(ResourceKey<Biome> key, Holder<Biome> fallback) {
       return ((MultiNoiseBiomeSource)(Object)this).possibleBiomes().stream().filter(holder -> holder.is(key)).findFirst().orElse(fallback);
+   }
+
+   private static boolean isOpenOcean(int blockX, int blockZ) {
+      int distance = 180;
+      return RiversMask.INSTANCE.sampleLand(blockX - distance, blockZ) < 0.25
+         && RiversMask.INSTANCE.sampleLand(blockX + distance, blockZ) < 0.25
+         && RiversMask.INSTANCE.sampleLand(blockX, blockZ - distance) < 0.25
+         && RiversMask.INSTANCE.sampleLand(blockX, blockZ + distance) < 0.25;
    }
 
    private static boolean isVanilla(Holder<Biome> biome) {
