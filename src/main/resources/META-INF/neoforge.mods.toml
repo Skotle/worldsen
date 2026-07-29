@@ -9,6 +9,15 @@ displayName="${mod_name}"
 authors="EarthShape contributors"
 description='''Earth-shaped continentalness controls for NeoForge 1.21.1 world generation.'''
 
+# Clean-room compatibility container for mods which require TerraBlender 4.1.
+# It provides only no-op registration APIs; EarthShape remains the worldgen owner.
+[[mods]]
+modId="terrablender"
+version="4.1.0.8"
+displayName="TerraBlender API Compatibility (EarthShape)"
+authors="EarthShape contributors"
+description='''No-op TerraBlender 4.1 API compatibility layer. World generation remains owned by EarthShape.'''
+
 [[mixins]]
 config="earthshape.mixins.json"
 

@@ -53,6 +53,9 @@ public abstract class TerrainBiomeMixin {
          int blockX = quartX << 2;
          int blockY = quartY << 2;
          int blockZ = quartZ << 2;
+         // Cave biomes use their own multi-noise ranges. Never replace that
+         // selection with a surface map-layer family merely to block TerraBlender.
+         if (blockY < 48) return;
          // TerraBlender replaces this method at HEAD with a weighted region RTree.
          // EarthShape owns the final biome decision while its map worldgen is active,
          // so cancel every lookup here rather than allowing that RTree to run on
@@ -77,7 +80,7 @@ public abstract class TerrainBiomeMixin {
       int blockX = quartX << 2;
       int blockY = quartY << 2;
       int blockZ = quartZ << 2;
-      if (!EarthShapeCompatibility.disablesWorldgen()) {
+      if (!EarthShapeCompatibility.disablesWorldgen() && blockY >= 48) {
          ClimateLayers layers = ClimateLayers.INSTANCE;
          if ((Boolean)EarthShapeServerConfig.TERRAIN_BIOMES_ENABLED.get()) {
             Climate.TargetPoint point = this.guidedClimatePoint(layers, blockX, blockZ, sampler.sample(quartX, quartY, quartZ));
@@ -236,6 +239,9 @@ public abstract class TerrainBiomeMixin {
    }
 
    private boolean isAllowedTerrainCandidate(ClimateLayers.TerrainKind terrain, boolean sourceRiver, boolean riverMouth, boolean frozenPeaksAllowed, boolean beachEligible, boolean cherryGroveAllowed, boolean snowySlopeAllowed, Holder<Biome> biome) {
+      // Keep TerraBlender present as an API for dependent mods, but do not allow
+      // its registered region biomes to enter EarthShape's final selector.
+      if (EarthShapeCompatibility.isTerraBlenderLoaded() && !isVanillaBiome(biome)) return false;
       if (biome.is(Biomes.FROZEN_PEAKS) && !frozenPeaksAllowed) return false;
       if (biome.is(Biomes.CHERRY_GROVE) && !cherryGroveAllowed) return false;
       if ((biome.is(Biomes.SNOWY_SLOPES) || biome.is(Biomes.GROVE)) && !snowySlopeAllowed) return false;
@@ -472,7 +478,9 @@ public abstract class TerrainBiomeMixin {
     * the terrain.bmp class at this exact map position.
     */
    private Holder<Biome> terraBlenderTerrainBiome(ClimateLayers.TerrainKind terrain, boolean snowAllowed, boolean frozenPeaksAllowed, int blockX, int blockZ) {
-      if (!EarthShapeCompatibility.isTerraBlenderLoaded()) return null;
+      // TerraBlender remains loaded only to satisfy dependent mods. Its tagged
+      // biome entries must not bypass the EarthShape layer selector.
+      if (EarthShapeCompatibility.isTerraBlenderLoaded()) return null;
       return switch (terrain) {
          case DESERT -> this.terraBlenderTaggedBiome(ClimateLayers.INSTANCE.isMesaRegion(blockX, blockZ) ? Tags.Biomes.IS_BADLANDS : Tags.Biomes.IS_DESERT, blockX, blockZ);
          case WETLAND -> this.terraBlenderTaggedBiome(Tags.Biomes.IS_SWAMP, blockX, blockZ);
@@ -486,7 +494,7 @@ public abstract class TerrainBiomeMixin {
    }
 
    private Holder<Biome> terraBlenderTaggedBiome(TagKey<Biome> tag, int blockX, int blockZ) {
-      if (!EarthShapeCompatibility.isTerraBlenderLoaded()) return null;
+      if (EarthShapeCompatibility.isTerraBlenderLoaded()) return null;
       List<Holder<Biome>> candidates = ((MultiNoiseBiomeSource)(Object)this).possibleBiomes().stream()
          .filter(holder -> !isVanillaBiome(holder) && holder.is(tag))
          .toList();

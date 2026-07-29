@@ -36,7 +36,7 @@ public final class EarthShapeCompatibility {
       }
 
       if (terraBlenderLoaded) {
-         EarthShape.LOGGER.info("[EarthShape] TerraBlender detected: EarthShape will intercept its MultiNoise biome lookup before the TerraBlender region tree runs.");
+         EarthShape.LOGGER.info("[EarthShape] TerraBlender detected: keeping its API for dependent mods but disabling its region-biome and surface-rule worldgen paths.");
       }
    }
 
