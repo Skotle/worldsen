@@ -5,6 +5,7 @@ import com.mojang.serialization.codecs.RecordCodecBuilder;
 import io.github.earthshape.EarthShapeCompatibility;
 import io.github.earthshape.EarthShapeServerConfig;
 import io.github.earthshape.map.ClimateLayers;
+import io.github.earthshape.map.RiversMask;
 import net.minecraft.util.KeyDispatchDataCodec;
 import net.minecraft.world.level.levelgen.DensityFunction;
 import net.minecraft.world.level.levelgen.DensityFunction.ContextProvider;
@@ -27,6 +28,13 @@ public record TerrainErosionDensity(DensityFunction argument) implements Density
       double vanilla = this.argument.compute(context);
       if (EarthShapeCompatibility.disablesWorldgen()
          || !(Boolean)EarthShapeServerConfig.TERRAIN_BIOMES_ENABLED.get()) {
+         return vanilla;
+      }
+
+      // terrain.bmp is a land-relief layer.  Letting its mountain pixels alter
+      // erosion over a water-mask pixel can lift an ocean floor into the air.
+      // Continentalness alone cannot reliably undo that spline combination.
+      if (RiversMask.INSTANCE.sampleLand(context.blockX(), context.blockZ()) < 0.5) {
          return vanilla;
       }
 

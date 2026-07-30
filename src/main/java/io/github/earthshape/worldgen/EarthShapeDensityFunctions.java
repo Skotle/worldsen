@@ -17,11 +17,8 @@ public final class EarthShapeDensityFunctions {
    }
 
    static {
-      TYPES.register("rivers_continents", () -> RiversContinentsDensity.CODEC.codec());
       TYPES.register("terrain_erosion", () -> TerrainErosionDensity.CODEC.codec());
-      TYPES.register("continent_height_limit", () -> ContinentHeightLimitDensity.CODEC.codec());
-      TYPES.register("coastal_shelf", () -> CoastalShelfDensity.CODEC.codec());
-      TYPES.register("river_bank_grade", () -> RiverBankGradeDensity.CODEC.codec());
-      TYPES.register("layer_waterline", () -> LayerWaterlineDensity.CODEC.codec());
+      TYPES.register("river_weirdness", () -> RiverWeirdnessDensity.CODEC.codec());
+      TYPES.register("coastal_continentalness", () -> CoastalContinentalnessDensity.CODEC.codec());
    }
 }

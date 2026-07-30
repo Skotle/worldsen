@@ -304,9 +304,11 @@ public abstract class TerrainBiomeMixin {
          && (layers.isUltraMountain(blockX, blockZ) || layers.isPolarTemperatureZone(blockX, blockZ));
       int region = regionalVariant(blockX, blockZ);
       boolean nextToLayerRiver = RiversMask.INSTANCE.isNearInlandRiver(blockX, blockZ, 32);
-      if (!nextToLayerRiver && isCoastalLand(blockX, blockZ)) {
-         Holder<Biome> terraBeach = this.terraBlenderTaggedBiome(Tags.Biomes.IS_BEACH, blockX, blockZ);
-         if (terraBeach != null) return terraBeach;
+      // Do not force a tagged beach biome along every raster coastline.  That
+      // produced a bright, one-source-pixel-wide stair-step belt. Beaches stay
+      // an occasional terrain-specific transition instead of exposing the mask.
+      boolean beachPatch = regionalVariant(blockX, blockZ) % 5 == 0;
+      if (!nextToLayerRiver && beachPatch && isCoastalLand(blockX, blockZ)) {
          if (terrain == ClimateLayers.TerrainKind.HILLS || terrain == ClimateLayers.TerrainKind.MOUNTAIN) {
             return this.findBiome(Biomes.STONY_SHORE, fallback);
          }

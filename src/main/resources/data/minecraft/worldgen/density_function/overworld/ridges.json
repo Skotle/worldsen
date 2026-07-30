@@ -1,10 +1,10 @@
 {
-  "type": "earthshape:coastal_continentalness",
+  "type": "earthshape:river_weirdness",
   "argument": {
     "type": "minecraft:flat_cache",
     "argument": {
       "type": "minecraft:shifted_noise",
-      "noise": "minecraft:continentalness",
+      "noise": "minecraft:ridge",
       "shift_x": "minecraft:shift_x",
       "shift_y": 0.0,
       "shift_z": "minecraft:shift_z",

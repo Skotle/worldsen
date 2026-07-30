@@ -33,140 +33,20 @@ public final class RiversMask {
       return this.sampleLand(this.data(), blockX, blockZ);
    }
 
-   /** Returns the absolute vanilla-surface ceiling for this connected land mass. */
-   public int continentMaximumSurfaceY(int blockX, int blockZ) {
-      RiversMask.Data loaded = this.data();
-      int x = (int)Math.floor((double)blockX / (double)this.blocksPerPixel() + (double)loaded.width * 0.5);
-      int z = (int)Math.floor((double)blockZ / (double)this.blocksPerPixel() + (double)loaded.height * 0.5);
-      int tier = loaded.continents.tier(x, z);
-      if (tier == 0) return (Integer)EarthShapeServerConfig.ISLAND_MAXIMUM_SURFACE_Y.get();
-      if (tier == 1) return (Integer)EarthShapeServerConfig.REGIONAL_MAXIMUM_SURFACE_Y.get();
-      return (Integer)EarthShapeServerConfig.CONTINENT_MAXIMUM_SURFACE_Y.get();
-   }
-
-   public double sampleCoastLand(int blockX, int blockZ) {
-      RiversMask.Data loaded = this.data();
-      int radiusBlocks = Math.max(160, (Integer)EarthShapeServerConfig.COAST_HEIGHT_FADE_BLOCKS.get() / 2);
-      int sampleStep = Math.max(1, radiusBlocks / 2);
-      int sampleRadius = 2;
-      double total = 0.0;
-      double weight = 0.0;
-
-      for (int dz = -sampleRadius; dz <= sampleRadius; dz++) {
-         for (int dx = -sampleRadius; dx <= sampleRadius; dx++) {
-            double distance = Math.sqrt((double)(dx * dx + dz * dz));
-            if (!(distance > (double)sampleRadius)) {
-               double sampleWeight = (double)sampleRadius + 1.0 - distance;
-               total += this.sampleLand(loaded, blockX + dx * sampleStep, blockZ + dz * sampleStep) * sampleWeight;
-               weight += sampleWeight;
-            }
-         }
-      }
-
-      return total / weight;
-   }
-
    /**
-    * Smooth land-side distance from the shoreline.  Unlike sampleCoastLand this never
-    * averages water into a narrow strait; it is used only to grade a land bank upward.
+    * A pre-smoothed land mask used only for the continentalness transition.
+    * The exact mask above remains authoritative for coastline and biome choice.
     */
-   public double sampleCoastInlandness(int blockX, int blockZ, int fadeBlocks) {
+   public double sampleCoastalLandness(int blockX, int blockZ) {
       RiversMask.Data loaded = this.data();
-      int blocksPerPixel = this.blocksPerPixel();
-      double imageX = (double)blockX / (double)blocksPerPixel + (double)loaded.width * 0.5;
-      double imageZ = (double)blockZ / (double)blocksPerPixel + (double)loaded.height * 0.5;
-      int x = (int)Math.floor(imageX);
-      int z = (int)Math.floor(imageZ);
-      if (x < 0 || z < 0 || x >= loaded.width || z >= loaded.height || this.sampleLand(loaded, blockX, blockZ) < 0.5) {
-         return 0.0;
-      }
-
-      double distance = sampleDistance(loaded.coastDistance, loaded.width, loaded.height, imageX, imageZ, null);
-      double t = Math.min(1.0, distance * (double)blocksPerPixel / (double)Math.max(1, fadeBlocks));
-      return t * t * (3.0 - 2.0 * t);
-   }
-
-   /**
-    * Water-side counterpart of {@link #sampleCoastInlandness}.  This uses the exact
-    * distance to mapped land rather than a blurred land average, so narrow straits and
-    * enclosed seas stay water while their floor still forms a shallow continental shelf.
-    */
-   public double sampleWaterShoreProximity(int blockX, int blockZ, int fadeBlocks) {
-      RiversMask.Data loaded = this.data();
-      int blocksPerPixel = this.blocksPerPixel();
-      double imageX = (double)blockX / (double)blocksPerPixel + (double)loaded.width * 0.5;
-      double imageZ = (double)blockZ / (double)blocksPerPixel + (double)loaded.height * 0.5;
-      int x = (int)Math.floor(imageX);
-      int z = (int)Math.floor(imageZ);
-      if (x < 0 || z < 0 || x >= loaded.width || z >= loaded.height || this.sampleLand(loaded, blockX, blockZ) >= 0.5) {
-         return 0.0;
-      }
-
-      double distance = sampleDistance(loaded.waterCoastDistance, loaded.width, loaded.height, imageX, imageZ, loaded.land)
-         * (double)blocksPerPixel;
-      double t = 1.0 - Math.min(1.0, distance / (double)Math.max(1, fadeBlocks));
-      return t * t * (3.0 - 2.0 * t);
-   }
-
-   /** Exact horizontal distance from a mapped water cell to the mapped coastline. */
-   public double waterCoastDistanceBlocks(int blockX, int blockZ) {
-      RiversMask.Data loaded = this.data();
-      int blocksPerPixel = this.blocksPerPixel();
-      double imageX = (double)blockX / (double)blocksPerPixel + (double)loaded.width * 0.5;
-      double imageZ = (double)blockZ / (double)blocksPerPixel + (double)loaded.height * 0.5;
-      int x = (int)Math.floor(imageX);
-      int z = (int)Math.floor(imageZ);
-      if (x < 0 || z < 0 || x >= loaded.width || z >= loaded.height || this.sampleLand(loaded, blockX, blockZ) >= 0.5) return Double.POSITIVE_INFINITY;
-      return sampleDistance(loaded.waterCoastDistance, loaded.width, loaded.height, imageX, imageZ, loaded.land)
-         * (double)blocksPerPixel;
-   }
-
-   private static double sampleDistance(
-      byte[] distances, int width, int height, double imageX, double imageZ, BitSet zeroMask
-   ) {
-      double clampedX = Math.max(0.0, Math.min((double)width - 1.001, imageX));
-      double clampedZ = Math.max(0.0, Math.min((double)height - 1.001, imageZ));
-      int x = (int)clampedX;
-      int z = (int)clampedZ;
-      double tx = clampedX - (double)x;
-      double tz = clampedZ - (double)z;
-      double top = lerp(
-         distanceValue(distances, width, x, z, zeroMask),
-         distanceValue(distances, width, x + 1, z, zeroMask),
-         tx
-      );
-      double bottom = lerp(
-         distanceValue(distances, width, x, z + 1, zeroMask),
-         distanceValue(distances, width, x + 1, z + 1, zeroMask),
-         tx
-      );
-      return lerp(top, bottom, tz);
-   }
-
-   private static double distanceValue(byte[] distances, int width, int x, int z, BitSet zeroMask) {
-      int index = z * width + x;
-      return zeroMask != null && zeroMask.get(index) ? 0.0 : (double)(distances[index] & 255);
-   }
-
-   public double sampleRiverReliefFactor(int blockX, int blockZ) {
-      if (!(Boolean)EarthShapeServerConfig.RIVER_BIOMES_ENABLED.get()) {
-         return 1.0;
-      } else if (!this.hasInlandRiverInfluence(blockX, blockZ)) {
-         return 1.0;
-      } else {
-         double distance = this.riverCentrelineDistance(blockX, blockZ) * (double)this.blocksPerPixel();
-         double riverRadius = (double)this.effectiveRiverWidthBlocks(blockX, blockZ) * 0.5;
-         // Keep the source relief intact except immediately around the centreline.
-         // A cubic factor avoids the full-width, flat-bottomed trench that a hard
-         // distance cutoff produces on raster-derived rivers.
-         int fadeBlocks = Math.max(24, Math.min(56, (Integer)EarthShapeServerConfig.RIVER_HEIGHT_FADE_BLOCKS.get()));
-         double rawFactor = Math.max(0.0, 1.0 - distance / Math.max(1.0, riverRadius + (double)fadeBlocks));
-         double sharpRiverFactor = rawFactor * rawFactor * rawFactor;
-         return 1.0 - sharpRiverFactor;
-      }
+      return this.sampleBytes(loaded, loaded.coastalLandness, blockX, blockZ);
    }
 
    private double sampleLand(RiversMask.Data loaded, int blockX, int blockZ) {
+      return this.sampleBytes(loaded, null, blockX, blockZ);
+   }
+
+   private double sampleBytes(RiversMask.Data loaded, byte[] values, int blockX, int blockZ) {
       int blocksPerPixel = this.blocksPerPixel();
       double imageX = (double)blockX / (double)blocksPerPixel + (double)loaded.width * 0.5;
       double imageZ = (double)blockZ / (double)blocksPerPixel + (double)loaded.height * 0.5;
@@ -175,12 +55,16 @@ public final class RiversMask {
          int z = (int)Math.floor(imageZ);
          double tx = imageX - (double)x;
          double tz = imageZ - (double)z;
-         double a = lerp(loaded.land(x, z), loaded.land(x + 1, z), tx);
-         double b = lerp(loaded.land(x, z + 1), loaded.land(x + 1, z + 1), tx);
+         double a = lerp(sampleValue(loaded, values, x, z), sampleValue(loaded, values, x + 1, z), tx);
+         double b = lerp(sampleValue(loaded, values, x, z + 1), sampleValue(loaded, values, x + 1, z + 1), tx);
          return lerp(a, b, tz);
       } else {
          return 0.0;
       }
+   }
+
+   private static double sampleValue(RiversMask.Data loaded, byte[] values, int x, int z) {
+      return values == null ? loaded.land(x, z) : (double)(values[z * loaded.width + x] & 255) / 255.0;
    }
 
    private double sampleReliefLand(RiversMask.Data loaded, int blockX, int blockZ) {
@@ -567,15 +451,14 @@ public final class RiversMask {
             BitSet riverMouths = createRiverMouths(width, height, land, rivers);
             byte[] riverCorners = createRiverCornerMasks(width, height, rivers);
             BitSet riverInfluence = createRiverInfluence(width, height, land, rivers, riverWidths);
-            byte[] coastDistance = createCoastDistance(width, height, land, rivers);
-            byte[] waterCoastDistance = createWaterCoastDistance(width, height, land);
-            RiversMask.ContinentRegions continents = RiversMask.ContinentRegions.create(width, height, land);
+            int coastRadiusPixels = Math.max(2, Math.min(12, (Integer)EarthShapeServerConfig.COAST_HEIGHT_FADE_BLOCKS.get() / Math.max(1, (Integer)EarthShapeServerConfig.BLOCKS_PER_PIXEL.get() * 6)));
+            byte[] coastalLandness = createCoastalLandness(width, height, land, coastRadiusPixels);
             EarthShape.LOGGER
                .info(
                   "[EarthShape] worldmap_river.png land/ocean and river mask loaded: {}x{} in {} ms.",
                   new Object[]{width, height, (System.nanoTime() - started) / 1000000L}
                );
-            var21x = new RiversMask.Data(width, height, land, rivers, riverWidths, riverCorners, riverMouths, riverInfluence, coastDistance, waterCoastDistance, continents);
+            var21x = new RiversMask.Data(width, height, land, rivers, riverWidths, riverCorners, riverMouths, riverInfluence, coastalLandness);
          }
 
          return var21x;
@@ -586,6 +469,48 @@ public final class RiversMask {
 
    private static double lerp(double a, double b, double t) {
       return a + (b - a) * t;
+   }
+
+   private static byte[] createCoastalLandness(int width, int height, BitSet land, int radius) {
+      byte[] values = new byte[width * height];
+      for (int index = land.nextSetBit(0); index >= 0; index = land.nextSetBit(index + 1)) values[index] = (byte)255;
+      for (int pass = 0; pass < 3; pass++) values = boxBlur(values, width, height, radius);
+      return values;
+   }
+
+   private static byte[] boxBlur(byte[] source, int width, int height, int radius) {
+      byte[] horizontal = new byte[source.length];
+      for (int z = 0; z < height; z++) {
+         int row = z * width;
+         int sum = 0;
+         for (int x = 0; x <= Math.min(width - 1, radius); x++) sum += source[row + x] & 255;
+         for (int x = 0; x < width; x++) {
+            if (x > 0) {
+               int remove = x - radius - 1;
+               int add = x + radius;
+               if (remove >= 0) sum -= source[row + remove] & 255;
+               if (add < width) sum += source[row + add] & 255;
+            }
+            int count = Math.min(width - 1, x + radius) - Math.max(0, x - radius) + 1;
+            horizontal[row + x] = (byte)(sum / count);
+         }
+      }
+      byte[] result = new byte[source.length];
+      for (int x = 0; x < width; x++) {
+         int sum = 0;
+         for (int z = 0; z <= Math.min(height - 1, radius); z++) sum += horizontal[z * width + x] & 255;
+         for (int z = 0; z < height; z++) {
+            if (z > 0) {
+               int remove = z - radius - 1;
+               int add = z + radius;
+               if (remove >= 0) sum -= horizontal[remove * width + x] & 255;
+               if (add < height) sum += horizontal[add * width + x] & 255;
+            }
+            int count = Math.min(height - 1, z + radius) - Math.max(0, z - radius) + 1;
+            result[z * width + x] = (byte)(sum / count);
+         }
+      }
+      return result;
    }
 
    private static void removeCoastalRiverInk(int width, BitSet rivers, byte[] riverWidths, RiversMask.OceanProximity ocean) {
@@ -1137,9 +1062,7 @@ public final class RiversMask {
       byte[] riverCorners,
       BitSet riverMouths,
       BitSet riverInfluence,
-      byte[] coastDistance,
-      byte[] waterCoastDistance,
-      RiversMask.ContinentRegions continents
+      byte[] coastalLandness
    ) {
       double land(int x, int z) {
          return this.land.get(z * this.width + x) ? 1.0 : 0.0;
