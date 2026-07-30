@@ -52,6 +52,7 @@ public final class EarthShapeServerConfig {
    public static final DoubleValue DESERT_RIVER_WIDTH_SCALE;
    public static final IntValue DESERT_MINIMUM_RIVER_WIDTH_BLOCKS;
    public static final IntValue DESERT_MAXIMUM_RIVER_WIDTH_BLOCKS;
+   public static final DoubleValue SURFACE_STRUCTURE_RATE;
 
    private EarthShapeServerConfig() {
    }
@@ -180,6 +181,12 @@ public final class EarthShapeServerConfig {
                       "살아남은 사막 강의 최종 최대 수면 너비. 넓은 원본 선과 루프가 사막 호수가 되는 것을 방지합니다."
               )
               .defineInRange("maximumRiverWidthBlocks", 18, 4, 64);
+      builder.pop();
+      builder.push("structures");
+      SURFACE_STRUCTURE_RATE = builder.comment(
+                      "지상 구조물(SURFACE_STRUCTURES) 발생 비율. 1.0은 기본 빈도이며 0.01은 기본 빈도의 1%입니다. 지하 구조물과 요새에는 적용하지 않습니다."
+              )
+              .defineInRange("surfaceStructureRate", 1.0, 0.01, 1.0);
       builder.pop();
       SPEC = builder.build();
    }

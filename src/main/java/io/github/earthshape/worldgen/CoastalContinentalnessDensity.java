@@ -22,6 +22,9 @@ public record CoastalContinentalnessDensity(DensityFunction argument) implements
       if (EarthShapeCompatibility.disablesWorldgen() || !(Boolean)EarthShapeServerConfig.CONTINENTS_ENABLED.get()) return vanilla;
       double t = RiversMask.INSTANCE.sampleCoastalLandness(context.blockX(), context.blockZ());
       t = t * t * (3.0 - 2.0 * t);
+      // Inland-river handling intentionally stops at a mouth so the biome can
+      // become ocean. Keep that same mouth physically open in the C-noise field.
+      t *= 1.0 - RiversMask.INSTANCE.riverMouthOpening(context.blockX(), context.blockZ());
       // Keep a portion of the original continental noise.  Clamping every
       // water pixel to one C value made an unnaturally level coastal shelf;
       // this only steers the noise toward ocean/land domains instead.

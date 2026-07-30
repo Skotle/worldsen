@@ -140,6 +140,41 @@ public final class RiversMask {
          && this.isRiverCentreline(blockX, blockZ);
    }
 
+   /**
+    * Continuous opening factor for an actual painted river mouth.  Mouth cells
+    * are deliberately excluded from inland-river biome selection, but their
+    * physical channel must still join the ocean rather than ending in a land
+    * continentalness seam.
+    */
+   public double riverMouthOpening(int blockX, int blockZ) {
+      RiversMask.Data loaded = this.data();
+      double imageX = (double)blockX / (double)this.blocksPerPixel() + (double)loaded.width * 0.5;
+      double imageZ = (double)blockZ / (double)this.blocksPerPixel() + (double)loaded.height * 0.5;
+      int centreX = (int)Math.floor(imageX);
+      int centreZ = (int)Math.floor(imageZ);
+      if (centreX < 1 || centreZ < 1 || centreX >= loaded.width - 1 || centreZ >= loaded.height - 1) return 0.0;
+
+      double strongest = 0.0;
+      for (int z = centreZ - 4; z <= centreZ + 4; z++) {
+         for (int x = centreX - 4; x <= centreX + 4; x++) {
+            int index = z * loaded.width + x;
+            if (!loaded.riverMouths.get(index)) continue;
+            int width = loaded.riverWidth(x, z);
+            if (width <= 0) continue;
+            double dx = (imageX - ((double)x + 0.5)) * (double)this.blocksPerPixel();
+            double dz = (imageZ - ((double)z + 0.5)) * (double)this.blocksPerPixel();
+            double radius = (double)width * 0.5
+               + Math.max(2.0, (double)EarthShapeServerConfig.RIVER_CHANNEL_EDGE_FADE_BLOCKS.get());
+            double distance = Math.sqrt(dx * dx + dz * dz);
+            if (distance >= radius) continue;
+            double t = 1.0 - distance / radius;
+            t = t * t * (3.0 - 2.0 * t);
+            strongest = Math.max(strongest, t);
+         }
+      }
+      return strongest;
+   }
+
    public boolean isInlandRiverBank(int blockX, int blockZ) {
       if (!this.hasInlandRiverInfluence(blockX, blockZ)) {
          return false;
