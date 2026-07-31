@@ -104,6 +104,10 @@ dependencies {
     // For all intends and purposes: You can treat this dependency as if it is a normal library you would use.
     implementation "net.neoforged:neoforge:${neo_version}"
 
+    // Chunky is optional at runtime.  Its public shape API lets EarthShape
+    // exclude ocean-only chunks from a pregeneration selection.
+    compileOnly files("C:/Users/user/Desktop/neoforge-launcher/mods/Chunky-NeoForge-1.4.23.jar")
+
     // Example optional mod dependency with JEI
     // The JEI API is declared for compile time use, while the full JEI artifact is used at runtime
     // compileOnly "mezz.jei:jei-${mc_version}-common-api:${jei_version}"

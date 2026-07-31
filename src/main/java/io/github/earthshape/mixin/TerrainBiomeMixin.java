@@ -193,7 +193,9 @@ public abstract class TerrainBiomeMixin {
       // the shoreline. River mouths retain their ocean/river transition.
       boolean beachEligible = !sourceRiver
          && !riverMouth
-         && selectedTerrain != ClimateLayers.TerrainKind.WATER
+         && (selectedTerrain == ClimateLayers.TerrainKind.DESERT
+            || selectedTerrain == ClimateLayers.TerrainKind.HILLS
+            || selectedTerrain == ClimateLayers.TerrainKind.MOUNTAIN)
          && isCoastalLand(blockX, blockZ)
          && regionalVariant(blockX, blockZ) % 5 == 0;
       // Cherry groves are included in several mountain-slope tag sets. Keep them
@@ -247,9 +249,15 @@ public abstract class TerrainBiomeMixin {
       if ((biome.is(Biomes.SNOWY_SLOPES) || biome.is(Biomes.GROVE)) && !snowySlopeAllowed) return false;
       if (sourceRiver) return biome.is(Tags.Biomes.IS_RIVER) || isVanillaRiver(biome);
       if (riverMouth || terrain == ClimateLayers.TerrainKind.WATER) return biome.is(Tags.Biomes.IS_OCEAN);
-      if (beachEligible && (biome.is(Tags.Biomes.IS_BEACH)
-         || biome.is(Biomes.SNOWY_BEACH)
-         || biome.is(Biomes.STONY_SHORE))) return true;
+      if (beachEligible) {
+         // Mountain/hill coasts must never enter the generic beach tag: it
+         // includes the yellow sand beach and exposed a directional-looking
+         // strip on north/west-facing mapped shorelines.
+         if (terrain == ClimateLayers.TerrainKind.HILLS || terrain == ClimateLayers.TerrainKind.MOUNTAIN) {
+            return biome.is(Biomes.SNOWY_BEACH) || biome.is(Biomes.STONY_SHORE);
+         }
+         return biome.is(Tags.Biomes.IS_BEACH) || biome.is(Biomes.SNOWY_BEACH);
+      }
       return switch (terrain) {
          case DESERT -> biome.is(Tags.Biomes.IS_DESERT) || biome.is(Tags.Biomes.IS_BADLANDS);
          case WETLAND -> biome.is(Tags.Biomes.IS_SWAMP);
@@ -313,8 +321,7 @@ public abstract class TerrainBiomeMixin {
             return this.findBiome(Biomes.STONY_SHORE, fallback);
          }
 
-         boolean sandyBeach = terrain == ClimateLayers.TerrainKind.DESERT
-            || terrain == ClimateLayers.TerrainKind.PLAINS && temperature > 0.2 && region % 5 == 0;
+         boolean sandyBeach = terrain == ClimateLayers.TerrainKind.DESERT;
          if (sandyBeach) {
             return this.findBiome(snowAllowed ? Biomes.SNOWY_BEACH : Biomes.BEACH, fallback);
          }

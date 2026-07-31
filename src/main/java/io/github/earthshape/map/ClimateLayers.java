@@ -63,6 +63,13 @@ public final class ClimateLayers {
    }
 
    public ClimateLayers.TerrainKind terrainKind(int x, int z) {
+      // terrain.bmp may contain WATER/SURROUNDING pixels around the coast.
+      // They used to be replaced with the nearest land class below, leaving a
+      // one-biome-wide land rim in the ocean. The authoritative land/ocean mask
+      // must win before any terrain-layer fallback is considered.
+      if (RiversMask.INSTANCE.sampleLayerLand(x, z) < 0.5) {
+         return ClimateLayers.TerrainKind.WATER;
+      }
       ClimateLayers.Data layer = this.terrain();
       long point = warpedTerrainPoint(x, z);
       int sampleX = unpackX(point);

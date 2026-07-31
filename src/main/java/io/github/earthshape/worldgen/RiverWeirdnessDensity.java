@@ -36,11 +36,17 @@ public record RiverWeirdnessDensity(DensityFunction argument) implements Density
       double radius = width * 0.5 + Math.max(2.0, (double)EarthShapeServerConfig.RIVER_CHANNEL_EDGE_FADE_BLOCKS.get());
       if (distance >= radius) return weirdness;
 
-      // 0 at the centreline and 1 at the edge.  Multiplying W by this
-      // increasing recovery function makes the folded PV value decrease
-      // continuously toward its Valleys minimum along the river line.
-      double t = Math.max(0.0, Math.min(1.0, distance / Math.max(1.0, radius)));
-      double recovery = t * t * (3.0 - 2.0 * t);
+      // The river bed is a Gaussian valley: its height guidance is lowest at
+      // the centre, then recovers toward either bank.  The derivative of the
+      // Gaussian is a bell-shaped slope distribution, so it avoids the old
+      // flat bottom / abrupt bank profile without imposing a fixed Y depth.
+      double sigma = Math.max(1.0, radius * 0.42);
+      double normalizedDistance = distance / sigma;
+      double edgeDistance = radius / sigma;
+      double gaussianDrop = Math.exp(-0.5 * normalizedDistance * normalizedDistance);
+      double edgeDrop = Math.exp(-0.5 * edgeDistance * edgeDistance);
+      double recovery = (1.0 - gaussianDrop) / (1.0 - edgeDrop);
+      recovery = Math.max(0.0, Math.min(1.0, recovery));
       return weirdness * recovery;
    }
 

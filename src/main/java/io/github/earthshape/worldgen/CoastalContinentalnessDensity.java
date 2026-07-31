@@ -22,6 +22,15 @@ public record CoastalContinentalnessDensity(DensityFunction argument) implements
       if (EarthShapeCompatibility.disablesWorldgen() || !(Boolean)EarthShapeServerConfig.CONTINENTS_ENABLED.get()) return vanilla;
       double t = RiversMask.INSTANCE.sampleCoastalLandness(context.blockX(), context.blockZ());
       t = t * t * (3.0 - 2.0 * t);
+      // Biome selection uses the authoritative source land mask. Do not let a
+      // blurred C-mask turn one of those land pixels into physical ocean (or
+      // vice versa), which leaves a thin land-biome rim floating in the sea.
+      // The remaining vanilla-noise component still shapes the coast vertically.
+      if (RiversMask.INSTANCE.sampleLand(context.blockX(), context.blockZ()) >= 0.5) {
+         t = Math.max(t, 0.95);
+      } else {
+         t = Math.min(t, 0.05);
+      }
       // Inland-river handling intentionally stops at a mouth so the biome can
       // become ocean. Keep that same mouth physically open in the C-noise field.
       t *= 1.0 - RiversMask.INSTANCE.riverMouthOpening(context.blockX(), context.blockZ());
@@ -31,7 +40,16 @@ public record CoastalContinentalnessDensity(DensityFunction argument) implements
       // At a pure ocean pixel even vanilla's maximum C remains below the
       // ocean cutoff, while a pure land pixel remains above the inland cutoff.
       double maskTarget = -0.85 + 1.20 * t;
-      return vanilla * 0.20 + maskTarget * 0.80;
+      double guided = vanilla * 0.20 + maskTarget * 0.80;
+      // Ordinary mapped land starts at the normal overworld baseline (surface
+      // Y=64).  Keep the coastal blend and river mouths unconstrained so their
+      // descent remains noise-shaped instead of becoming a flat terrace.
+      if (RiversMask.INSTANCE.sampleLand(context.blockX(), context.blockZ()) >= 0.5
+         && t >= 0.98
+         && RiversMask.INSTANCE.riverMouthOpening(context.blockX(), context.blockZ()) <= 0.001) {
+         return Math.max(0.06, guided);
+      }
+      return guided;
    }
 
    @Override public void fillArray(double[] values, ContextProvider provider) { provider.fillAllDirectly(values, this); }

@@ -20,27 +20,34 @@ public final class SurfaceAquiferGuardMixin {
    )
    private void earthshape$removeUnmappedSurfaceAquiferWater(FunctionContext context, double substance, CallbackInfoReturnable<BlockState> callback) {
       BlockState result = (BlockState)callback.getReturnValue();
+      int y = context.blockY();
+      boolean forceRiverWater = substance < 0.0 && result == null && y >= 61 && y <= 63;
+      boolean removeSurfaceWater = (Boolean)EarthShapeServerConfig.DESERT_WATER_REDUCTION_ENABLED.get()
+         && result != null
+         && result.is(Blocks.WATER)
+         && y >= 52;
+      // Do not run a river-centreline search for every density sample in a chunk.
+      // It is relevant only to the three forced river-water layers and to a
+      // candidate surface-water removal; the per-column cache then shares the
+      // exact result between all Y levels of that column.
       boolean layerRiver = (Boolean)EarthShapeServerConfig.RIVER_BIOMES_ENABLED.get()
-         && RiversMask.INSTANCE.isInlandRiver(context.blockX(), context.blockZ());
-      boolean layerOcean = RiversMask.INSTANCE.sampleLayerLand(context.blockX(), context.blockZ()) < 0.5;
+         && (forceRiverWater || removeSurfaceWater)
+         && RiversMask.INSTANCE.isInlandRiverColumn(context.blockX(), context.blockZ());
       // Aquifer noise is especially likely to return dry air in hot biomes.  Once the
       // density router has opened a painted river at sea level, guarantee its water
       // column instead of letting the desert-water guard erase it again.
-      if (layerRiver && substance < 0.0 && result == null && context.blockY() >= 61 && context.blockY() <= 63) {
+      if (layerRiver && forceRiverWater) {
          callback.setReturnValue(Blocks.WATER.defaultBlockState());
          return;
       }
       // The mapped ocean is authoritative. Hot-biome aquifer noise and the
       // land-side surface-water guard must not leave dry holes or vertical water
       // walls in the shelf. Solid density is untouched; only empty cells fill.
-      if (layerOcean && substance < 0.0 && context.blockY() >= 32 && context.blockY() <= 62) {
+      if (substance < 0.0 && y >= 32 && y <= 62 && RiversMask.INSTANCE.sampleLayerLand(context.blockX(), context.blockZ()) < 0.5) {
          callback.setReturnValue(Blocks.WATER.defaultBlockState());
          return;
       }
-      if ((Boolean)EarthShapeServerConfig.DESERT_WATER_REDUCTION_ENABLED.get()
-         && result != null
-         && result.is(Blocks.WATER)
-         && context.blockY() >= 52
+      if (removeSurfaceWater
          && RiversMask.INSTANCE.sampleLayerLand(context.blockX(), context.blockZ()) >= 0.5
          && !layerRiver) {
          callback.setReturnValue(null);

@@ -17,20 +17,35 @@ public final class RiversMask {
    private volatile RiversMask.Data data;
    private final ThreadLocal<RiversMask.RiverWidthCache> riverWidthCache = ThreadLocal.withInitial(RiversMask.RiverWidthCache::new);
    private final ThreadLocal<RiversMask.RiverDistanceCache> riverDistanceCache = ThreadLocal.withInitial(RiversMask.RiverDistanceCache::new);
+   private final ThreadLocal<RiversMask.RiverColumnCache> riverColumnCache = ThreadLocal.withInitial(RiversMask.RiverColumnCache::new);
 
    private RiversMask() {
    }
 
    public double sampleLand(int blockX, int blockZ) {
-      return this.sampleLand(this.data(), blockX, blockZ);
+      return this.sampleExactLand(this.data(), blockX, blockZ);
    }
 
    public double sampleLayerLand(int blockX, int blockZ) {
-      // All coastline consumers must use the same sub-pixel field.  Sampling the
-      // raw cell here expanded every source pixel into a block-aligned rectangle,
-      // especially visible on small islands. Bilinear coverage keeps the original
-      // map outline while moving the 0.5 shoreline through a continuous contour.
-      return this.sampleLand(this.data(), blockX, blockZ);
+      // This is the authoritative coastline classification.  Never interpolate a
+      // land mask: interpolation turns a non-land source pixel beside white land
+      // into partial coverage, which every >= 0.5 consumer can incorrectly turn
+      // back into land.  The source cell is therefore either fully land or fully
+      // ocean.  Smooth values are available only through sampleCoastalLandness().
+      return this.sampleExactLand(this.data(), blockX, blockZ);
+   }
+
+   /**
+    * Chunky-only selection mask.  It retains mapped land, enclosed inland water,
+    * and sea passages narrower than ten source pixels; it never participates in
+    * terrain, biome, or actual coastline generation.
+    */
+   public double samplePregenerationLand(int blockX, int blockZ) {
+      RiversMask.Data loaded = this.data();
+      int blocksPerPixel = this.blocksPerPixel();
+      int x = (int)Math.floor((double)blockX / (double)blocksPerPixel + (double)loaded.width * 0.5);
+      int z = (int)Math.floor((double)blockZ / (double)blocksPerPixel + (double)loaded.height * 0.5);
+      return x >= 0 && z >= 0 && x < loaded.width && z < loaded.height && loaded.pregeneration.get(z * loaded.width + x) ? 1.0 : 0.0;
    }
 
    /**
@@ -42,8 +57,11 @@ public final class RiversMask {
       return this.sampleBytes(loaded, loaded.coastalLandness, blockX, blockZ);
    }
 
-   private double sampleLand(RiversMask.Data loaded, int blockX, int blockZ) {
-      return this.sampleBytes(loaded, null, blockX, blockZ);
+   private double sampleExactLand(RiversMask.Data loaded, int blockX, int blockZ) {
+      int blocksPerPixel = this.blocksPerPixel();
+      int x = (int)Math.floor((double)blockX / (double)blocksPerPixel + (double)loaded.width * 0.5);
+      int z = (int)Math.floor((double)blockZ / (double)blocksPerPixel + (double)loaded.height * 0.5);
+      return x >= 0 && z >= 0 && x < loaded.width && z < loaded.height && loaded.land(x, z) >= 0.5 ? 1.0 : 0.0;
    }
 
    private double sampleBytes(RiversMask.Data loaded, byte[] values, int blockX, int blockZ) {
@@ -125,7 +143,27 @@ public final class RiversMask {
    }
 
    public boolean isInlandRiver(int blockX, int blockZ) {
-      return this.isRiverCentreline(blockX, blockZ) && this.hasInlandRiverInfluence(blockX, blockZ);
+      return this.hasInlandRiverInfluence(blockX, blockZ) && this.isRiverCentreline(blockX, blockZ);
+   }
+
+   /**
+    * Exact river result cached per horizontal column for the aquifer. Aquifers ask
+    * the same x/z repeatedly at many Y levels; without this cache every level
+    * performs the centreline's 9x9 source-pixel search again.
+    */
+   public boolean isInlandRiverColumn(int blockX, int blockZ) {
+      RiversMask.Data loaded = this.data();
+      RiversMask.RiverColumnCache cache = this.riverColumnCache.get();
+      int slot = RiversMask.RiverColumnCache.slot(blockX, blockZ);
+      if (cache.data == loaded && cache.x[slot] == blockX && cache.z[slot] == blockZ) {
+         return cache.river[slot];
+      }
+      boolean river = this.isInlandRiver(blockX, blockZ);
+      cache.data = loaded;
+      cache.x[slot] = blockX;
+      cache.z[slot] = blockZ;
+      cache.river[slot] = river;
+      return river;
    }
 
    public boolean isRiverMouth(int blockX, int blockZ) {
@@ -155,8 +193,8 @@ public final class RiversMask {
       if (centreX < 1 || centreZ < 1 || centreX >= loaded.width - 1 || centreZ >= loaded.height - 1) return 0.0;
 
       double strongest = 0.0;
-      for (int z = centreZ - 4; z <= centreZ + 4; z++) {
-         for (int x = centreX - 4; x <= centreX + 4; x++) {
+      for (int z = Math.max(0, centreZ - 4); z <= Math.min(loaded.height - 1, centreZ + 4); z++) {
+         for (int x = Math.max(0, centreX - 4); x <= Math.min(loaded.width - 1, centreX + 4); x++) {
             int index = z * loaded.width + x;
             if (!loaded.riverMouths.get(index)) continue;
             int width = loaded.riverWidth(x, z);
@@ -237,8 +275,8 @@ public final class RiversMask {
 
             double best = Double.POSITIVE_INFINITY;
 
-            for (int z = centreZ - 4; z <= centreZ + 4; z++) {
-               for (int x = centreX - 4; x <= centreX + 4; x++) {
+            for (int z = centreZ - RIVER_SEARCH_RADIUS; z <= centreZ + RIVER_SEARCH_RADIUS; z++) {
+               for (int x = centreX - RIVER_SEARCH_RADIUS; x <= centreX + RIVER_SEARCH_RADIUS; x++) {
                   int candidate = loaded.riverWidth(x, z);
                   if (candidate != 0) {
                      double distance = distanceSquared(imageX, imageZ, (double)x + 0.5, (double)z + 0.5, (double)x + 0.5, (double)z + 0.5);
@@ -281,8 +319,8 @@ public final class RiversMask {
          } else {
             double best = Double.POSITIVE_INFINITY;
 
-            for (int z = centreZ - 4; z <= centreZ + 4; z++) {
-               for (int x = centreX - 4; x <= centreX + 4; x++) {
+            for (int z = centreZ - RIVER_SEARCH_RADIUS; z <= centreZ + RIVER_SEARCH_RADIUS; z++) {
+               for (int x = centreX - RIVER_SEARCH_RADIUS; x <= centreX + RIVER_SEARCH_RADIUS; x++) {
                   if (loaded.river(x, z)) {
                      int cornerMask = loaded.riverCornerMask(x, z);
                      if (cornerMask == 0) {
@@ -488,12 +526,13 @@ public final class RiversMask {
             BitSet riverInfluence = createRiverInfluence(width, height, land, rivers, riverWidths);
             int coastRadiusPixels = Math.max(2, Math.min(12, (Integer)EarthShapeServerConfig.COAST_HEIGHT_FADE_BLOCKS.get() / Math.max(1, (Integer)EarthShapeServerConfig.BLOCKS_PER_PIXEL.get() * 6)));
             byte[] coastalLandness = createCoastalLandness(width, height, land, coastRadiusPixels);
+            BitSet pregeneration = createPregenerationMask(width, height, land);
             EarthShape.LOGGER
                .info(
                   "[EarthShape] worldmap_river.png land/ocean and river mask loaded: {}x{} in {} ms.",
                   new Object[]{width, height, (System.nanoTime() - started) / 1000000L}
                );
-            var21x = new RiversMask.Data(width, height, land, rivers, riverWidths, riverCorners, riverMouths, riverInfluence, coastalLandness);
+            var21x = new RiversMask.Data(width, height, land, rivers, riverWidths, riverCorners, riverMouths, riverInfluence, coastalLandness, pregeneration);
          }
 
          return var21x;
@@ -511,6 +550,48 @@ public final class RiversMask {
       for (int index = land.nextSetBit(0); index >= 0; index = land.nextSetBit(index + 1)) values[index] = (byte)255;
       for (int pass = 0; pass < 3; pass++) values = boxBlur(values, width, height, radius);
       return values;
+   }
+
+   private static BitSet createPregenerationMask(int width, int height, BitSet land) {
+      BitSet selection = (BitSet)land.clone();
+      RiversMask.OceanProximity ocean = RiversMask.OceanProximity.create(width, height, land);
+
+      // Water which has no connection to the map-edge ocean is an independent
+      // inland sea. It must be generated with its surrounding continent.
+      for (int index = 0; index < width * height; index++) {
+         if (!land.get(index) && !ocean.isNearOpenOcean(index % width, index / width)) {
+            selection.set(index);
+         }
+      }
+
+      addNarrowStraits(selection, width, height, land, true);
+      addNarrowStraits(selection, width, height, land, false);
+      return selection;
+   }
+
+   /** Adds water cells bounded by land on both sides with fewer than 10 pixels between the shores. */
+   private static void addNarrowStraits(BitSet selection, int width, int height, BitSet land, boolean horizontal) {
+      int outer = horizontal ? height : width;
+      int inner = horizontal ? width : height;
+      byte[] nearestLand = new byte[inner];
+
+      for (int line = 0; line < outer; line++) {
+         int distance = 11;
+         for (int point = 0; point < inner; point++) {
+            int index = horizontal ? line * width + point : point * width + line;
+            distance = land.get(index) ? 0 : Math.min(11, distance + 1);
+            nearestLand[point] = (byte)distance;
+         }
+
+         distance = 11;
+         for (int point = inner - 1; point >= 0; point--) {
+            int index = horizontal ? line * width + point : point * width + line;
+            distance = land.get(index) ? 0 : Math.min(11, distance + 1);
+            if (!land.get(index) && (nearestLand[point] & 0xFF) + distance <= 10) {
+               selection.set(index);
+            }
+         }
+      }
    }
 
    private static byte[] boxBlur(byte[] source, int width, int height, int radius) {
@@ -1020,15 +1101,10 @@ public final class RiversMask {
    }
 
    private static boolean isFullMapLand(int red, int green, int blue) {
-      if (red == 255 && green == 255 && blue == 255) {
-         return true;
-      } else if (red == 122 && green == 122 && blue == 122) {
-         return false;
-      } else {
-         int toLand = (255 - red) * (255 - red) + (255 - green) * (255 - green) + (255 - blue) * (255 - blue);
-         int toOcean = (122 - red) * (122 - red) + (122 - green) * (122 - green) + (122 - blue) * (122 - blue);
-         return toLand <= toOcean;
-      }
+      // worldmap_river.png is authoritative: only a fully white source pixel
+      // is land. Any other colour (ocean, river ink, coast antialiasing, or a
+      // palette stray) must not be allowed to select a surface-land biome.
+      return red == 255 && green == 255 && blue == 255;
    }
 
    private static int riverWidthForColor(int red, int green, int blue) {
@@ -1097,7 +1173,8 @@ public final class RiversMask {
       byte[] riverCorners,
       BitSet riverMouths,
       BitSet riverInfluence,
-      byte[] coastalLandness
+      byte[] coastalLandness,
+      BitSet pregeneration
    ) {
       double land(int x, int z) {
          return this.land.get(z * this.width + x) ? 1.0 : 0.0;
@@ -1358,6 +1435,24 @@ public final class RiversMask {
          this.blockX = blockX;
          this.blockZ = blockZ;
          this.distance = distance;
+      }
+   }
+
+   private static final class RiverColumnCache {
+      private static final int SIZE = 512;
+      private final int[] x = new int[SIZE];
+      private final int[] z = new int[SIZE];
+      private final boolean[] river = new boolean[SIZE];
+      private RiversMask.Data data;
+
+      private RiverColumnCache() {
+         Arrays.fill(this.x, Integer.MIN_VALUE);
+         Arrays.fill(this.z, Integer.MIN_VALUE);
+      }
+
+      static int slot(int blockX, int blockZ) {
+         int hash = blockX * 0x9E3779B9 ^ Integer.rotateLeft(blockZ * 0x85EBCA6B, 16);
+         return hash & (SIZE - 1);
       }
    }
 }
