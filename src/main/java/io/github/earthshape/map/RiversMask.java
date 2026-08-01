@@ -15,6 +15,7 @@ public final class RiversMask {
    private static final int RIVER_SEARCH_RADIUS = 4;
    private static final double RIVER_CORNER_TRIM = 0.32;
    private volatile RiversMask.Data data;
+   private final ThreadLocal<RiversMask.LandSampleCache> landSampleCache = ThreadLocal.withInitial(RiversMask.LandSampleCache::new);
    private final ThreadLocal<RiversMask.RiverWidthCache> riverWidthCache = ThreadLocal.withInitial(RiversMask.RiverWidthCache::new);
    private final ThreadLocal<RiversMask.RiverDistanceCache> riverDistanceCache = ThreadLocal.withInitial(RiversMask.RiverDistanceCache::new);
    private final ThreadLocal<RiversMask.RiverColumnCache> riverColumnCache = ThreadLocal.withInitial(RiversMask.RiverColumnCache::new);
@@ -27,11 +28,9 @@ public final class RiversMask {
    }
 
    public double sampleLayerLand(int blockX, int blockZ) {
-      // This is the authoritative coastline classification.  Never interpolate a
-      // land mask: interpolation turns a non-land source pixel beside white land
-      // into partial coverage, which every >= 0.5 consumer can incorrectly turn
-      // back into land.  The source cell is therefore either fully land or fully
-      // ocean.  Smooth values are available only through sampleCoastalLandness().
+      // This remains an authoritative binary coastline classification. The
+      // sampling point is gently warped below so the source pixel grid is not
+      // visible, but no interpolated partial-land value can become a stray coast.
       return this.sampleExactLand(this.data(), blockX, blockZ);
    }
 
@@ -58,10 +57,51 @@ public final class RiversMask {
    }
 
    private double sampleExactLand(RiversMask.Data loaded, int blockX, int blockZ) {
+      RiversMask.LandSampleCache cache = this.landSampleCache.get();
+      if (cache.data == loaded && cache.blockX == blockX && cache.blockZ == blockZ) return cache.land;
       int blocksPerPixel = this.blocksPerPixel();
-      int x = (int)Math.floor((double)blockX / (double)blocksPerPixel + (double)loaded.width * 0.5);
-      int z = (int)Math.floor((double)blockZ / (double)blocksPerPixel + (double)loaded.height * 0.5);
-      return x >= 0 && z >= 0 && x < loaded.width && z < loaded.height && loaded.land(x, z) >= 0.5 ? 1.0 : 0.0;
+      double sourceX = (double)blockX / (double)blocksPerPixel + (double)loaded.width * 0.5;
+      double sourceZ = (double)blockZ / (double)blocksPerPixel + (double)loaded.height * 0.5;
+      int originalX = (int)Math.floor(sourceX);
+      int originalZ = (int)Math.floor(sourceZ);
+
+      // Displace the binary sampling point by less than half a source pixel.
+      // Low-frequency value noise breaks long horizontal/vertical pixel edges
+      // without ever displacing the represented coastline by a full source cell.
+      // River influence cells stay unwarped so channels and mouths still meet
+      // the exact source coast used by the river-distance field.
+      boolean nearRiver = originalX >= 0
+         && originalZ >= 0
+         && originalX < loaded.width
+         && originalZ < loaded.height
+         && loaded.riverInfluence.get(originalZ * loaded.width + originalX);
+      if (!nearRiver) {
+         double amplitudePixels = Math.min(0.45, Math.max(0.12, 8.0 / (double)blocksPerPixel));
+         sourceX += coastWarpNoise(blockX, blockZ, 0x243F6A8885A308D3L) * amplitudePixels;
+         sourceZ += coastWarpNoise(blockX, blockZ, 0x13198A2E03707344L) * amplitudePixels;
+      }
+
+      int x = (int)Math.floor(sourceX);
+      int z = (int)Math.floor(sourceZ);
+      double land = x >= 0 && z >= 0 && x < loaded.width && z < loaded.height && loaded.land(x, z) >= 0.5 ? 1.0 : 0.0;
+      cache.data = loaded;
+      cache.blockX = blockX;
+      cache.blockZ = blockZ;
+      cache.land = land;
+      return land;
+   }
+
+   private static double coastWarpNoise(int blockX, int blockZ, long salt) {
+      int cellSize = 96;
+      int cellX = Math.floorDiv(blockX, cellSize);
+      int cellZ = Math.floorDiv(blockZ, cellSize);
+      double tx = (double)Math.floorMod(blockX, cellSize) / (double)cellSize;
+      double tz = (double)Math.floorMod(blockZ, cellSize) / (double)cellSize;
+      tx = tx * tx * (3.0 - 2.0 * tx);
+      tz = tz * tz * (3.0 - 2.0 * tz);
+      double top = lerp(axialValue(cellX, cellZ, salt), axialValue(cellX + 1, cellZ, salt), tx);
+      double bottom = lerp(axialValue(cellX, cellZ + 1, salt), axialValue(cellX + 1, cellZ + 1, salt), tx);
+      return lerp(top, bottom, tz);
    }
 
    private double sampleBytes(RiversMask.Data loaded, byte[] values, int blockX, int blockZ) {
@@ -249,8 +289,12 @@ public final class RiversMask {
          && z >= 0
          && x < loaded.width
          && z < loaded.height
-         && loaded.land.get(z * loaded.width + x)
-         && loaded.riverInfluence.get(z * loaded.width + x);
+         && loaded.riverInfluence.get(z * loaded.width + x)
+         // Source river ink is not white, so a centreline pixel can remain
+         // absent from the land mask in narrow corridors. Do not drop that
+         // valid centreline; only the explicitly detected mouth belongs to sea.
+         && (loaded.land.get(z * loaded.width + x)
+            || loaded.rivers.get(z * loaded.width + x) && !loaded.riverMouths.get(z * loaded.width + x));
    }
 
    public int riverWidthBlocks(int blockX, int blockZ) {
@@ -518,12 +562,14 @@ public final class RiversMask {
                }
             }
 
-            bridgeSmallRiverGaps(width, height, rivers, riverWidths);
-            stabilizeRiverWidths(width, height, rivers, riverWidths);
-            restoreOnlyInlandRiverPixels(width, height, land, rivers);
-            BitSet riverMouths = createRiverMouths(width, height, land, rivers);
-            byte[] riverCorners = createRiverCornerMasks(width, height, rivers);
-            BitSet riverInfluence = createRiverInfluence(width, height, land, rivers, riverWidths);
+            BitSet sourceRivers = rivers;
+            BitSet riverCentrelines = thinRiverCentrelines(width, height, sourceRivers);
+            bridgeSmallRiverGaps(width, height, riverCentrelines, riverWidths);
+            stabilizeRiverWidths(width, height, riverCentrelines, riverWidths);
+            restoreOnlyInlandRiverPixels(width, height, land, sourceRivers);
+            BitSet riverMouths = createRiverMouths(width, height, land, riverCentrelines);
+            byte[] riverCorners = createRiverCornerMasks(width, height, riverCentrelines);
+            BitSet riverInfluence = createRiverInfluence(width, height, land, riverCentrelines, riverWidths);
             int coastRadiusPixels = Math.max(2, Math.min(12, (Integer)EarthShapeServerConfig.COAST_HEIGHT_FADE_BLOCKS.get() / Math.max(1, (Integer)EarthShapeServerConfig.BLOCKS_PER_PIXEL.get() * 6)));
             byte[] coastalLandness = createCoastalLandness(width, height, land, coastRadiusPixels);
             BitSet pregeneration = createPregenerationMask(width, height, land);
@@ -532,7 +578,9 @@ public final class RiversMask {
                   "[EarthShape] worldmap_river.png land/ocean and river mask loaded: {}x{} in {} ms.",
                   new Object[]{width, height, (System.nanoTime() - started) / 1000000L}
                );
-            var21x = new RiversMask.Data(width, height, land, rivers, riverWidths, riverCorners, riverMouths, riverInfluence, coastalLandness, pregeneration);
+            var21x = new RiversMask.Data(
+               width, height, land, riverCentrelines, riverWidths, riverCorners, riverMouths, riverInfluence, coastalLandness, pregeneration
+            );
          }
 
          return var21x;
@@ -726,7 +774,12 @@ public final class RiversMask {
 
    private static int riverInfluenceRadiusPixels(int widthBlocks) {
       int blocksPerPixel = Math.max(1, RiversMask.INSTANCE.blocksPerPixel());
-      return Math.max(1, (int)Math.ceil((double)widthBlocks / (2.0 * (double)blocksPerPixel)) + 1);
+      // Terrain erosion also needs the centreline through the configured bank
+      // band. Keep that lookup bounded by RIVER_SEARCH_RADIUS so widening the
+      // flat approach does not reintroduce the former large per-column scans.
+      double reachBlocks = (double)widthBlocks * 0.5
+         + Math.max(2.0, (double)EarthShapeServerConfig.RIVER_BANK_FADE_BLOCKS.get());
+      return Math.max(1, Math.min(RIVER_SEARCH_RADIUS, (int)Math.ceil(reachBlocks / (double)blocksPerPixel) + 1));
    }
 
    private static BitSet createRiverMouths(int width, int height, BitSet land, BitSet rivers) {
@@ -927,7 +980,8 @@ public final class RiversMask {
       // Fine one-pixel source lines can lose several pixels during raster export.
       // Join only similarly directed endpoints, but allow a short four-pixel bridge so
       // those gaps do not become disconnected river segments in-game.
-      int maximumGap = Math.max(3, Math.min(4, (Integer)EarthShapeServerConfig.RIVER_GAP_BRIDGE_PIXELS.get()));
+      int configuredGap = (Integer)EarthShapeServerConfig.RIVER_GAP_BRIDGE_PIXELS.get();
+      int maximumGap = configuredGap == 0 ? 0 : 4;
       if (maximumGap > 0) {
          BitSet sourceRivers = (BitSet)rivers.clone();
 
@@ -983,9 +1037,73 @@ public final class RiversMask {
 
          if (count >= 3) {
             Arrays.sort(nearbyWidths, 0, count);
-            riverWidths[index] = (byte)nearbyWidths[count / 2];
+            // Median filtering may remove an isolated overly-wide source
+            // pixel, but must never inflate a narrow configured tributary just
+            // because it runs beside or joins a wider river.
+            riverWidths[index] = (byte)Math.min(source[index] & 255, nearbyWidths[count / 2]);
          }
       }
+   }
+
+   /**
+    * Zhang-Suen thinning preserves branches and connections while reducing a
+    * multi-pixel raster stroke to one centreline. Without this step the source
+    * ink width was added to the configured block width, most visibly in dense
+    * European river networks.
+    */
+   private static BitSet thinRiverCentrelines(int width, int height, BitSet source) {
+      BitSet result = (BitSet)source.clone();
+      BitSet remove = new BitSet(width * height);
+      boolean changed;
+      do {
+         changed = thinningPass(result, remove, width, height, true);
+         result.andNot(remove);
+         remove.clear();
+         boolean secondChanged = thinningPass(result, remove, width, height, false);
+         result.andNot(remove);
+         remove.clear();
+         changed |= secondChanged;
+      } while (changed);
+      return result;
+   }
+
+   private static boolean thinningPass(BitSet rivers, BitSet remove, int width, int height, boolean first) {
+      for (int index = rivers.nextSetBit(0); index >= 0; index = rivers.nextSetBit(index + 1)) {
+         int x = index % width;
+         int z = index / width;
+         if (x <= 0 || z <= 0 || x + 1 >= width || z + 1 >= height) continue;
+
+         boolean north = rivers.get(index - width);
+         boolean northEast = rivers.get(index - width + 1);
+         boolean east = rivers.get(index + 1);
+         boolean southEast = rivers.get(index + width + 1);
+         boolean south = rivers.get(index + width);
+         boolean southWest = rivers.get(index + width - 1);
+         boolean west = rivers.get(index - 1);
+         boolean northWest = rivers.get(index - width - 1);
+         int neighbours = (north ? 1 : 0) + (northEast ? 1 : 0) + (east ? 1 : 0) + (southEast ? 1 : 0)
+            + (south ? 1 : 0) + (southWest ? 1 : 0) + (west ? 1 : 0) + (northWest ? 1 : 0);
+         if (neighbours < 2 || neighbours > 6) continue;
+
+         int transitions = (!north && northEast ? 1 : 0)
+            + (!northEast && east ? 1 : 0)
+            + (!east && southEast ? 1 : 0)
+            + (!southEast && south ? 1 : 0)
+            + (!south && southWest ? 1 : 0)
+            + (!southWest && west ? 1 : 0)
+            + (!west && northWest ? 1 : 0)
+            + (!northWest && north ? 1 : 0);
+         if (transitions != 1) continue;
+
+         boolean keepByFirstTriplet = first
+            ? north && east && south
+            : north && east && west;
+         boolean keepBySecondTriplet = first
+            ? east && south && west
+            : north && south && west;
+         if (!keepByFirstTriplet && !keepBySecondTriplet) remove.set(index);
+      }
+      return !remove.isEmpty();
    }
 
    private static boolean continuesInDirection(int x, int z, int directionX, int directionZ, int width, int height, BitSet rivers) {
@@ -1415,6 +1533,13 @@ public final class RiversMask {
 
          return tail;
       }
+   }
+
+   private static final class LandSampleCache {
+      private RiversMask.Data data;
+      private int blockX = Integer.MIN_VALUE;
+      private int blockZ = Integer.MIN_VALUE;
+      private double land;
    }
 
    private static final class RiverWidthCache {
