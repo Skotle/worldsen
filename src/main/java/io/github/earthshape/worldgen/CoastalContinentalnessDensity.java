@@ -11,6 +11,8 @@ import net.minecraft.world.level.levelgen.DensityFunction;
 
 /** Smoothly maps the coastline layer onto vanilla continentalness, never onto a fixed Y level. */
 public record CoastalContinentalnessDensity(DensityFunction argument) implements DensityFunction {
+   /** Fraction of the configured channel width occupied by the level bed core. */
+   private static final double RIVER_BED_CORE_RATIO = 0.60;
    private static final MapCodec<CoastalContinentalnessDensity> DATA_CODEC = RecordCodecBuilder.mapCodec(
       instance -> instance.group(DensityFunction.HOLDER_HELPER_CODEC.fieldOf("argument").forGetter(CoastalContinentalnessDensity::argument))
          .apply(instance, CoastalContinentalnessDensity::new)
@@ -73,15 +75,21 @@ public record CoastalContinentalnessDensity(DensityFunction argument) implements
       double distance = RiversMask.INSTANCE.riverCentrelineDistance(blockX, blockZ)
          * (double)RiversMask.INSTANCE.blocksPerPixel();
       double waterRadius = Math.max(0.5, (double)width * 0.5);
+      double bedRadius = Math.min(waterRadius, Math.max(0.5, waterRadius * RIVER_BED_CORE_RATIO));
 
       if (distance <= waterRadius) {
-         // The centre keeps the configured channel depth. Toward the water's
-         // edge C rises with zero slope at both ends, producing a submerged
-         // side slope instead of carrying the low floor into a vertical wall.
-         double acrossChannel = smoothstep(distance / waterRadius);
          double centre = (Double)EarthShapeServerConfig.RIVER_CHANNEL_CONTINENTALNESS.get();
-         double edge = 0.04;
-         return lerp(centre, edge, acrossChannel);
+         // Keep a width-proportional floor instead of letting C vary at every
+         // block from the centreline. This makes wide rivers receive a wide,
+         // stable bed while narrow rivers retain a correspondingly narrow one.
+         if (distance <= bedRadius || waterRadius <= bedRadius) return centre;
+
+         // Only the outer part of the water width becomes the submerged side
+         // slope. Zero derivatives at both ends avoid a crease at the bed and
+         // a vertical step where the water meets the bank.
+         double acrossShoulder = smoothstep((distance - bedRadius) / (waterRadius - bedRadius));
+         double edge = 0.06;
+         return lerp(centre, edge, acrossShoulder);
       }
 
       // Just outside the water, hold the ordinary Y=64 continental baseline;
@@ -99,13 +107,12 @@ public record CoastalContinentalnessDensity(DensityFunction argument) implements
       double distance = RiversMask.INSTANCE.riverCentrelineDistance(blockX, blockZ)
          * (double)RiversMask.INSTANCE.blocksPerPixel();
       double bankDistance = Math.max(0.0, distance - (double)width * 0.5);
-      double supportedDistance = Math.max(
-         4.0,
-         (double)RiversMask.INSTANCE.blocksPerPixel() * 3.0 - (double)width * 0.5
-      );
+      // End the low river guidance no later than four blocks beyond the water.
+      // Once this reaches zero, the mapped-land C floor below reactivates and
+      // restores the ordinary Y=64-or-higher surface baseline in every region.
       double fade = Math.max(
-         4.0,
-         Math.min((double)EarthShapeServerConfig.RIVER_BANK_FADE_BLOCKS.get(), supportedDistance)
+         1.0,
+         Math.min(4.0, (double)EarthShapeServerConfig.RIVER_BANK_FADE_BLOCKS.get())
       );
       if (bankDistance >= fade) return 0.0;
       double recovery = smoothstep(bankDistance / fade);

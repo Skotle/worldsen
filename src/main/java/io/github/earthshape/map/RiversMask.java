@@ -29,8 +29,8 @@ public final class RiversMask {
 
    public double sampleLayerLand(int blockX, int blockZ) {
       // This remains an authoritative binary coastline classification. The
-      // sampling point is gently warped below so the source pixel grid is not
-      // visible, but no interpolated partial-land value can become a stray coast.
+      // continuous contour below only changes the shape of the boundary; callers
+      // still receive either land or water, never an ambiguous partial value.
       return this.sampleExactLand(this.data(), blockX, blockZ);
    }
 
@@ -65,30 +65,49 @@ public final class RiversMask {
       int originalX = (int)Math.floor(sourceX);
       int originalZ = (int)Math.floor(sourceZ);
 
-      // Displace the binary sampling point by less than half a source pixel.
-      // Low-frequency value noise breaks long horizontal/vertical pixel edges
-      // without ever displacing the represented coastline by a full source cell.
+      // Displace the contour by less than half a source pixel. Keep the amount
+      // in source-pixel units: reducing it as blocksPerPixel increased was the
+      // reason large-scale worlds exposed the original raster cells so clearly.
       // River influence cells stay unwarped so channels and mouths still meet
-      // the exact source coast used by the river-distance field.
+      // the source coast used by the river-distance field.
       boolean nearRiver = originalX >= 0
          && originalZ >= 0
          && originalX < loaded.width
          && originalZ < loaded.height
          && loaded.riverInfluence.get(originalZ * loaded.width + originalX);
       if (!nearRiver) {
-         double amplitudePixels = Math.min(0.45, Math.max(0.12, 8.0 / (double)blocksPerPixel));
+         double amplitudePixels = 0.38;
          sourceX += coastWarpNoise(blockX, blockZ, 0x243F6A8885A308D3L) * amplitudePixels;
          sourceZ += coastWarpNoise(blockX, blockZ, 0x13198A2E03707344L) * amplitudePixels;
       }
 
-      int x = (int)Math.floor(sourceX);
-      int z = (int)Math.floor(sourceZ);
-      double land = x >= 0 && z >= 0 && x < loaded.width && z < loaded.height && loaded.land(x, z) >= 0.5 ? 1.0 : 0.0;
+      // Treat raster values as samples at pixel centres and interpolate the four
+      // neighbouring samples with a C1-continuous curve. Thresholding the result
+      // keeps land/ocean binary and layer-controlled, while joining coastline
+      // points as rounded curves instead of enlarged square steps.
+      double gridX = sourceX - 0.5;
+      double gridZ = sourceZ - 0.5;
+      int x = (int)Math.floor(gridX);
+      int z = (int)Math.floor(gridZ);
+      double tx = smoothstep(gridX - (double)x);
+      double tz = smoothstep(gridZ - (double)z);
+      double top = lerp(sampleLandValue(loaded, x, z), sampleLandValue(loaded, x + 1, z), tx);
+      double bottom = lerp(sampleLandValue(loaded, x, z + 1), sampleLandValue(loaded, x + 1, z + 1), tx);
+      double land = lerp(top, bottom, tz) >= 0.5 ? 1.0 : 0.0;
       cache.data = loaded;
       cache.blockX = blockX;
       cache.blockZ = blockZ;
       cache.land = land;
       return land;
+   }
+
+   private static double sampleLandValue(RiversMask.Data loaded, int x, int z) {
+      return x >= 0 && z >= 0 && x < loaded.width && z < loaded.height ? loaded.land(x, z) : 0.0;
+   }
+
+   private static double smoothstep(double value) {
+      double clamped = Math.max(0.0, Math.min(1.0, value));
+      return clamped * clamped * (3.0 - 2.0 * clamped);
    }
 
    private static double coastWarpNoise(int blockX, int blockZ, long salt) {
@@ -184,6 +203,37 @@ public final class RiversMask {
 
    public boolean isInlandRiver(int blockX, int blockZ) {
       return this.hasInlandRiverInfluence(blockX, blockZ) && this.isRiverCentreline(blockX, blockZ);
+   }
+
+   /**
+    * River footprint used only by quart-resolution biome selection. The biome
+    * lattice is sampled every four blocks, so an exact water-radius test can
+    * leave the outer water blocks assigned to the neighbouring land biome.
+    * One lattice cell of padding keeps the whole channel in RIVER/FROZEN_RIVER
+    * without widening the physical channel or its aquifer water columns.
+   */
+   public boolean isInlandRiverBiome(int blockX, int blockZ) {
+      // Biome ownership is stricter than physical channel guidance. Painted
+      // river ink may continue past the detected mouth into a sea pixel; that
+      // extension must remain ocean even though the channel density stays open.
+      if (this.riverMouthOpening(blockX, blockZ) > 0.0) return false;
+
+      RiversMask.Data loaded = this.data();
+      int imageX = (int)Math.floor((double)blockX / (double)this.blocksPerPixel() + (double)loaded.width * 0.5);
+      int imageZ = (int)Math.floor((double)blockZ / (double)this.blocksPerPixel() + (double)loaded.height * 0.5);
+      if (!inside(imageX, imageZ, loaded.width, loaded.height)) return false;
+      int index = imageZ * loaded.width + imageX;
+      if (!loaded.riverInfluence.get(index)) return false;
+
+      // At a fork, thinning a wide painted junction leaves some source cells as
+      // water-coloured influence rather than exact centreline or restored land.
+      // riverInfluence was already built only from centrelines supported by nearby
+      // land, so accept its full physical-width footprint here. Sea extensions
+      // remain excluded by that prefilter and the mouth-opening test above.
+      int widthBlocks = this.effectiveRiverWidthBlocks(blockX, blockZ);
+      if (widthBlocks <= 0) return false;
+      double distanceBlocks = this.riverCentrelineDistance(blockX, blockZ) * (double)this.blocksPerPixel();
+      return distanceBlocks <= (double)widthBlocks * 0.5 + 4.0;
    }
 
    /**
@@ -567,7 +617,7 @@ public final class RiversMask {
             bridgeSmallRiverGaps(width, height, riverCentrelines, riverWidths);
             stabilizeRiverWidths(width, height, riverCentrelines, riverWidths);
             restoreOnlyInlandRiverPixels(width, height, land, sourceRivers);
-            BitSet riverMouths = createRiverMouths(width, height, land, riverCentrelines);
+            BitSet riverMouths = createRiverMouths(width, height, land, riverCentrelines, sourceRivers);
             byte[] riverCorners = createRiverCornerMasks(width, height, riverCentrelines);
             BitSet riverInfluence = createRiverInfluence(width, height, land, riverCentrelines, riverWidths);
             int coastRadiusPixels = Math.max(2, Math.min(12, (Integer)EarthShapeServerConfig.COAST_HEIGHT_FADE_BLOCKS.get() / Math.max(1, (Integer)EarthShapeServerConfig.BLOCKS_PER_PIXEL.get() * 6)));
@@ -782,7 +832,7 @@ public final class RiversMask {
       return Math.max(1, Math.min(RIVER_SEARCH_RADIUS, (int)Math.ceil(reachBlocks / (double)blocksPerPixel) + 1));
    }
 
-   private static BitSet createRiverMouths(int width, int height, BitSet land, BitSet rivers) {
+   private static BitSet createRiverMouths(int width, int height, BitSet land, BitSet rivers, BitSet sourceRivers) {
       BitSet mouths = new BitSet(width * height);
 
       for (int index = rivers.nextSetBit(0); index >= 0; index = rivers.nextSetBit(index + 1)) {
@@ -796,7 +846,10 @@ public final class RiversMask {
                   int sampleZ = z + dz;
                   if (inside(sampleX, sampleZ, width, height)) {
                      int sample = sampleZ * width + sampleX;
-                     if (!land.get(sample) && !rivers.get(sample)) {
+                     // A wide junction contains source-river ink that disappears
+                     // from the one-cell centreline after thinning. It is still
+                     // river, not open sea, and must never create a false mouth.
+                     if (!land.get(sample) && !sourceRivers.get(sample)) {
                         mouths.set(index);
                         int var13 = 3;
                         break;

@@ -14,6 +14,8 @@ public final class ClimateLayers {
    private static final int MOUNTAIN_MID = 11;
    private static final int MOUNTAIN_HIGH = 12;
    private static final int MOUNTAIN_ULTRA = 13;
+   /** Small-scale mountain clusters below this size factor merge into their surroundings. */
+   private static final double MINIMUM_MOUNTAIN_REGION_SCALE = 0.10;
    public static final ClimateLayers INSTANCE = new ClimateLayers();
    private volatile ClimateLayers.Data temperature;
    private volatile ClimateLayers.Data trees;
@@ -79,8 +81,16 @@ public final class ClimateLayers {
       } else {
          int imageX = sourceX(layer, sampleX);
          int imageZ = sourceZ(layer, sampleZ);
-         int code = layer.values[imageZ * layer.width + imageX] & 255;
+         int index = imageZ * layer.width + imageX;
+         int code = layer.values[index] & 255;
          ClimateLayers.TerrainKind kind = isMountainElevationCode(code) ? ClimateLayers.TerrainKind.MOUNTAIN : ClimateLayers.TerrainKind.byCode(code);
+         // A detailed alpine patch can contain several peak colours while still
+         // being only a few blocks wide at a small world scale. Do not expose it
+         // as a mountain biome until its connected-region size is large enough.
+         if (kind == ClimateLayers.TerrainKind.MOUNTAIN
+            && (layer.mountainScale == null || (double)(layer.mountainScale[index] & 255) / 255.0 < MINIMUM_MOUNTAIN_REGION_SCALE)) {
+            return surroundingLandKind(layer, imageX, imageZ);
+         }
          return kind != ClimateLayers.TerrainKind.CITY && kind != ClimateLayers.TerrainKind.SURROUNDING ? kind : surroundingLandKind(layer, imageX, imageZ);
       }
    }
@@ -91,8 +101,11 @@ public final class ClimateLayers {
       long point = warpedTerrainPoint(x, z);
       int sampleX = unpackX(point);
       int sampleZ = unpackZ(point);
-      return RiversMask.INSTANCE.isInsideLegacyLayer(sampleX, sampleZ, layer.width, layer.height)
-         && (layer.values[sourceZ(layer, sampleZ) * layer.width + sourceX(layer, sampleX)] & 255) == MOUNTAIN_ULTRA;
+      if (!RiversMask.INSTANCE.isInsideLegacyLayer(sampleX, sampleZ, layer.width, layer.height)) return false;
+      int index = sourceZ(layer, sampleZ) * layer.width + sourceX(layer, sampleX);
+      return (layer.values[index] & 255) == MOUNTAIN_ULTRA
+         && layer.mountainScale != null
+         && (double)(layer.mountainScale[index] & 255) / 255.0 >= MINIMUM_MOUNTAIN_REGION_SCALE;
    }
 
    /**
@@ -282,7 +295,9 @@ public final class ClimateLayers {
          for (int z = Math.max(0, centreZ - radius); z <= Math.min(layer.height - 1, centreZ + radius); z++) {
             for (int x = Math.max(0, centreX - radius); x <= Math.min(layer.width - 1, centreX + radius); x++) {
                if (Math.max(Math.abs(x - centreX), Math.abs(z - centreZ)) == radius) {
-                  ClimateLayers.TerrainKind kind = ClimateLayers.TerrainKind.byCode(layer.values[z * layer.width + x] & 255);
+                  int code = layer.values[z * layer.width + x] & 255;
+                  if (isMountainElevationCode(code)) continue;
+                  ClimateLayers.TerrainKind kind = ClimateLayers.TerrainKind.byCode(code);
                   if (kind != ClimateLayers.TerrainKind.CITY
                      && kind != ClimateLayers.TerrainKind.SURROUNDING
                      && kind != ClimateLayers.TerrainKind.WATER
@@ -646,7 +661,10 @@ public final class ClimateLayers {
          double edgeValue = radius > 0
             ? Math.exp(-0.5 * ((double)radius / sigma) * ((double)radius / sigma))
             : 0.0;
-         double maximumRelief = 0.5 + scale * 0.5;
+         // The former 0.5 minimum gave even a zero-scale, one-cell alpine patch
+         // full hill relief, producing needle-like terrain at small map scales.
+         // Relief now grows continuously with the connected region's real span.
+         double maximumRelief = scale;
          for (int cursor = 0; cursor < region.size(); cursor++) {
             int index = region.get(cursor);
             scales[index] = encoded;

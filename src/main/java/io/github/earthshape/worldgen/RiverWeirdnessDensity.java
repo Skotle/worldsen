@@ -13,6 +13,8 @@ import net.minecraft.world.level.levelgen.DensityFunction;
  * Vanilla folds W=0 into PV=-1, its valley range; no fixed height is added.
  */
 public record RiverWeirdnessDensity(DensityFunction argument) implements DensityFunction {
+   /** Must match the continentalness cross-section's level bed fraction. */
+   private static final double RIVER_BED_CORE_RATIO = 0.60;
    private static final MapCodec<RiverWeirdnessDensity> DATA_CODEC = RecordCodecBuilder.mapCodec(
       instance -> instance.group(DensityFunction.HOLDER_HELPER_CODEC.fieldOf("argument").forGetter(RiverWeirdnessDensity::argument))
          .apply(instance, RiverWeirdnessDensity::new)
@@ -33,16 +35,24 @@ public record RiverWeirdnessDensity(DensityFunction argument) implements Density
 
       double distance = RiversMask.INSTANCE.riverCentrelineDistance(context.blockX(), context.blockZ())
          * (double)RiversMask.INSTANCE.blocksPerPixel();
-      double radius = width * 0.5 + Math.max(2.0, (double)EarthShapeServerConfig.RIVER_CHANNEL_EDGE_FADE_BLOCKS.get());
+      double waterRadius = Math.max(0.5, (double)width * 0.5);
+      double bedRadius = Math.min(waterRadius, Math.max(0.5, waterRadius * RIVER_BED_CORE_RATIO));
+      double edgeFade = Math.max(
+         2.0,
+         Math.min(4.0, (double)EarthShapeServerConfig.RIVER_CHANNEL_EDGE_FADE_BLOCKS.get())
+      );
+      double radius = waterRadius + edgeFade;
       if (distance >= radius) return weirdness;
+      if (distance <= bedRadius) return 0.0;
 
-      // The river bed is a Gaussian valley: its height guidance is lowest at
-      // the centre, then recovers toward either bank.  The derivative of the
-      // Gaussian is a bell-shaped slope distribution, so it avoids the old
-      // flat bottom / abrupt bank profile without imposing a fixed Y depth.
-      double sigma = Math.max(1.0, radius * 0.42);
-      double normalizedDistance = distance / sigma;
-      double edgeDistance = radius / sigma;
+      // Hold W=0 over the same width-proportional bed used by C, then recover
+      // through a Gaussian shoulder. This prevents PV relief from roughening
+      // the floor while retaining a naturally curved transition into the bank.
+      double shoulderDistance = distance - bedRadius;
+      double shoulderRadius = radius - bedRadius;
+      double sigma = Math.max(1.0, shoulderRadius * 0.42);
+      double normalizedDistance = shoulderDistance / sigma;
+      double edgeDistance = shoulderRadius / sigma;
       double gaussianDrop = Math.exp(-0.5 * normalizedDistance * normalizedDistance);
       double edgeDrop = Math.exp(-0.5 * edgeDistance * edgeDistance);
       double recovery = (1.0 - gaussianDrop) / (1.0 - edgeDrop);

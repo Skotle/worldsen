@@ -78,19 +78,29 @@ public record TerrainErosionDensity(DensityFunction argument) implements Density
       double centreDistance = RiversMask.INSTANCE.riverCentrelineDistance(blockX, blockZ)
          * (double)RiversMask.INSTANCE.blocksPerPixel();
       double bankDistance = Math.max(0.0, centreDistance - (double)width * 0.5);
-      double supportedDistance = Math.max(
-         4.0,
-         (double)RiversMask.INSTANCE.blocksPerPixel() * 3.0 - (double)width * 0.5
-      );
+      // C and W already restore the Y=64 land baseline within four blocks. E is
+      // kept flat farther out solely to stop a hill from starting beside the
+      // channel and then being cut open by it. Scale that recovery by river width
+      // but cap it so broad rivers do not erase an entire surrounding region.
+      double desiredTransition = Math.min(24.0, Math.max(12.0, (double)width * 0.5 + 12.0));
+      double mappedRelief = ClimateLayers.INSTANCE.terrainRelief(blockX, blockZ);
+      double explicitMountain = smoothstep(Math.max(0.0, (mappedRelief - 0.35) / 0.65));
+      // Preserve mountains explicitly painted beside water. They still begin at
+      // the flat bank value, but regain their E field within 8..12 blocks rather
+      // than being erased by the ordinary 12..24 block no-hill transition.
+      double mountainTransition = Math.min(12.0, Math.max(8.0, (double)width * 0.5 + 6.0));
+      desiredTransition = lerp(desiredTransition, mountainTransition, explicitMountain);
       double transitionEnd = Math.max(
          4.0,
-         Math.min((double)EarthShapeServerConfig.RIVER_BANK_FADE_BLOCKS.get(), supportedDistance)
+         Math.min((double)EarthShapeServerConfig.RIVER_BANK_FADE_BLOCKS.get(), desiredTransition)
       );
-      double flatEnd = Math.min(24.0, transitionEnd * 0.5);
+      double ordinaryFlatEnd = Math.min(4.0, transitionEnd / 3.0);
+      double flatEnd = lerp(ordinaryFlatEnd, 0.0, explicitMountain);
 
       // E=0.55 is vanilla's highly eroded, low/flat domain. Keep it constant
-      // beside the river, then recover smoothly so no new step is introduced at
-      // the edge of the no-hill band.
+      // through the immediate bank, then recover smoothly before nearby relief.
+      // Explicit mapped mountains skip that hold and rise as a continuous slope.
+      // This does not lower the land: the separate C floor remains authoritative.
       if (bankDistance <= flatEnd) return 0.55;
       if (bankDistance >= transitionEnd) return terrainGuided;
       double recovery = smoothstep((bankDistance - flatEnd) / Math.max(1.0, transitionEnd - flatEnd));

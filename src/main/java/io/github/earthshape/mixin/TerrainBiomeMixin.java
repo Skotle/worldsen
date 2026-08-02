@@ -31,6 +31,8 @@ import java.util.List;
 @Mixin(value = {MultiNoiseBiomeSource.class}, priority = 2000)
 public abstract class TerrainBiomeMixin {
    private static final AtomicBoolean TERRABLENDER_INTERCEPT_LOGGED = new AtomicBoolean();
+   /** Bounds duplicated climate RTrees so long Chunky runs cannot exhaust the VM. */
+   private static final int MAX_FILTERED_PARAMETER_LISTS = 16;
 
    // One RTree per layer family is built lazily. The old implementation evaluated
    // every vanilla parameter point for every quart biome sample.
@@ -80,9 +82,18 @@ public abstract class TerrainBiomeMixin {
       int blockX = quartX << 2;
       int blockY = quartY << 2;
       int blockZ = quartZ << 2;
-      if (!EarthShapeCompatibility.disablesWorldgen() && blockY >= 48) {
+      if (!EarthShapeCompatibility.disablesWorldgen()) {
          ClimateLayers layers = ClimateLayers.INSTANCE;
-         if ((Boolean)EarthShapeServerConfig.TERRAIN_BIOMES_ENABLED.get()) {
+         if (blockY < 48) {
+            // Preserve real cave biomes, but do not let vanilla's three-dimensional
+            // climate lattice insert a surface snow biome below an otherwise normal
+            // column. When exposed by a carver, that stray snowy_taiga/plains cell
+            // placed snow specifically around the cave mouth.
+            Holder<Biome> current = callback.getReturnValue();
+            if ((Boolean)EarthShapeServerConfig.TERRAIN_BIOMES_ENABLED.get() && isSnowBiome(current)) {
+               callback.setReturnValue(this.undergroundNonSnowBiome(layers, blockX, blockZ, current));
+            }
+         } else if ((Boolean)EarthShapeServerConfig.TERRAIN_BIOMES_ENABLED.get()) {
             Climate.TargetPoint point = this.guidedClimatePoint(layers, blockX, blockZ, sampler.sample(quartX, quartY, quartZ));
             callback.setReturnValue(this.selectLayerCandidate(layers, blockX, blockY, blockZ, point));
          }
@@ -146,7 +157,7 @@ public abstract class TerrainBiomeMixin {
          }
       }
 
-      boolean sourceRiver = (Boolean)EarthShapeServerConfig.RIVER_BIOMES_ENABLED.get() && RiversMask.INSTANCE.isInlandRiver(blockX, blockZ);
+      boolean sourceRiver = (Boolean)EarthShapeServerConfig.RIVER_BIOMES_ENABLED.get() && RiversMask.INSTANCE.isInlandRiverBiome(blockX, blockZ);
       earthshape$lookupCache.get().set(blockX, blockZ, terrain, sourceRiver);
       if (sourceRiver) {
          // Exact valley values from OverworldBiomeBuilder's river range. Temperature
@@ -165,6 +176,12 @@ public abstract class TerrainBiomeMixin {
     * hash-based variant is chosen here.
     */
    private Holder<Biome> selectLayerCandidate(ClimateLayers layers, int blockX, int blockY, int blockZ, Climate.TargetPoint point) {
+      return this.selectLayerCandidate(layers, blockX, blockY, blockZ, point, true);
+   }
+
+   private Holder<Biome> selectLayerCandidate(
+      ClimateLayers layers, int blockX, int blockY, int blockZ, Climate.TargetPoint point, boolean surfaceClimateAllowed
+   ) {
       BiomeLookupCache lookup = earthshape$lookupCache.get();
       ClimateLayers.TerrainKind terrain;
       boolean sourceRiver;
@@ -173,7 +190,7 @@ public abstract class TerrainBiomeMixin {
          sourceRiver = lookup.sourceRiver();
       } else {
          terrain = layers.terrainKind(blockX, blockZ);
-         sourceRiver = (Boolean)EarthShapeServerConfig.RIVER_BIOMES_ENABLED.get() && RiversMask.INSTANCE.isInlandRiver(blockX, blockZ);
+         sourceRiver = (Boolean)EarthShapeServerConfig.RIVER_BIOMES_ENABLED.get() && RiversMask.INSTANCE.isInlandRiverBiome(blockX, blockZ);
          lookup.set(blockX, blockZ, terrain, sourceRiver);
       }
       // Temperate forest directly below a mapped mountain otherwise repeatedly
@@ -191,7 +208,8 @@ public abstract class TerrainBiomeMixin {
       // Use broad deterministic patches, rather than a per-quart random roll, so
       // only parts of a suitable coastline become beach biomes without speckling
       // the shoreline. River mouths retain their ocean/river transition.
-      boolean beachEligible = !sourceRiver
+      boolean beachEligible = surfaceClimateAllowed
+         && !sourceRiver
          && !riverMouth
          && (selectedTerrain == ClimateLayers.TerrainKind.DESERT
             || selectedTerrain == ClimateLayers.TerrainKind.HILLS
@@ -201,37 +219,76 @@ public abstract class TerrainBiomeMixin {
       // Cherry groves are included in several mountain-slope tag sets. Keep them
       // as an exceptional temperate mountain biome rather than letting each mapped
       // mountain resolve to a pink forest.
-      boolean cherryGroveAllowed = selectedTerrain == ClimateLayers.TerrainKind.MOUNTAIN
+      boolean cherryGroveAllowed = surfaceClimateAllowed
+         && selectedTerrain == ClimateLayers.TerrainKind.MOUNTAIN
          && layers.treeCover(blockX, blockZ) == ClimateLayers.TreeCover.TEMPERATE
          && layers.temperature(blockX, blockZ) > -0.25
          && layers.temperature(blockX, blockZ) < 0.35
          && regionalVariant(blockX, blockZ) % 24 == 0;
-      boolean snowySlopeAllowed = allowsSnow(blockY, layers.temperature(blockX, blockZ));
+      double layerTemperature = layers.temperature(blockX, blockZ);
+      boolean borealAllowed = surfaceClimateAllowed
+         && (Boolean)EarthShapeServerConfig.TUNDRA_TEMPERATURE_ENABLED.get()
+         && layerTemperature <= (Double)EarthShapeServerConfig.TUNDRA_TEMPERATURE_THRESHOLD.get();
+      boolean snowBiomeAllowed = surfaceClimateAllowed && allowsSnow(selectedTerrain, blockY, layerTemperature);
       // A cold/white pixel alone must not make every small ridge a snowy peak.
       // mountainRegionHeightScale is derived from the connected mapped mountain
       // area, so peak biomes are reserved for substantial mountain systems.
       boolean largeMountainSystem = layers.mountainRegionHeightScale(blockX, blockZ) >= 0.55;
-      boolean frozenPeaksAllowed = largeMountainSystem
+      boolean frozenPeaksAllowed = surfaceClimateAllowed
+         && largeMountainSystem
          && (layers.isUltraMountain(blockX, blockZ) || layers.isPolarTemperatureZone(blockX, blockZ));
       int group = (((sourceRiver ? 1 : (riverMouth || selectedTerrain == ClimateLayers.TerrainKind.WATER ? 2 : selectedTerrain.ordinal() + 3)) * 2
          + (frozenPeaksAllowed ? 1 : 0)) * 4 + (beachEligible ? 2 : 0) + (cherryGroveAllowed ? 1 : 0)) * 2
-         + (snowySlopeAllowed ? 1 : 0);
-      ConcurrentHashMap<Integer, Climate.ParameterList<Holder<Biome>>> filtered = earthshape$filteredParameterLists.computeIfAbsent(
-         this.parameters(), ignored -> new ConcurrentHashMap<>()
-      );
-      Climate.ParameterList<Holder<Biome>> candidates = filtered.computeIfAbsent(
-         group,
-         ignored -> this.createFilteredParameterList(selectedTerrain, sourceRiver, riverMouth, frozenPeaksAllowed, beachEligible, cherryGroveAllowed, snowySlopeAllowed)
-      );
+         + (snowBiomeAllowed ? 1 : 0);
+      group = group * 2 + (borealAllowed ? 1 : 0);
+      // Never construct an RTree inside ConcurrentHashMap.computeIfAbsent. During
+      // parallel chunk generation that reserves the bin and makes every worker
+      // requesting the same biome family wait for the constructor to finish.
+      // Build outside the map and publish atomically; duplicate first builds are
+      // harmless and, importantly, cannot stop all chunk workers at once.
+      Climate.ParameterList<Holder<Biome>> parameters = this.parameters();
+      ConcurrentHashMap<Integer, Climate.ParameterList<Holder<Biome>>> filtered = earthshape$filteredParameterLists.get(parameters);
+      if (filtered == null) {
+         ConcurrentHashMap<Integer, Climate.ParameterList<Holder<Biome>>> created = new ConcurrentHashMap<>();
+         ConcurrentHashMap<Integer, Climate.ParameterList<Holder<Biome>>> existing = earthshape$filteredParameterLists.putIfAbsent(parameters, created);
+         filtered = existing == null ? created : existing;
+      }
+      Climate.ParameterList<Holder<Biome>> candidates = filtered.get(group);
+      if (candidates == null) {
+         Climate.ParameterList<Holder<Biome>> created = this.createFilteredParameterList(
+            selectedTerrain, sourceRiver, riverMouth, frozenPeaksAllowed, beachEligible, cherryGroveAllowed, snowBiomeAllowed, borealAllowed
+         );
+         Climate.ParameterList<Holder<Biome>> existing = filtered.putIfAbsent(group, created);
+         candidates = existing == null ? created : existing;
+         if (existing == null) trimFilteredParameterLists(filtered, group);
+      }
       return candidates.findValue(point);
    }
 
+   /**
+    * Approximate lock-free eviction. A worker holding an evicted value can finish
+    * normally, while the map itself never retains enough duplicated RTrees to push
+    * a small server VM into swap thrashing during whole-world pregeneration.
+    */
+   private static void trimFilteredParameterLists(
+      ConcurrentHashMap<Integer, Climate.ParameterList<Holder<Biome>>> filtered, int retainedGroup
+   ) {
+      if (filtered.size() <= MAX_FILTERED_PARAMETER_LISTS) return;
+      for (Integer cachedGroup : filtered.keySet()) {
+         if (filtered.size() <= MAX_FILTERED_PARAMETER_LISTS) return;
+         if (cachedGroup != retainedGroup) filtered.remove(cachedGroup);
+      }
+   }
+
    private Climate.ParameterList<Holder<Biome>> createFilteredParameterList(
-      ClimateLayers.TerrainKind terrain, boolean sourceRiver, boolean riverMouth, boolean frozenPeaksAllowed, boolean beachEligible, boolean cherryGroveAllowed, boolean snowySlopeAllowed
+      ClimateLayers.TerrainKind terrain, boolean sourceRiver, boolean riverMouth, boolean frozenPeaksAllowed, boolean beachEligible,
+      boolean cherryGroveAllowed, boolean snowBiomeAllowed, boolean borealAllowed
    ) {
       List<com.mojang.datafixers.util.Pair<Climate.ParameterPoint, Holder<Biome>>> allowed = new ArrayList<>();
       for (var entry : this.parameters().values()) {
-         if (this.isAllowedTerrainCandidate(terrain, sourceRiver, riverMouth, frozenPeaksAllowed, beachEligible, cherryGroveAllowed, snowySlopeAllowed, entry.getSecond())) {
+         if (this.isAllowedTerrainCandidate(
+            terrain, sourceRiver, riverMouth, frozenPeaksAllowed, beachEligible, cherryGroveAllowed, snowBiomeAllowed, borealAllowed, entry.getSecond()
+         )) {
             allowed.add(entry);
          }
       }
@@ -240,13 +297,20 @@ public abstract class TerrainBiomeMixin {
       return allowed.isEmpty() ? this.parameters() : new Climate.ParameterList<>(List.copyOf(allowed));
    }
 
-   private boolean isAllowedTerrainCandidate(ClimateLayers.TerrainKind terrain, boolean sourceRiver, boolean riverMouth, boolean frozenPeaksAllowed, boolean beachEligible, boolean cherryGroveAllowed, boolean snowySlopeAllowed, Holder<Biome> biome) {
+   private boolean isAllowedTerrainCandidate(
+      ClimateLayers.TerrainKind terrain, boolean sourceRiver, boolean riverMouth, boolean frozenPeaksAllowed, boolean beachEligible,
+      boolean cherryGroveAllowed, boolean snowBiomeAllowed, boolean borealAllowed, Holder<Biome> biome
+   ) {
       // Keep TerraBlender present as an API for dependent mods, but do not allow
       // its registered region biomes to enter EarthShape's final selector.
       if (EarthShapeCompatibility.isTerraBlenderLoaded() && !isVanillaBiome(biome)) return false;
+      // Vanilla family tags overlap heavily: snowy taiga is also a forest and
+      // snowy plains is also a plains biome. Reject cold candidates before the
+      // terrain-family test unless the explicit temperature/altitude gate opens.
+      if (isSnowBiome(biome) && !snowBiomeAllowed) return false;
+      if (biome.is(Tags.Biomes.IS_TAIGA) && !borealAllowed) return false;
       if (biome.is(Biomes.FROZEN_PEAKS) && !frozenPeaksAllowed) return false;
       if (biome.is(Biomes.CHERRY_GROVE) && !cherryGroveAllowed) return false;
-      if ((biome.is(Biomes.SNOWY_SLOPES) || biome.is(Biomes.GROVE)) && !snowySlopeAllowed) return false;
       if (sourceRiver) return biome.is(Tags.Biomes.IS_RIVER) || isVanillaRiver(biome);
       if (riverMouth || terrain == ClimateLayers.TerrainKind.WATER) return biome.is(Tags.Biomes.IS_OCEAN);
       if (beachEligible) {
@@ -274,6 +338,46 @@ public abstract class TerrainBiomeMixin {
             || biome.is(Biomes.SAVANNA) || biome.is(Biomes.SAVANNA_PLATEAU)
             || biome.is(Biomes.SNOWY_PLAINS) || biome.is(Biomes.ICE_SPIKES);
          case WATER -> false;
+      };
+   }
+
+   private static boolean isSnowBiome(Holder<Biome> biome) {
+      return biome.is(Biomes.SNOWY_PLAINS)
+         || biome.is(Biomes.ICE_SPIKES)
+         || biome.is(Biomes.SNOWY_TAIGA)
+         || biome.is(Biomes.SNOWY_BEACH)
+         || biome.is(Biomes.GROVE)
+         || biome.is(Biomes.SNOWY_SLOPES)
+         || biome.is(Biomes.JAGGED_PEAKS)
+         || biome.is(Biomes.FROZEN_PEAKS)
+         || biome.is(Biomes.FROZEN_RIVER);
+   }
+
+   /**
+    * Replaces only an underground surface-snow biome. This deliberately avoids
+    * selectLayerCandidate: constructing a new filtered climate RTree from a chunk
+    * worker can make every other worker wait inside ConcurrentHashMap.computeIfAbsent,
+    * which in turn leaves the server thread blocked on the chunk completion future.
+    */
+   private Holder<Biome> undergroundNonSnowBiome(
+      ClimateLayers layers, int blockX, int blockZ, Holder<Biome> fallback
+   ) {
+      if ((Boolean)EarthShapeServerConfig.RIVER_BIOMES_ENABLED.get()
+         && RiversMask.INSTANCE.isInlandRiverBiome(blockX, blockZ)) {
+         return this.findBiome(Biomes.RIVER, fallback);
+      }
+
+      ClimateLayers.TerrainKind terrain = this.surfaceTerrain(layers, blockX, blockZ);
+      double temperature = layers.temperature(blockX, blockZ);
+      return switch (terrain) {
+         case WATER -> this.oceanBiome(temperature, blockX, blockZ, fallback);
+         case DESERT -> this.findBiome(Biomes.DESERT, fallback);
+         case WETLAND -> this.findBiome(temperature > 0.3 ? Biomes.MANGROVE_SWAMP : Biomes.SWAMP, fallback);
+         case FOREST -> this.findBiome(temperature < -0.25 ? Biomes.TAIGA : Biomes.FOREST, fallback);
+         case JUNGLE -> this.findBiome(Biomes.JUNGLE, fallback);
+         case HILLS -> this.findBiome(Biomes.WINDSWEPT_HILLS, fallback);
+         case MOUNTAIN -> this.findBiome(Biomes.STONY_PEAKS, fallback);
+         case PLAINS, CITY, SURROUNDING -> this.findBiome(Biomes.PLAINS, fallback);
       };
    }
 
@@ -307,7 +411,7 @@ public abstract class TerrainBiomeMixin {
       int layerZ = unpackZ(layerPoint);
       ClimateLayers.TerrainKind terrain = this.surfaceTerrain(layers, blockX, blockZ);
       double temperature = layers.temperature(layerX, layerZ);
-      boolean snowAllowed = allowsSnow(blockY, temperature);
+      boolean snowAllowed = allowsSnow(terrain, blockY, temperature);
       boolean frozenPeaksAllowed = layers.mountainRegionHeightScale(blockX, blockZ) >= 0.55
          && (layers.isUltraMountain(blockX, blockZ) || layers.isPolarTemperatureZone(blockX, blockZ));
       int region = regionalVariant(blockX, blockZ);
@@ -420,9 +524,15 @@ public abstract class TerrainBiomeMixin {
       return (int)(value ^ value >>> 32) & 2147483647;
    }
 
-   private static boolean allowsSnow(int blockY, double temperature) {
-      return blockY >= (Integer)EarthShapeServerConfig.SNOW_ALTITUDE_BLOCKS.get()
-         || (Boolean)EarthShapeServerConfig.TUNDRA_TEMPERATURE_ENABLED.get() && temperature <= (Double)EarthShapeServerConfig.SNOW_TEMPERATURE_THRESHOLD.get();
+   private static boolean allowsSnow(ClimateLayers.TerrainKind terrain, int blockY, double temperature) {
+      boolean climateSnow = (Boolean)EarthShapeServerConfig.TUNDRA_TEMPERATURE_ENABLED.get()
+         && temperature <= (Double)EarthShapeServerConfig.SNOW_TEMPERATURE_THRESHOLD.get();
+      // Vertical biome sampling around an exposed cave can reach a high quart Y.
+      // Altitude alone must not turn ordinary plains/forest cave mouths into a
+      // snowy biome; the altitude snowline belongs only to mapped high relief.
+      boolean highReliefSnow = (terrain == ClimateLayers.TerrainKind.HILLS || terrain == ClimateLayers.TerrainKind.MOUNTAIN)
+         && blockY >= (Integer)EarthShapeServerConfig.SNOW_ALTITUDE_BLOCKS.get();
+      return climateSnow || highReliefSnow;
    }
 
    private static long warpedLayerPoint(int blockX, int blockZ) {
