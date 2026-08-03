@@ -4,6 +4,7 @@ import com.mojang.serialization.MapCodec;
 import com.mojang.serialization.codecs.RecordCodecBuilder;
 import io.github.earthshape.EarthShapeCompatibility;
 import io.github.earthshape.EarthShapeServerConfig;
+import io.github.earthshape.map.ClimateLayers;
 import io.github.earthshape.map.RiversMask;
 import net.minecraft.util.KeyDispatchDataCodec;
 import net.minecraft.world.level.levelgen.DensityFunction;
@@ -37,10 +38,26 @@ public record RiverWeirdnessDensity(DensityFunction argument) implements Density
          * (double)RiversMask.INSTANCE.blocksPerPixel();
       double waterRadius = Math.max(0.5, (double)width * 0.5);
       double bedRadius = Math.min(waterRadius, Math.max(0.5, waterRadius * RIVER_BED_CORE_RATIO));
-      double edgeFade = Math.max(
+      double mappedRelief = ClimateLayers.INSTANCE.terrainRelief(context.blockX(), context.blockZ());
+      double explicitMountain = smoothstep(Math.max(0.0, (mappedRelief - 0.35) / 0.65));
+      // W/PV previously recovered in only 2..4 blocks while erosion recovered
+      // much farther out. That mismatch could create a narrow peak band beside
+      // an otherwise flat river. Keep broad valley guidance on flat terrain,
+      // but retain the short shoulder where the layer explicitly paints a
+      // waterfront mountain.
+      double ordinaryFade = Math.min(
+         32.0,
+         Math.max(16.0, waterRadius + 12.0)
+      );
+      double configuredFade = Math.min(
+         ordinaryFade,
+         (double)EarthShapeServerConfig.RIVER_BANK_FADE_BLOCKS.get()
+      );
+      double mountainFade = Math.max(
          2.0,
          Math.min(4.0, (double)EarthShapeServerConfig.RIVER_CHANNEL_EDGE_FADE_BLOCKS.get())
       );
+      double edgeFade = lerp(configuredFade, mountainFade, explicitMountain);
       double radius = waterRadius + edgeFade;
       if (distance >= radius) return weirdness;
       if (distance <= bedRadius) return 0.0;
@@ -58,6 +75,15 @@ public record RiverWeirdnessDensity(DensityFunction argument) implements Density
       double recovery = (1.0 - gaussianDrop) / (1.0 - edgeDrop);
       recovery = Math.max(0.0, Math.min(1.0, recovery));
       return weirdness * recovery;
+   }
+
+   private static double smoothstep(double value) {
+      double clamped = Math.max(0.0, Math.min(1.0, value));
+      return clamped * clamped * (3.0 - 2.0 * clamped);
+   }
+
+   private static double lerp(double from, double to, double amount) {
+      return from + (to - from) * amount;
    }
 
    @Override

@@ -82,7 +82,10 @@ public record TerrainErosionDensity(DensityFunction argument) implements Density
       // kept flat farther out solely to stop a hill from starting beside the
       // channel and then being cut open by it. Scale that recovery by river width
       // but cap it so broad rivers do not erase an entire surrounding region.
-      double desiredTransition = Math.min(24.0, Math.max(12.0, (double)width * 0.5 + 12.0));
+      // Ordinary flat terrain needs a longer recovery than the former 12..24
+      // blocks. A short E transition can cross the mountain bands and return to
+      // flat E again, leaving an isolated ridge running along the riverbank.
+      double desiredTransition = Math.min(48.0, Math.max(24.0, (double)width * 0.5 + 24.0));
       double mappedRelief = ClimateLayers.INSTANCE.terrainRelief(blockX, blockZ);
       double explicitMountain = smoothstep(Math.max(0.0, (mappedRelief - 0.35) / 0.65));
       // Preserve mountains explicitly painted beside water. They still begin at

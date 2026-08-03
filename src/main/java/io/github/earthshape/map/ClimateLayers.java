@@ -38,8 +38,8 @@ public final class ClimateLayers {
    }
 
    public boolean hasLegacyTemperature(int x, int z) {
-      double mapX = (double)x / (double)RiversMask.INSTANCE.blocksPerPixel() + (double)RiversMask.INSTANCE.width() * 0.5;
-      double mapZ = (double)z / (double)RiversMask.INSTANCE.blocksPerPixel() + (double)RiversMask.INSTANCE.height() * 0.5;
+      double mapX = RiversMask.INSTANCE.mapImageX(x);
+      double mapZ = RiversMask.INSTANCE.mapImageZ(z);
       return mapX >= 0.0 && mapZ >= 0.0 && mapX < (double)RiversMask.INSTANCE.width() && mapZ < (double)RiversMask.INSTANCE.height();
    }
 
@@ -52,8 +52,8 @@ public final class ClimateLayers {
       long point = warpedTerrainPoint(x, z);
       int sampleX = unpackX(point);
       int sampleZ = unpackZ(point);
-      double worldX = (double)sampleX / (double)RiversMask.INSTANCE.blocksPerPixel() + 2816.0;
-      double worldZ = (double)sampleZ / (double)RiversMask.INSTANCE.blocksPerPixel() + 1024.0;
+      double worldX = RiversMask.INSTANCE.legacyImageX(sampleX, TREES_REGION_WIDTH);
+      double worldZ = RiversMask.INSTANCE.legacyImageZ(sampleZ, TREES_REGION_HEIGHT);
       if (!(worldX < 0.0) && !(worldZ < 0.0) && !(worldX >= 5632.0) && !(worldZ >= 2048.0)) {
          int imageX = Math.min(layer.width - 1, (int)(worldX / 5632.0 * (double)layer.width));
          int imageZ = Math.min(layer.height - 1, (int)(worldZ / 2048.0 * (double)layer.height));
@@ -185,10 +185,8 @@ public final class ClimateLayers {
    }
 
    public boolean isMesaRegion(int blockX, int blockZ) {
-      double u = ((double)blockX / (double)RiversMask.INSTANCE.blocksPerPixel() + (double)RiversMask.INSTANCE.width() * 0.5)
-         / (double)RiversMask.INSTANCE.width();
-      double v = ((double)blockZ / (double)RiversMask.INSTANCE.blocksPerPixel() + (double)RiversMask.INSTANCE.height() * 0.5)
-         / (double)RiversMask.INSTANCE.height();
+      double u = RiversMask.INSTANCE.mapImageX(blockX) / (double)RiversMask.INSTANCE.width();
+      double v = RiversMask.INSTANCE.mapImageZ(blockZ) / (double)RiversMask.INSTANCE.height();
       boolean americas = u > 0.05 && u < 0.43 && v > 0.08 && v < 0.88;
       boolean oceania = u > 0.73 && u < 0.97 && v > 0.5 && v < 0.92;
       return americas || oceania;
@@ -265,8 +263,8 @@ public final class ClimateLayers {
    }
 
    private static ClimateLayers.TemperatureSample sampleFullTemperature(ClimateLayers.Data layer, int blockX, int blockZ) {
-      double worldX = (double)blockX / (double)RiversMask.INSTANCE.blocksPerPixel() + (double)RiversMask.INSTANCE.width() * 0.5;
-      double worldZ = (double)blockZ / (double)RiversMask.INSTANCE.blocksPerPixel() + (double)RiversMask.INSTANCE.height() * 0.5;
+      double worldX = RiversMask.INSTANCE.mapImageX(blockX);
+      double worldZ = RiversMask.INSTANCE.mapImageZ(blockZ);
       double imageX = Math.max(0.0, Math.min((double)layer.width - 1.001, worldX / (double)RiversMask.INSTANCE.width() * (double)layer.width));
       double imageZ = Math.max(0.0, Math.min((double)layer.height - 1.001, worldZ / (double)RiversMask.INSTANCE.height() * (double)layer.height));
       int x = (int)imageX;
@@ -800,7 +798,7 @@ public final class ClimateLayers {
    }
 
    private static double latitudeTemperature(int blockZ) {
-      double imageZ = (double)blockZ / (double)RiversMask.INSTANCE.blocksPerPixel() + (double)RiversMask.INSTANCE.height() * 0.5;
+      double imageZ = RiversMask.INSTANCE.mapImageZ(blockZ);
       double latitude = Math.abs(imageZ / Math.max(1.0, (double)RiversMask.INSTANCE.height() - 1.0) * 2.0 - 1.0);
       return 0.55 - 1.35 * latitude * latitude;
    }

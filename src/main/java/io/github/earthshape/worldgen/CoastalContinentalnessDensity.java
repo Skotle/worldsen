@@ -42,7 +42,7 @@ public record CoastalContinentalnessDensity(DensityFunction argument) implements
       if (mappedLand && mouthOpening <= 0.001) {
          guided = Math.max(-0.10, guided);
       } else if (!mappedLand) {
-         guided = Math.min(-0.20, guided);
+         guided = oceanShelfContinentalness(context.blockX(), context.blockZ(), vanilla);
       }
       double riverInfluence = riverValleyInfluence(context.blockX(), context.blockZ());
       if (riverInfluence > 0.0) {
@@ -67,6 +67,31 @@ public record CoastalContinentalnessDensity(DensityFunction argument) implements
          return Math.max(lerp(-0.10, 0.06, inlandFactor), guided);
       }
       return guided;
+   }
+
+   private static double oceanShelfContinentalness(int blockX, int blockZ, double vanilla) {
+      double distance = RiversMask.INSTANCE.oceanDistanceBlocks(blockX, blockZ);
+      double shallowWidth = (double)EarthShapeServerConfig.COAST_SHALLOW_SHELF_WIDTH_BLOCKS.get();
+      double initialTransition = (double)EarthShapeServerConfig.COAST_SHELF_TRANSITION_BLOCKS.get();
+      double fullTransition = Math.max(
+         shallowWidth + initialTransition,
+         (double)EarthShapeServerConfig.COAST_HEIGHT_FADE_BLOCKS.get()
+      );
+
+      // C=-0.20 is already on the ocean side of vanilla's coast threshold.
+      // Start just below it, then descend toward a configurable deep-ocean
+      // target.  The zero-slope smoothstep removes the cut face at both ends.
+      double progress = smoothstep((distance - shallowWidth) / Math.max(1.0, fullTransition - shallowWidth));
+      int deepFloorY = (Integer)EarthShapeServerConfig.COAST_SHELF_DEEP_FLOOR_Y.get();
+      double deepTarget = Math.max(-0.85, Math.min(-0.30, -0.30 - (61.0 - (double)deepFloorY) * 0.025));
+      double shelfTarget = lerp(-0.21, deepTarget, progress);
+
+      // Reintroduce only a small, gradually increasing share of vanilla noise
+      // offshore.  It breaks up a perfectly level seabed, while the final cap
+      // makes every mapped ocean column remain ocean and prevents continental
+      // bumps from ever lifting it above sea level.
+      double natural = lerp(shelfTarget, vanilla, 0.12 * progress);
+      return Math.min(-0.20, natural);
    }
 
    private static double applyRiverCrossSection(int blockX, int blockZ, double terrain, double valleyInfluence) {

@@ -7,6 +7,7 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.util.Arrays;
 import java.util.BitSet;
+import java.util.SplittableRandom;
 import javax.imageio.ImageIO;
 
 public final class RiversMask {
@@ -15,12 +16,28 @@ public final class RiversMask {
    private static final int RIVER_SEARCH_RADIUS = 4;
    private static final double RIVER_CORNER_TRIM = 0.32;
    private volatile RiversMask.Data data;
-   private final ThreadLocal<RiversMask.LandSampleCache> landSampleCache = ThreadLocal.withInitial(RiversMask.LandSampleCache::new);
-   private final ThreadLocal<RiversMask.RiverWidthCache> riverWidthCache = ThreadLocal.withInitial(RiversMask.RiverWidthCache::new);
-   private final ThreadLocal<RiversMask.RiverDistanceCache> riverDistanceCache = ThreadLocal.withInitial(RiversMask.RiverDistanceCache::new);
-   private final ThreadLocal<RiversMask.RiverColumnCache> riverColumnCache = ThreadLocal.withInitial(RiversMask.RiverColumnCache::new);
+   private volatile ThreadLocal<RiversMask.LandSampleCache> landSampleCache = ThreadLocal.withInitial(RiversMask.LandSampleCache::new);
+   private volatile ThreadLocal<RiversMask.RiverWidthCache> riverWidthCache = ThreadLocal.withInitial(RiversMask.RiverWidthCache::new);
+   private volatile ThreadLocal<RiversMask.RiverDistanceCache> riverDistanceCache = ThreadLocal.withInitial(RiversMask.RiverDistanceCache::new);
+   private volatile ThreadLocal<RiversMask.RiverColumnCache> riverColumnCache = ThreadLocal.withInitial(RiversMask.RiverColumnCache::new);
+   private volatile long mapCenterSeed;
+   private volatile double selectedCenterX = Double.NaN;
+   private volatile double selectedCenterZ = Double.NaN;
 
    private RiversMask() {
+   }
+
+   public synchronized void configureMapCenter(long worldSeed) {
+      this.mapCenterSeed = worldSeed;
+      this.selectedCenterX = Double.NaN;
+      this.selectedCenterZ = Double.NaN;
+      // A client can open multiple worlds in one JVM. Replace the ThreadLocal
+      // containers so a column cached for the previous centre cannot leak into
+      // the next world's coordinate transform.
+      this.landSampleCache = ThreadLocal.withInitial(RiversMask.LandSampleCache::new);
+      this.riverWidthCache = ThreadLocal.withInitial(RiversMask.RiverWidthCache::new);
+      this.riverDistanceCache = ThreadLocal.withInitial(RiversMask.RiverDistanceCache::new);
+      this.riverColumnCache = ThreadLocal.withInitial(RiversMask.RiverColumnCache::new);
    }
 
    public double sampleLand(int blockX, int blockZ) {
@@ -41,9 +58,8 @@ public final class RiversMask {
     */
    public double samplePregenerationLand(int blockX, int blockZ) {
       RiversMask.Data loaded = this.data();
-      int blocksPerPixel = this.blocksPerPixel();
-      int x = (int)Math.floor((double)blockX / (double)blocksPerPixel + (double)loaded.width * 0.5);
-      int z = (int)Math.floor((double)blockZ / (double)blocksPerPixel + (double)loaded.height * 0.5);
+      int x = (int)Math.floor(this.mapImageX(blockX, loaded));
+      int z = (int)Math.floor(this.mapImageZ(blockZ, loaded));
       return x >= 0 && z >= 0 && x < loaded.width && z < loaded.height && loaded.pregeneration.get(z * loaded.width + x) ? 1.0 : 0.0;
    }
 
@@ -56,12 +72,25 @@ public final class RiversMask {
       return this.sampleBytes(loaded, loaded.coastalLandness, blockX, blockZ);
    }
 
+   /**
+    * Approximate distance from a mapped ocean column to the nearest source-map
+    * land, in blocks.  The precomputed chamfer field is interpolated here so
+    * continentalness can descend across the shelf without repeating an
+    * expensive coastline search for every density sample.
+    */
+   public double oceanDistanceBlocks(int blockX, int blockZ) {
+      RiversMask.Data loaded = this.data();
+      if (this.sampleExactLand(loaded, blockX, blockZ) >= 0.5) return 0.0;
+      // Values use three units per source pixel (4 on a diagonal).
+      return this.sampleBytes(loaded, loaded.oceanDistance, blockX, blockZ)
+         * 255.0 / 3.0 * (double)this.blocksPerPixel();
+   }
+
    private double sampleExactLand(RiversMask.Data loaded, int blockX, int blockZ) {
       RiversMask.LandSampleCache cache = this.landSampleCache.get();
       if (cache.data == loaded && cache.blockX == blockX && cache.blockZ == blockZ) return cache.land;
-      int blocksPerPixel = this.blocksPerPixel();
-      double sourceX = (double)blockX / (double)blocksPerPixel + (double)loaded.width * 0.5;
-      double sourceZ = (double)blockZ / (double)blocksPerPixel + (double)loaded.height * 0.5;
+      double sourceX = this.mapImageX(blockX, loaded);
+      double sourceZ = this.mapImageZ(blockZ, loaded);
       int originalX = (int)Math.floor(sourceX);
       int originalZ = (int)Math.floor(sourceZ);
 
@@ -124,9 +153,8 @@ public final class RiversMask {
    }
 
    private double sampleBytes(RiversMask.Data loaded, byte[] values, int blockX, int blockZ) {
-      int blocksPerPixel = this.blocksPerPixel();
-      double imageX = (double)blockX / (double)blocksPerPixel + (double)loaded.width * 0.5;
-      double imageZ = (double)blockZ / (double)blocksPerPixel + (double)loaded.height * 0.5;
+      double imageX = this.mapImageX(blockX, loaded);
+      double imageZ = this.mapImageZ(blockZ, loaded);
       if (!(imageX < 0.0) && !(imageZ < 0.0) && !(imageX >= (double)(loaded.width - 1)) && !(imageZ >= (double)(loaded.height - 1))) {
          int x = (int)Math.floor(imageX);
          int z = (int)Math.floor(imageZ);
@@ -145,9 +173,8 @@ public final class RiversMask {
    }
 
    private double sampleReliefLand(RiversMask.Data loaded, int blockX, int blockZ) {
-      int blocksPerPixel = this.blocksPerPixel();
-      double imageX = (double)blockX / (double)blocksPerPixel + (double)loaded.width * 0.5;
-      double imageZ = (double)blockZ / (double)blocksPerPixel + (double)loaded.height * 0.5;
+      double imageX = this.mapImageX(blockX, loaded);
+      double imageZ = this.mapImageZ(blockZ, loaded);
       if (!(imageX < 0.0) && !(imageZ < 0.0) && !(imageX >= (double)(loaded.width - 1)) && !(imageZ >= (double)(loaded.height - 1))) {
          int x = (int)Math.floor(imageX);
          int z = (int)Math.floor(imageZ);
@@ -173,14 +200,71 @@ public final class RiversMask {
       return this.data().height;
    }
 
+   public double mapImageX(int blockX) {
+      return this.mapImageX(blockX, this.data());
+   }
+
+   public double mapImageZ(int blockZ) {
+      return this.mapImageZ(blockZ, this.data());
+   }
+
+   private double mapImageX(int blockX, RiversMask.Data loaded) {
+      this.ensureMapCenter(loaded);
+      return (double)blockX / (double)this.blocksPerPixel() + this.selectedCenterX;
+   }
+
+   private double mapImageZ(int blockZ, RiversMask.Data loaded) {
+      this.ensureMapCenter(loaded);
+      return (double)blockZ / (double)this.blocksPerPixel() + this.selectedCenterZ;
+   }
+
+   private void ensureMapCenter(RiversMask.Data loaded) {
+      if (!Double.isNaN(this.selectedCenterX) && !Double.isNaN(this.selectedCenterZ)) return;
+      synchronized (this) {
+         if (!Double.isNaN(this.selectedCenterX) && !Double.isNaN(this.selectedCenterZ)) return;
+         if (!(Boolean)EarthShapeServerConfig.RANDOM_MAP_CENTER_ENABLED.get()) {
+            this.selectedCenterX = (double)loaded.width * 0.5;
+            this.selectedCenterZ = (double)loaded.height * 0.5;
+            EarthShape.LOGGER.info("[EarthShape] map centre fixed at source ({}, {}); world spawn remains (0, 0).", this.selectedCenterX, this.selectedCenterZ);
+            return;
+         }
+
+         int minX = Math.max(0, Math.min(loaded.width - 1, (Integer)EarthShapeServerConfig.RANDOM_MAP_CENTER_MIN_X.get()));
+         int maxX = Math.max(0, Math.min(loaded.width - 1, (Integer)EarthShapeServerConfig.RANDOM_MAP_CENTER_MAX_X.get()));
+         int minZ = Math.max(0, Math.min(loaded.height - 1, (Integer)EarthShapeServerConfig.RANDOM_MAP_CENTER_MIN_Z.get()));
+         int maxZ = Math.max(0, Math.min(loaded.height - 1, (Integer)EarthShapeServerConfig.RANDOM_MAP_CENTER_MAX_Z.get()));
+         if (minX > maxX) { int swap = minX; minX = maxX; maxX = swap; }
+         if (minZ > maxZ) { int swap = minZ; minZ = maxZ; maxZ = swap; }
+
+         SplittableRandom random = new SplittableRandom(mixCenterSeed(this.mapCenterSeed));
+         int sourceX = minX + random.nextInt(maxX - minX + 1);
+         int sourceZ = minZ + random.nextInt(maxZ - minZ + 1);
+         this.selectedCenterX = (double)sourceX + 0.5;
+         this.selectedCenterZ = (double)sourceZ + 0.5;
+         EarthShape.LOGGER.info(
+            "[EarthShape] random map centre selected at source pixel ({}, {}) from X={}..{}, Z={}..{}; world spawn remains (0, 0).",
+            sourceX, sourceZ, minX, maxX, minZ, maxZ
+         );
+      }
+   }
+
+   private static long mixCenterSeed(long value) {
+      value ^= 0x6A09E667F3BCC909L;
+      value ^= value >>> 33;
+      value *= 0xff51afd7ed558ccdL;
+      value ^= value >>> 33;
+      value *= 0xc4ceb9fe1a85ec53L;
+      return value ^ value >>> 33;
+   }
+
    public double legacyImageX(int blockX, int legacyWidth) {
       RiversMask.Data loaded = this.data();
-      return (double)blockX / (double)this.blocksPerPixel() + (double)loaded.width * 0.5 - (double)(loaded.width - legacyWidth) * 0.5;
+      return this.mapImageX(blockX, loaded) - (double)(loaded.width - legacyWidth) * 0.5;
    }
 
    public double legacyImageZ(int blockZ, int legacyHeight) {
       RiversMask.Data loaded = this.data();
-      return (double)blockZ / (double)this.blocksPerPixel() + (double)loaded.height * 0.5 - (double)(loaded.height - legacyHeight) * 0.5;
+      return this.mapImageZ(blockZ, loaded) - (double)(loaded.height - legacyHeight) * 0.5;
    }
 
    public boolean isInsideLegacyLayer(int blockX, int blockZ, int legacyWidth, int legacyHeight) {
@@ -219,8 +303,8 @@ public final class RiversMask {
       if (this.riverMouthOpening(blockX, blockZ) > 0.0) return false;
 
       RiversMask.Data loaded = this.data();
-      int imageX = (int)Math.floor((double)blockX / (double)this.blocksPerPixel() + (double)loaded.width * 0.5);
-      int imageZ = (int)Math.floor((double)blockZ / (double)this.blocksPerPixel() + (double)loaded.height * 0.5);
+      int imageX = (int)Math.floor(this.mapImageX(blockX, loaded));
+      int imageZ = (int)Math.floor(this.mapImageZ(blockZ, loaded));
       if (!inside(imageX, imageZ, loaded.width, loaded.height)) return false;
       int index = imageZ * loaded.width + imageX;
       if (!loaded.riverInfluence.get(index)) return false;
@@ -258,8 +342,8 @@ public final class RiversMask {
 
    public boolean isRiverMouth(int blockX, int blockZ) {
       RiversMask.Data loaded = this.data();
-      int x = (int)Math.floor((double)blockX / (double)this.blocksPerPixel() + (double)loaded.width * 0.5);
-      int z = (int)Math.floor((double)blockZ / (double)this.blocksPerPixel() + (double)loaded.height * 0.5);
+      int x = (int)Math.floor(this.mapImageX(blockX, loaded));
+      int z = (int)Math.floor(this.mapImageZ(blockZ, loaded));
       return x >= 0
          && z >= 0
          && x < loaded.width
@@ -276,8 +360,8 @@ public final class RiversMask {
     */
    public double riverMouthOpening(int blockX, int blockZ) {
       RiversMask.Data loaded = this.data();
-      double imageX = (double)blockX / (double)this.blocksPerPixel() + (double)loaded.width * 0.5;
-      double imageZ = (double)blockZ / (double)this.blocksPerPixel() + (double)loaded.height * 0.5;
+      double imageX = this.mapImageX(blockX, loaded);
+      double imageZ = this.mapImageZ(blockZ, loaded);
       int centreX = (int)Math.floor(imageX);
       int centreZ = (int)Math.floor(imageZ);
       if (centreX < 1 || centreZ < 1 || centreX >= loaded.width - 1 || centreZ >= loaded.height - 1) return 0.0;
@@ -333,8 +417,8 @@ public final class RiversMask {
 
    public boolean hasInlandRiverInfluence(int blockX, int blockZ) {
       RiversMask.Data loaded = this.data();
-      int x = (int)Math.floor((double)blockX / (double)this.blocksPerPixel() + (double)loaded.width * 0.5);
-      int z = (int)Math.floor((double)blockZ / (double)this.blocksPerPixel() + (double)loaded.height * 0.5);
+      int x = (int)Math.floor(this.mapImageX(blockX, loaded));
+      int z = (int)Math.floor(this.mapImageZ(blockZ, loaded));
       return x >= 0
          && z >= 0
          && x < loaded.width
@@ -353,8 +437,8 @@ public final class RiversMask {
       if (cache.data == loaded && cache.blockX == blockX && cache.blockZ == blockZ) {
          return cache.width;
       } else {
-         double imageX = (double)blockX / (double)this.blocksPerPixel() + (double)loaded.width * 0.5;
-         double imageZ = (double)blockZ / (double)this.blocksPerPixel() + (double)loaded.height * 0.5;
+         double imageX = this.mapImageX(blockX, loaded);
+         double imageZ = this.mapImageZ(blockZ, loaded);
          int width = 0;
          if (!(imageX < 1.0) && !(imageZ < 1.0) && !(imageX >= (double)loaded.width - 1.0) && !(imageZ >= (double)loaded.height - 1.0)) {
             int centreX = (int)Math.floor(imageX);
@@ -402,8 +486,8 @@ public final class RiversMask {
       RiversMask.Data loaded = this.data();
       RiversMask.RiverDistanceCache cache = this.riverDistanceCache.get();
       if (cache.data == loaded && cache.blockX == blockX && cache.blockZ == blockZ) return cache.distance;
-      double imageX = (double)blockX / (double)this.blocksPerPixel() + (double)loaded.width * 0.5;
-      double imageZ = (double)blockZ / (double)this.blocksPerPixel() + (double)loaded.height * 0.5;
+      double imageX = this.mapImageX(blockX, loaded);
+      double imageZ = this.mapImageZ(blockZ, loaded);
       if (!(imageX < 1.0) && !(imageZ < 1.0) && !(imageX >= (double)loaded.width - 1.0) && !(imageZ >= (double)loaded.height - 1.0)) {
          int centreX = (int)Math.floor(imageX);
          int centreZ = (int)Math.floor(imageZ);
@@ -622,6 +706,7 @@ public final class RiversMask {
             BitSet riverInfluence = createRiverInfluence(width, height, land, riverCentrelines, riverWidths);
             int coastRadiusPixels = Math.max(2, Math.min(12, (Integer)EarthShapeServerConfig.COAST_HEIGHT_FADE_BLOCKS.get() / Math.max(1, (Integer)EarthShapeServerConfig.BLOCKS_PER_PIXEL.get() * 6)));
             byte[] coastalLandness = createCoastalLandness(width, height, land, coastRadiusPixels);
+            byte[] oceanDistance = createOceanDistance(width, height, land);
             BitSet pregeneration = createPregenerationMask(width, height, land);
             EarthShape.LOGGER
                .info(
@@ -629,7 +714,7 @@ public final class RiversMask {
                   new Object[]{width, height, (System.nanoTime() - started) / 1000000L}
                );
             var21x = new RiversMask.Data(
-               width, height, land, riverCentrelines, riverWidths, riverCorners, riverMouths, riverInfluence, coastalLandness, pregeneration
+               width, height, land, riverCentrelines, riverWidths, riverCorners, riverMouths, riverInfluence, coastalLandness, oceanDistance, pregeneration
             );
          }
 
@@ -648,6 +733,39 @@ public final class RiversMask {
       for (int index = land.nextSetBit(0); index >= 0; index = land.nextSetBit(index + 1)) values[index] = (byte)255;
       for (int pass = 0; pass < 3; pass++) values = boxBlur(values, width, height, radius);
       return values;
+   }
+
+   private static byte[] createOceanDistance(int width, int height, BitSet land) {
+      byte[] distance = new byte[width * height];
+      Arrays.fill(distance, (byte)255);
+      for (int index = land.nextSetBit(0); index >= 0; index = land.nextSetBit(index + 1)) distance[index] = 0;
+
+      // 3/4 chamfer metric: inexpensive at map-load time and much rounder than
+      // Manhattan distance.  Saturation still covers 85 source pixels, well
+      // beyond the configured coastal transition at normal map scales.
+      for (int z = 0; z < height; z++) {
+         for (int x = 0; x < width; x++) {
+            int index = z * width + x;
+            int value = distance[index] & 255;
+            if (x > 0) value = Math.min(value, (distance[index - 1] & 255) + 3);
+            if (z > 0) value = Math.min(value, (distance[index - width] & 255) + 3);
+            if (x > 0 && z > 0) value = Math.min(value, (distance[index - width - 1] & 255) + 4);
+            if (x + 1 < width && z > 0) value = Math.min(value, (distance[index - width + 1] & 255) + 4);
+            distance[index] = (byte)Math.min(255, value);
+         }
+      }
+      for (int z = height - 1; z >= 0; z--) {
+         for (int x = width - 1; x >= 0; x--) {
+            int index = z * width + x;
+            int value = distance[index] & 255;
+            if (x + 1 < width) value = Math.min(value, (distance[index + 1] & 255) + 3);
+            if (z + 1 < height) value = Math.min(value, (distance[index + width] & 255) + 3);
+            if (x + 1 < width && z + 1 < height) value = Math.min(value, (distance[index + width + 1] & 255) + 4);
+            if (x > 0 && z + 1 < height) value = Math.min(value, (distance[index + width - 1] & 255) + 4);
+            distance[index] = (byte)Math.min(255, value);
+         }
+      }
+      return distance;
    }
 
    private static BitSet createPregenerationMask(int width, int height, BitSet land) {
@@ -1345,6 +1463,7 @@ public final class RiversMask {
       BitSet riverMouths,
       BitSet riverInfluence,
       byte[] coastalLandness,
+      byte[] oceanDistance,
       BitSet pregeneration
    ) {
       double land(int x, int z) {

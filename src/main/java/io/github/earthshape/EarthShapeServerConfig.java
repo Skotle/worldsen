@@ -9,6 +9,11 @@ import net.neoforged.neoforge.common.ModConfigSpec.IntValue;
 public final class EarthShapeServerConfig {
    public static final ModConfigSpec SPEC;
    public static final IntValue BLOCKS_PER_PIXEL;
+   public static final BooleanValue RANDOM_MAP_CENTER_ENABLED;
+   public static final IntValue RANDOM_MAP_CENTER_MIN_X;
+   public static final IntValue RANDOM_MAP_CENTER_MAX_X;
+   public static final IntValue RANDOM_MAP_CENTER_MIN_Z;
+   public static final IntValue RANDOM_MAP_CENTER_MAX_Z;
    public static final BooleanValue CONTINENTS_ENABLED;
    public static final BooleanValue CONTINENT_HEIGHT_LIMIT_ENABLED;
    public static final BooleanValue TERRAIN_BIOMES_ENABLED;
@@ -62,6 +67,18 @@ public final class EarthShapeServerConfig {
       builder.push("map_scale");
       BLOCKS_PER_PIXEL = builder.comment("rivers.bmp 픽셀 하나에 해당하는 마인크래프트 블록 수. 20으로 설정하면 기본 제공 맵의 283840 x 141920 블록 크기가 유지됩니다.")
               .defineInRange("blocksPerPixel", 20, 1, 4096);
+      RANDOM_MAP_CENTER_ENABLED = builder.comment(
+                      "활성화하면 월드 시드로 아래 레이어 좌표 범위에서 지도 중심축을 선택합니다. 비활성화하면 기존처럼 레이어 정중앙이 월드 0,0입니다. 월드 스폰 좌표는 변경하지 않습니다."
+              )
+              .define("randomCenterEnabled", false);
+      RANDOM_MAP_CENTER_MIN_X = builder.comment("무작위 중심축을 선택할 worldmap_river.png 최소 X 픽셀 좌표.")
+              .defineInRange("randomCenterMinLayerX", 0, 0, 5999);
+      RANDOM_MAP_CENTER_MAX_X = builder.comment("무작위 중심축을 선택할 worldmap_river.png 최대 X 픽셀 좌표.")
+              .defineInRange("randomCenterMaxLayerX", 5999, 0, 5999);
+      RANDOM_MAP_CENTER_MIN_Z = builder.comment("무작위 중심축을 선택할 worldmap_river.png 최소 Z 픽셀 좌표.")
+              .defineInRange("randomCenterMinLayerZ", 0, 0, 3399);
+      RANDOM_MAP_CENTER_MAX_Z = builder.comment("무작위 중심축을 선택할 worldmap_river.png 최대 Z 픽셀 좌표.")
+              .defineInRange("randomCenterMaxLayerZ", 3399, 0, 3399);
       builder.pop();
       builder.push("layers");
       CONTINENTS_ENABLED = builder.comment("rivers.bmp를 대륙(육지/바다) 마스크로 사용합니다.").define("continentsEnabled", true);

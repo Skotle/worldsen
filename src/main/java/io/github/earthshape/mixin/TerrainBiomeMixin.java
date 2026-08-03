@@ -32,7 +32,7 @@ import java.util.List;
 public abstract class TerrainBiomeMixin {
    private static final AtomicBoolean TERRABLENDER_INTERCEPT_LOGGED = new AtomicBoolean();
    /** Bounds duplicated climate RTrees so long Chunky runs cannot exhaust the VM. */
-   private static final int MAX_FILTERED_PARAMETER_LISTS = 16;
+   private static final int MAX_FILTERED_PARAMETER_LISTS = 8;
 
    // One RTree per layer family is built lazily. The old implementation evaluated
    // every vanilla parameter point for every quart biome sample.
@@ -241,11 +241,10 @@ public abstract class TerrainBiomeMixin {
          + (frozenPeaksAllowed ? 1 : 0)) * 4 + (beachEligible ? 2 : 0) + (cherryGroveAllowed ? 1 : 0)) * 2
          + (snowBiomeAllowed ? 1 : 0);
       group = group * 2 + (borealAllowed ? 1 : 0);
-      // Never construct an RTree inside ConcurrentHashMap.computeIfAbsent. During
-      // parallel chunk generation that reserves the bin and makes every worker
-      // requesting the same biome family wait for the constructor to finish.
-      // Build outside the map and publish atomically; duplicate first builds are
-      // harmless and, importantly, cannot stop all chunk workers at once.
+      // Keep one bounded RTree per active biome family. The constructor must run
+      // only once for a group: publishing after an out-of-map build allowed every
+      // chunk worker to allocate the same large tree concurrently, producing an
+      // OS-level OOM kill with no JVM crash log.
       Climate.ParameterList<Holder<Biome>> parameters = this.parameters();
       ConcurrentHashMap<Integer, Climate.ParameterList<Holder<Biome>>> filtered = earthshape$filteredParameterLists.get(parameters);
       if (filtered == null) {
@@ -253,22 +252,21 @@ public abstract class TerrainBiomeMixin {
          ConcurrentHashMap<Integer, Climate.ParameterList<Holder<Biome>>> existing = earthshape$filteredParameterLists.putIfAbsent(parameters, created);
          filtered = existing == null ? created : existing;
       }
-      Climate.ParameterList<Holder<Biome>> candidates = filtered.get(group);
-      if (candidates == null) {
-         Climate.ParameterList<Holder<Biome>> created = this.createFilteredParameterList(
+      final int cacheGroup = group;
+      Climate.ParameterList<Holder<Biome>> candidates = filtered.computeIfAbsent(
+         cacheGroup,
+         ignored -> this.createFilteredParameterList(
             selectedTerrain, sourceRiver, riverMouth, frozenPeaksAllowed, beachEligible, cherryGroveAllowed, snowBiomeAllowed, borealAllowed
-         );
-         Climate.ParameterList<Holder<Biome>> existing = filtered.putIfAbsent(group, created);
-         candidates = existing == null ? created : existing;
-         if (existing == null) trimFilteredParameterLists(filtered, group);
-      }
+         )
+      );
+      trimFilteredParameterLists(filtered, cacheGroup);
       return candidates.findValue(point);
    }
 
    /**
     * Approximate lock-free eviction. A worker holding an evicted value can finish
-    * normally, while the map itself never retains enough duplicated RTrees to push
-    * a small server VM into swap thrashing during whole-world pregeneration.
+    * normally, while the map itself never retains enough RTrees to push a small
+    * server VM into swap thrashing during whole-world pregeneration.
     */
    private static void trimFilteredParameterLists(
       ConcurrentHashMap<Integer, Climate.ParameterList<Holder<Biome>>> filtered, int retainedGroup
