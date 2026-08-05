@@ -64,7 +64,10 @@ public record CoastalContinentalnessDensity(DensityFunction argument) implements
          && riverInfluence <= 0.0) {
          // Raise the minimum continuously from near-inland C=-0.10 to the
          // ordinary Y=64 baseline instead of switching the floor on at t=0.98.
-         return Math.max(lerp(-0.10, 0.06, inlandFactor), guided);
+         guided = Math.max(lerp(-0.10, 0.06, inlandFactor), guided);
+      }
+      if (mappedLand && mouthOpening <= 0.001) {
+         guided = applyRiverBankHeightLimit(context.blockX(), context.blockZ(), guided);
       }
       return guided;
    }
@@ -101,6 +104,11 @@ public record CoastalContinentalnessDensity(DensityFunction argument) implements
          * (double)RiversMask.INSTANCE.blocksPerPixel();
       double waterRadius = Math.max(0.5, (double)width * 0.5);
       double bedRadius = Math.min(waterRadius, Math.max(0.5, waterRadius * RIVER_BED_CORE_RATIO));
+      // River guidance may carve or flatten the source terrain, but it must
+      // never raise a low plain into a narrow embankment. The former fixed 0.06
+      // target was above the local C value in coastal and other low flatlands,
+      // producing a wall that followed only the river mask.
+      double bankTarget = Math.min(0.06, terrain);
 
       if (distance <= waterRadius) {
          double centre = (Double)EarthShapeServerConfig.RIVER_CHANNEL_CONTINENTALNESS.get();
@@ -113,13 +121,12 @@ public record CoastalContinentalnessDensity(DensityFunction argument) implements
          // slope. Zero derivatives at both ends avoid a crease at the bed and
          // a vertical step where the water meets the bank.
          double acrossShoulder = smoothstep((distance - bedRadius) / (waterRadius - bedRadius));
-         double edge = 0.06;
-         return lerp(centre, edge, acrossShoulder);
+         return lerp(centre, bankTarget, acrossShoulder);
       }
 
-      // Just outside the water, hold the ordinary Y=64 continental baseline;
-      // then let the existing valley influence return it to surrounding noise.
-      return lerp(terrain, 0.06, valleyInfluence);
+      // Just outside the water, flatten toward at most the local terrain value;
+      // then let the valley influence return to the untouched surrounding noise.
+      return lerp(terrain, bankTarget, valleyInfluence);
    }
 
    private static double riverValleyInfluence(int blockX, int blockZ) {
@@ -132,16 +139,49 @@ public record CoastalContinentalnessDensity(DensityFunction argument) implements
       double distance = RiversMask.INSTANCE.riverCentrelineDistance(blockX, blockZ)
          * (double)RiversMask.INSTANCE.blocksPerPixel();
       double bankDistance = Math.max(0.0, distance - (double)width * 0.5);
-      // End the low river guidance no later than four blocks beyond the water.
+      // End the low river guidance no later than three blocks beyond the water.
       // Once this reaches zero, the mapped-land C floor below reactivates and
       // restores the ordinary Y=64-or-higher surface baseline in every region.
       double fade = Math.max(
          1.0,
-         Math.min(4.0, (double)EarthShapeServerConfig.RIVER_BANK_FADE_BLOCKS.get())
+         Math.min(3.0, (double)EarthShapeServerConfig.RIVER_BANK_FADE_BLOCKS.get())
       );
       if (bankDistance >= fade) return 0.0;
       double recovery = smoothstep(bankDistance / fade);
       return 1.0 - recovery;
+   }
+
+   /**
+    * Beyond the three-block low bank, start at the ordinary Y=64 continental
+    * baseline and release the surrounding C field through a smooth height cap.
+    * This prevents both a wide sea-level lawn and an immediate high wall. A
+    * mapped waterfront mountain keeps a shorter 8..12 block recovery so genuine
+    * coastal relief is retained rather than flattened like ordinary terrain.
+    */
+   private static double applyRiverBankHeightLimit(int blockX, int blockZ, double terrain) {
+      if (!(Boolean)EarthShapeServerConfig.RIVER_BIOMES_ENABLED.get()
+         || !RiversMask.INSTANCE.hasInlandRiverInfluence(blockX, blockZ)) {
+         return terrain;
+      }
+      int width = RiversMask.INSTANCE.effectiveRiverWidthBlocks(blockX, blockZ);
+      if (width <= 0) return terrain;
+      double distance = RiversMask.INSTANCE.riverCentrelineDistance(blockX, blockZ)
+         * (double)RiversMask.INSTANCE.blocksPerPixel();
+      double bankDistance = distance - (double)width * 0.5;
+      if (bankDistance <= 3.0) return terrain;
+
+      double ordinaryTransition = Math.min(48.0, Math.max(24.0, (double)width * 0.5 + 24.0));
+      ordinaryTransition = Math.min(ordinaryTransition, (double)EarthShapeServerConfig.RIVER_BANK_FADE_BLOCKS.get());
+      ordinaryTransition = Math.min(ordinaryTransition, (double)EarthShapeServerConfig.RIVER_HEIGHT_FADE_BLOCKS.get());
+      double mappedRelief = ClimateLayers.INSTANCE.terrainRelief(blockX, blockZ);
+      double explicitMountain = smoothstep(Math.max(0.0, (mappedRelief - 0.35) / 0.65));
+      double mountainTransition = Math.min(12.0, Math.max(8.0, (double)width * 0.5 + 6.0));
+      double transitionEnd = lerp(ordinaryTransition, mountainTransition, explicitMountain);
+      if (bankDistance >= transitionEnd) return terrain;
+
+      double recovery = smoothstep((bankDistance - 3.0) / Math.max(1.0, transitionEnd - 3.0));
+      double limited = lerp(0.06, terrain, recovery);
+      return Math.max(0.06, limited);
    }
 
    private static double smoothstep(double value) {

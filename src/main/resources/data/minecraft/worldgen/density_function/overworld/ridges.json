@@ -1,7 +1,7 @@
 {
-  "type": "earthshape:river_weirdness",
+  "type": "minecraft:flat_cache",
   "argument": {
-    "type": "minecraft:flat_cache",
+    "type": "earthshape:river_weirdness",
     "argument": {
       "type": "minecraft:shifted_noise",
       "noise": "minecraft:ridge",

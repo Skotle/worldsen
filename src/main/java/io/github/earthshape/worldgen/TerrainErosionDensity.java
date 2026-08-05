@@ -97,7 +97,7 @@ public record TerrainErosionDensity(DensityFunction argument) implements Density
          4.0,
          Math.min((double)EarthShapeServerConfig.RIVER_BANK_FADE_BLOCKS.get(), desiredTransition)
       );
-      double ordinaryFlatEnd = Math.min(4.0, transitionEnd / 3.0);
+      double ordinaryFlatEnd = Math.min(3.0, transitionEnd / 3.0);
       double flatEnd = lerp(ordinaryFlatEnd, 0.0, explicitMountain);
 
       // E=0.55 is vanilla's highly eroded, low/flat domain. Keep it constant

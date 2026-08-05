@@ -14,6 +14,13 @@ public final class ClimateLayers {
    private static final int MOUNTAIN_MID = 11;
    private static final int MOUNTAIN_HIGH = 12;
    private static final int MOUNTAIN_ULTRA = 13;
+   private static final ClimateLayers.TerrainKind[] TERRAIN_KIND_VALUES = ClimateLayers.TerrainKind.values();
+   private static final ThreadLocal<ClimateLayers.WarpedPointCache> WARPED_POINT_CACHE =
+      ThreadLocal.withInitial(ClimateLayers.WarpedPointCache::new);
+   private static final ThreadLocal<ClimateLayers.TerrainScalarCache> RELIEF_CACHE =
+      ThreadLocal.withInitial(ClimateLayers.TerrainScalarCache::new);
+   private static final ThreadLocal<ClimateLayers.TerrainScalarCache> DESERT_CACHE =
+      ThreadLocal.withInitial(ClimateLayers.TerrainScalarCache::new);
    /** Small-scale mountain clusters below this size factor merge into their surroundings. */
    private static final double MINIMUM_MOUNTAIN_REGION_SCALE = 0.10;
    public static final ClimateLayers INSTANCE = new ClimateLayers();
@@ -95,6 +102,65 @@ public final class ClimateLayers {
       }
    }
 
+   /**
+    * A river is kept aligned to its unwarped source mask, while the terrain
+    * boundary on either side normally receives a small smooth warp.  Where the
+    * source terrain image contains a neutral plains seam under that river, the
+    * different sampling rules can otherwise expose it as a plains ribbon along
+    * an unrelated forest, desert, or wetland.
+    *
+    * Only repair a plains result outside the actual channel, and only when a
+    * clear majority of samples beyond the full channel width agrees on another
+    * land family. Genuine plains riverbanks and biome-boundary rivers therefore
+    * remain unchanged.
+    */
+   public ClimateLayers.TerrainKind terrainKindAtRiverbank(int x, int z, ClimateLayers.TerrainKind current) {
+      if (current != ClimateLayers.TerrainKind.PLAINS || !RiversMask.INSTANCE.isInlandRiverBank(x, z)) {
+         return current;
+      }
+
+      int riverWidth = RiversMask.INSTANCE.effectiveRiverWidthBlocks(x, z);
+      if (riverWidth <= 0) return current;
+      int clearance = riverWidth + Math.max(24, RiversMask.INSTANCE.blocksPerPixel() * 2);
+      int diagonal = Math.max(1, (int)Math.round((double)clearance * 0.7071067811865476));
+      // Eight four-bit counters fit in one long for all usable terrain kinds.
+      // Keeping this allocation-free matters because biome lookup runs repeatedly
+      // on worker threads while a pregenerator is active.
+      long counts = 0L;
+      counts = incrementTerrainCount(counts, this.terrainKind(x + clearance, z));
+      counts = incrementTerrainCount(counts, this.terrainKind(x - clearance, z));
+      counts = incrementTerrainCount(counts, this.terrainKind(x, z + clearance));
+      counts = incrementTerrainCount(counts, this.terrainKind(x, z - clearance));
+      counts = incrementTerrainCount(counts, this.terrainKind(x + diagonal, z + diagonal));
+      counts = incrementTerrainCount(counts, this.terrainKind(x + diagonal, z - diagonal));
+      counts = incrementTerrainCount(counts, this.terrainKind(x - diagonal, z + diagonal));
+      counts = incrementTerrainCount(counts, this.terrainKind(x - diagonal, z - diagonal));
+
+      ClimateLayers.TerrainKind winner = current;
+      for (ClimateLayers.TerrainKind kind : TERRAIN_KIND_VALUES) {
+         if (kind != ClimateLayers.TerrainKind.WATER
+            && kind != ClimateLayers.TerrainKind.CITY
+            && kind != ClimateLayers.TerrainKind.SURROUNDING
+            && terrainCount(counts, kind) > terrainCount(counts, winner)) {
+            winner = kind;
+         }
+      }
+      return winner != current && terrainCount(counts, winner) >= 3 ? winner : current;
+   }
+
+   private static long incrementTerrainCount(long counts, ClimateLayers.TerrainKind kind) {
+      if (kind == ClimateLayers.TerrainKind.WATER
+         || kind == ClimateLayers.TerrainKind.CITY
+         || kind == ClimateLayers.TerrainKind.SURROUNDING) {
+         return counts;
+      }
+      return counts + (1L << (kind.ordinal() * 4));
+   }
+
+   private static int terrainCount(long counts, ClimateLayers.TerrainKind kind) {
+      return (int)(counts >>> (kind.ordinal() * 4) & 15L);
+   }
+
    /** White (#FFFFFF) is the sole ultra-high terrain colour. */
    public boolean isUltraMountain(int x, int z) {
       ClimateLayers.Data layer = this.terrain();
@@ -154,7 +220,12 @@ public final class ClimateLayers {
       ClimateLayers.Data layer = this.terrain();
       if (layer.relief == null) return 0.0;
       long point = warpedTerrainPoint(x, z);
-      return sample(layer, layer.relief, unpackX(point), unpackZ(point));
+      long transformVersion = RiversMask.INSTANCE.mapTransformVersion();
+      ClimateLayers.TerrainScalarCache cache = RELIEF_CACHE.get();
+      if (cache.matches(transformVersion, point)) return cache.value(point);
+      double value = sample(layer, layer.relief, unpackX(point), unpackZ(point));
+      cache.put(transformVersion, point, value);
+      return value;
    }
 
    /**
@@ -166,7 +237,12 @@ public final class ClimateLayers {
       ClimateLayers.Data layer = this.terrain();
       if (layer.desertBlend == null) return 0.0;
       long point = warpedTerrainPoint(x, z);
-      return sample(layer, layer.desertBlend, unpackX(point), unpackZ(point));
+      long transformVersion = RiversMask.INSTANCE.mapTransformVersion();
+      ClimateLayers.TerrainScalarCache cache = DESERT_CACHE.get();
+      if (cache.matches(transformVersion, point)) return cache.value(point);
+      double value = sample(layer, layer.desertBlend, unpackX(point), unpackZ(point));
+      cache.put(transformVersion, point, value);
+      return value;
    }
 
    /**
@@ -265,6 +341,14 @@ public final class ClimateLayers {
    private static ClimateLayers.TemperatureSample sampleFullTemperature(ClimateLayers.Data layer, int blockX, int blockZ) {
       double worldX = RiversMask.INSTANCE.mapImageX(blockX);
       double worldZ = RiversMask.INSTANCE.mapImageZ(blockZ);
+      // The temperature image covers the complete 6000x3400 world map, unlike
+      // the legacy terrain layer. Outside that actual map, blend back to the
+      // latitude curve instead of extending the edge pixel forever.
+      if (worldX < 0.0 || worldZ < 0.0
+         || worldX >= (double)RiversMask.INSTANCE.width()
+         || worldZ >= (double)RiversMask.INSTANCE.height()) {
+         return new ClimateLayers.TemperatureSample(0.5, 0.0);
+      }
       double imageX = Math.max(0.0, Math.min((double)layer.width - 1.001, worldX / (double)RiversMask.INSTANCE.width() * (double)layer.width));
       double imageZ = Math.max(0.0, Math.min((double)layer.height - 1.001, worldZ / (double)RiversMask.INSTANCE.height() * (double)layer.height));
       int x = (int)imageX;
@@ -287,23 +371,33 @@ public final class ClimateLayers {
    }
 
    private static ClimateLayers.TerrainKind surroundingLandKind(ClimateLayers.Data layer, int centreX, int centreZ) {
+      int[] counts = new int[ClimateLayers.TerrainKind.values().length];
       for (int radius = 1; radius <= 48; radius++) {
-         int[] counts = new int[ClimateLayers.TerrainKind.values().length];
+         java.util.Arrays.fill(counts, 0);
+         int minX = centreX - radius;
+         int maxX = centreX + radius;
+         int minZ = centreZ - radius;
+         int maxZ = centreZ + radius;
 
-         for (int z = Math.max(0, centreZ - radius); z <= Math.min(layer.height - 1, centreZ + radius); z++) {
-            for (int x = Math.max(0, centreX - radius); x <= Math.min(layer.width - 1, centreX + radius); x++) {
-               if (Math.max(Math.abs(x - centreX), Math.abs(z - centreZ)) == radius) {
-                  int code = layer.values[z * layer.width + x] & 255;
-                  if (isMountainElevationCode(code)) continue;
-                  ClimateLayers.TerrainKind kind = ClimateLayers.TerrainKind.byCode(code);
-                  if (kind != ClimateLayers.TerrainKind.CITY
-                     && kind != ClimateLayers.TerrainKind.SURROUNDING
-                     && kind != ClimateLayers.TerrainKind.WATER
-                     && kind != ClimateLayers.TerrainKind.DESERT) {
-                     counts[kind.code]++;
-                  }
-               }
-            }
+         // Visit only the square perimeter. The former clipped square scan then
+         // discarded every interior point, turning a radius-48 fallback into
+         // cubic work and allocating 48 temporary arrays per biome lookup.
+         int fromX = Math.max(0, minX);
+         int toX = Math.min(layer.width - 1, maxX);
+         if (minZ >= 0 && minZ < layer.height) {
+            for (int x = fromX; x <= toX; x++) countSurroundingKind(layer, counts, x, minZ);
+         }
+         if (maxZ != minZ && maxZ >= 0 && maxZ < layer.height) {
+            for (int x = fromX; x <= toX; x++) countSurroundingKind(layer, counts, x, maxZ);
+         }
+
+         int fromZ = Math.max(0, minZ + 1);
+         int toZ = Math.min(layer.height - 1, maxZ - 1);
+         if (minX >= 0 && minX < layer.width) {
+            for (int z = fromZ; z <= toZ; z++) countSurroundingKind(layer, counts, minX, z);
+         }
+         if (maxX != minX && maxX >= 0 && maxX < layer.width) {
+            for (int z = fromZ; z <= toZ; z++) countSurroundingKind(layer, counts, maxX, z);
          }
 
          ClimateLayers.TerrainKind result = ClimateLayers.TerrainKind.PLAINS;
@@ -320,6 +414,29 @@ public final class ClimateLayers {
       }
 
       return ClimateLayers.TerrainKind.PLAINS;
+   }
+
+   private static void countSurroundingKind(ClimateLayers.Data layer, int[] counts, int x, int z) {
+      int code = layer.values[z * layer.width + x] & 255;
+      if (isMountainElevationCode(code)) return;
+      ClimateLayers.TerrainKind kind = ClimateLayers.TerrainKind.byCode(code);
+      if (kind != ClimateLayers.TerrainKind.CITY
+         && kind != ClimateLayers.TerrainKind.SURROUNDING
+         && kind != ClimateLayers.TerrainKind.WATER
+         && kind != ClimateLayers.TerrainKind.DESERT) {
+         counts[kind.code]++;
+      }
+   }
+
+   /**
+    * Whether terrain.bmp actually supplies a class at this world column. The
+    * coastline and temperature maps are larger than the legacy terrain layer;
+    * callers must not treat the uncovered outer area as explicit PLAINS.
+    */
+   public boolean hasTerrainCoverage(int x, int z) {
+      ClimateLayers.Data layer = this.terrain();
+      long point = warpedTerrainPoint(x, z);
+      return RiversMask.INSTANCE.isInsideLegacyLayer(unpackX(point), unpackZ(point), layer.width, layer.height);
    }
 
    private static ClimateLayers.Data load(String name, ClimateLayers.Kind kind) {
@@ -398,6 +515,22 @@ public final class ClimateLayers {
       int configured = (Integer)EarthShapeServerConfig.BIOME_BOUNDARY_WARP_BLOCKS.get();
       int blocksPerPixel = RiversMask.INSTANCE.blocksPerPixel();
       int strength = Math.min(configured, Math.max(4, blocksPerPixel * 3 / 2));
+      long transformVersion = RiversMask.INSTANCE.mapTransformVersion();
+      ClimateLayers.WarpedPointCache cache = WARPED_POINT_CACHE.get();
+      if (cache.transformVersion != transformVersion || cache.strength != strength) {
+         cache.reset(transformVersion, strength);
+      }
+      int slot = ClimateLayers.WarpedPointCache.slot(blockX, blockZ);
+      if (cache.x[slot] == blockX && cache.z[slot] == blockZ) return cache.point[slot];
+
+      long result = computeWarpedTerrainPoint(blockX, blockZ, strength);
+      cache.x[slot] = blockX;
+      cache.z[slot] = blockZ;
+      cache.point[slot] = result;
+      return result;
+   }
+
+   private static long computeWarpedTerrainPoint(int blockX, int blockZ, int strength) {
       if (strength <= 0 || RiversMask.INSTANCE.isNearInlandRiver(blockX, blockZ, strength + 8)) {
          return packPoint(blockX, blockZ);
       }
@@ -414,6 +547,71 @@ public final class ClimateLayers {
       boolean originalLand = RiversMask.INSTANCE.sampleLayerLand(blockX, blockZ) >= 0.5;
       boolean warpedLand = RiversMask.INSTANCE.sampleLayerLand(warpedX, warpedZ) >= 0.5;
       return originalLand == warpedLand ? packPoint(warpedX, warpedZ) : packPoint(blockX, blockZ);
+   }
+
+   private static final class WarpedPointCache {
+      private static final int SIZE = 256;
+      private final int[] x = new int[SIZE];
+      private final int[] z = new int[SIZE];
+      private final long[] point = new long[SIZE];
+      private long transformVersion = Long.MIN_VALUE;
+      private int strength = Integer.MIN_VALUE;
+
+      private WarpedPointCache() {
+         java.util.Arrays.fill(this.x, Integer.MIN_VALUE);
+         java.util.Arrays.fill(this.z, Integer.MIN_VALUE);
+      }
+
+      void reset(long transformVersion, int strength) {
+         this.transformVersion = transformVersion;
+         this.strength = strength;
+         java.util.Arrays.fill(this.x, Integer.MIN_VALUE);
+         java.util.Arrays.fill(this.z, Integer.MIN_VALUE);
+      }
+
+      static int slot(int blockX, int blockZ) {
+         int hash = blockX * 0x9E3779B9 ^ Integer.rotateLeft(blockZ * 0x85EBCA6B, 16);
+         return hash & (SIZE - 1);
+      }
+   }
+
+   private static final class TerrainScalarCache {
+      private static final int SIZE = 256;
+      private final long[] point = new long[SIZE];
+      private final double[] value = new double[SIZE];
+      private final boolean[] present = new boolean[SIZE];
+      private long transformVersion = Long.MIN_VALUE;
+
+      boolean matches(long transformVersion, long point) {
+         if (this.transformVersion != transformVersion) {
+            this.transformVersion = transformVersion;
+            java.util.Arrays.fill(this.present, false);
+            return false;
+         }
+         int slot = slot(point);
+         return this.present[slot] && this.point[slot] == point;
+      }
+
+      double value(long point) {
+         return this.value[slot(point)];
+      }
+
+      void put(long transformVersion, long point, double value) {
+         if (this.transformVersion != transformVersion) {
+            this.transformVersion = transformVersion;
+            java.util.Arrays.fill(this.present, false);
+         }
+         int slot = slot(point);
+         this.point[slot] = point;
+         this.value[slot] = value;
+         this.present[slot] = true;
+      }
+
+      private static int slot(long point) {
+         long mixed = point ^ point >>> 33;
+         mixed *= 0xff51afd7ed558ccdL;
+         return (int)mixed & (SIZE - 1);
+      }
    }
 
    private static double smoothNoise(int blockX, int blockZ, int cellSize, long salt) {

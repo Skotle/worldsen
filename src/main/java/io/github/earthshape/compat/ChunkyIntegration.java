@@ -31,19 +31,10 @@ public final class ChunkyIntegration {
       public boolean isBounding(double blockX, double blockZ) {
          int x0 = (int)Math.floor(blockX);
          int z0 = (int)Math.floor(blockZ);
-         int step = Math.max(1, RiversMask.INSTANCE.blocksPerPixel());
-
-         // A Chunky candidate is one 16x16 chunk. Check every source-mask cell
-         // touched by it so coasts and small mapped islands are retained, while a
-         // chunk containing only non-white map pixels is never loaded.
-         for (int z = z0; z < z0 + 16; z += step) {
-            for (int x = x0; x < x0 + 16; x += step) {
-               if (RiversMask.INSTANCE.samplePregenerationLand(x, z) >= 0.5) {
-                  return true;
-               }
-            }
-         }
-         return RiversMask.INSTANCE.samplePregenerationLand(x0 + 15, z0 + 15) >= 0.5;
+         // Chunky calls this for every candidate. Query the exact source-pixel
+         // rectangle in one pass rather than repeating the full coordinate
+         // transform up to ten times at common map scales.
+         return RiversMask.INSTANCE.intersectsPregenerationChunk(x0, z0);
       }
 
       @Override

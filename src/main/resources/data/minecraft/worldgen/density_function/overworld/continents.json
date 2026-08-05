@@ -1,7 +1,7 @@
 {
-  "type": "earthshape:coastal_continentalness",
+  "type": "minecraft:flat_cache",
   "argument": {
-    "type": "minecraft:flat_cache",
+    "type": "earthshape:coastal_continentalness",
     "argument": {
       "type": "minecraft:shifted_noise",
       "noise": "minecraft:continentalness",

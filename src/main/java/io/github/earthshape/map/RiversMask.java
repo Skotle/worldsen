@@ -20,17 +20,26 @@ public final class RiversMask {
    private volatile ThreadLocal<RiversMask.RiverWidthCache> riverWidthCache = ThreadLocal.withInitial(RiversMask.RiverWidthCache::new);
    private volatile ThreadLocal<RiversMask.RiverDistanceCache> riverDistanceCache = ThreadLocal.withInitial(RiversMask.RiverDistanceCache::new);
    private volatile ThreadLocal<RiversMask.RiverColumnCache> riverColumnCache = ThreadLocal.withInitial(RiversMask.RiverColumnCache::new);
+   private volatile ThreadLocal<RiversMask.RiverBiomeCache> riverBiomeCache = ThreadLocal.withInitial(RiversMask.RiverBiomeCache::new);
+   private volatile ThreadLocal<RiversMask.ScalarSampleCache> coastalLandnessCache = ThreadLocal.withInitial(RiversMask.ScalarSampleCache::new);
+   private volatile ThreadLocal<RiversMask.ScalarSampleCache> riverMouthCache = ThreadLocal.withInitial(RiversMask.ScalarSampleCache::new);
    private volatile long mapCenterSeed;
+   private volatile long mapTransformVersion;
    private volatile double selectedCenterX = Double.NaN;
    private volatile double selectedCenterZ = Double.NaN;
+   private volatile double blocksToMapPixels;
+   private volatile int activeBlocksPerPixel;
+   private volatile boolean mapCenterReady;
 
    private RiversMask() {
    }
 
    public synchronized void configureMapCenter(long worldSeed) {
       this.mapCenterSeed = worldSeed;
+      this.mapCenterReady = false;
       this.selectedCenterX = Double.NaN;
       this.selectedCenterZ = Double.NaN;
+      this.activeBlocksPerPixel = 0;
       // A client can open multiple worlds in one JVM. Replace the ThreadLocal
       // containers so a column cached for the previous centre cannot leak into
       // the next world's coordinate transform.
@@ -38,6 +47,10 @@ public final class RiversMask {
       this.riverWidthCache = ThreadLocal.withInitial(RiversMask.RiverWidthCache::new);
       this.riverDistanceCache = ThreadLocal.withInitial(RiversMask.RiverDistanceCache::new);
       this.riverColumnCache = ThreadLocal.withInitial(RiversMask.RiverColumnCache::new);
+      this.riverBiomeCache = ThreadLocal.withInitial(RiversMask.RiverBiomeCache::new);
+      this.coastalLandnessCache = ThreadLocal.withInitial(RiversMask.ScalarSampleCache::new);
+      this.riverMouthCache = ThreadLocal.withInitial(RiversMask.ScalarSampleCache::new);
+      this.mapTransformVersion++;
    }
 
    public double sampleLand(int blockX, int blockZ) {
@@ -49,6 +62,21 @@ public final class RiversMask {
       // continuous contour below only changes the shape of the boundary; callers
       // still receive either land or water, never an ambiguous partial value.
       return this.sampleExactLand(this.data(), blockX, blockZ);
+   }
+
+   /**
+    * Land that must remain a treeless permanent snowfield. This covers the
+    * southern 520-block map border and the whole connected Antarctic land mass,
+    * even where that continent extends farther north than the border band.
+    */
+   public boolean isPermanentSouthernSnowLand(int blockX, int blockZ) {
+      RiversMask.Data loaded = this.data();
+      if (this.sampleExactLand(loaded, blockX, blockZ) < 0.5) return false;
+      double sourceX = this.mapImageX(blockX, loaded);
+      double sourceZ = this.mapImageZ(blockZ, loaded);
+      if (sourceX < 0.0 || sourceZ < 0.0 || sourceX >= loaded.width || sourceZ >= loaded.height) return false;
+      double southEdgeDistance = ((double)loaded.height - sourceZ) * (double)this.blocksPerPixel();
+      return southEdgeDistance <= 520.0 || loaded.southernSnow.isAntarctica((int)Math.floor(sourceX), (int)Math.floor(sourceZ));
    }
 
    /**
@@ -64,12 +92,42 @@ public final class RiversMask {
    }
 
    /**
+    * Fast Chunky-shape query for one 16x16 candidate chunk. Convert the chunk
+    * bounds to source pixels once, then use BitSet row scans instead of calling
+    * samplePregenerationLand for every source cell touched by the chunk.
+    */
+   public boolean intersectsPregenerationChunk(int minBlockX, int minBlockZ) {
+      RiversMask.Data loaded = this.data();
+      int minX = (int)Math.floor(this.mapImageX(minBlockX, loaded));
+      int maxX = (int)Math.floor(this.mapImageX(minBlockX + 15, loaded));
+      int minZ = (int)Math.floor(this.mapImageZ(minBlockZ, loaded));
+      int maxZ = (int)Math.floor(this.mapImageZ(minBlockZ + 15, loaded));
+      if (maxX < 0 || maxZ < 0 || minX >= loaded.width || minZ >= loaded.height) return false;
+
+      minX = Math.max(0, minX);
+      maxX = Math.min(loaded.width - 1, maxX);
+      minZ = Math.max(0, minZ);
+      maxZ = Math.min(loaded.height - 1, maxZ);
+      for (int z = minZ; z <= maxZ; z++) {
+         int rowStart = z * loaded.width + minX;
+         int hit = loaded.pregeneration.nextSetBit(rowStart);
+         if (hit >= rowStart && hit <= z * loaded.width + maxX) return true;
+      }
+      return false;
+   }
+
+   /**
     * A pre-smoothed land mask used only for the continentalness transition.
     * The exact mask above remains authoritative for coastline and biome choice.
     */
    public double sampleCoastalLandness(int blockX, int blockZ) {
       RiversMask.Data loaded = this.data();
-      return this.sampleBytes(loaded, loaded.coastalLandness, blockX, blockZ);
+      RiversMask.ScalarSampleCache cache = this.coastalLandnessCache.get();
+      int slot = RiversMask.ScalarSampleCache.slot(blockX, blockZ);
+      if (cache.data == loaded && cache.x[slot] == blockX && cache.z[slot] == blockZ) return cache.value[slot];
+      double value = this.sampleBytes(loaded, loaded.coastalLandness, blockX, blockZ);
+      cache.set(loaded, slot, blockX, blockZ, value);
+      return value;
    }
 
    /**
@@ -88,7 +146,9 @@ public final class RiversMask {
 
    private double sampleExactLand(RiversMask.Data loaded, int blockX, int blockZ) {
       RiversMask.LandSampleCache cache = this.landSampleCache.get();
-      if (cache.data == loaded && cache.blockX == blockX && cache.blockZ == blockZ) return cache.land;
+      if (cache.data != loaded) cache.reset(loaded);
+      int cacheSlot = RiversMask.LandSampleCache.slot(blockX, blockZ);
+      if (cache.x[cacheSlot] == blockX && cache.z[cacheSlot] == blockZ) return cache.land[cacheSlot];
       double sourceX = this.mapImageX(blockX, loaded);
       double sourceZ = this.mapImageZ(blockZ, loaded);
       int originalX = (int)Math.floor(sourceX);
@@ -123,10 +183,9 @@ public final class RiversMask {
       double top = lerp(sampleLandValue(loaded, x, z), sampleLandValue(loaded, x + 1, z), tx);
       double bottom = lerp(sampleLandValue(loaded, x, z + 1), sampleLandValue(loaded, x + 1, z + 1), tx);
       double land = lerp(top, bottom, tz) >= 0.5 ? 1.0 : 0.0;
-      cache.data = loaded;
-      cache.blockX = blockX;
-      cache.blockZ = blockZ;
-      cache.land = land;
+      cache.x[cacheSlot] = blockX;
+      cache.z[cacheSlot] = blockZ;
+      cache.land[cacheSlot] = land;
       return land;
    }
 
@@ -189,7 +248,8 @@ public final class RiversMask {
    }
 
    public int blocksPerPixel() {
-      return (Integer)EarthShapeServerConfig.BLOCKS_PER_PIXEL.get();
+      int active = this.activeBlocksPerPixel;
+      return active > 0 ? active : (Integer)EarthShapeServerConfig.BLOCKS_PER_PIXEL.get();
    }
 
    public int width() {
@@ -208,24 +268,36 @@ public final class RiversMask {
       return this.mapImageZ(blockZ, this.data());
    }
 
+   /** Changes whenever the world seed selects a new source-map origin. */
+   public long mapTransformVersion() {
+      return this.mapTransformVersion;
+   }
+
    private double mapImageX(int blockX, RiversMask.Data loaded) {
       this.ensureMapCenter(loaded);
-      return (double)blockX / (double)this.blocksPerPixel() + this.selectedCenterX;
+      return (double)blockX * this.blocksToMapPixels + this.selectedCenterX;
    }
 
    private double mapImageZ(int blockZ, RiversMask.Data loaded) {
       this.ensureMapCenter(loaded);
-      return (double)blockZ / (double)this.blocksPerPixel() + this.selectedCenterZ;
+      return (double)blockZ * this.blocksToMapPixels + this.selectedCenterZ;
    }
 
    private void ensureMapCenter(RiversMask.Data loaded) {
-      if (!Double.isNaN(this.selectedCenterX) && !Double.isNaN(this.selectedCenterZ)) return;
+      if (this.mapCenterReady) return;
       synchronized (this) {
-         if (!Double.isNaN(this.selectedCenterX) && !Double.isNaN(this.selectedCenterZ)) return;
+         if (this.mapCenterReady) return;
+         int configuredBlocksPerPixel = this.blocksPerPixel();
+         this.activeBlocksPerPixel = configuredBlocksPerPixel;
+         this.blocksToMapPixels = 1.0 / (double)configuredBlocksPerPixel;
          if (!(Boolean)EarthShapeServerConfig.RANDOM_MAP_CENTER_ENABLED.get()) {
             this.selectedCenterX = (double)loaded.width * 0.5;
             this.selectedCenterZ = (double)loaded.height * 0.5;
-            EarthShape.LOGGER.info("[EarthShape] map centre fixed at source ({}, {}); world spawn remains (0, 0).", this.selectedCenterX, this.selectedCenterZ);
+            this.mapCenterReady = true;
+            EarthShape.LOGGER.info(
+               "[EarthShape] map centre fixed at source ({}, {}); map translation=(0, 0) blocks, distance=0 blocks; world spawn remains (0, 0).",
+               this.selectedCenterX, this.selectedCenterZ
+            );
             return;
          }
 
@@ -237,16 +309,63 @@ public final class RiversMask {
          if (minZ > maxZ) { int swap = minZ; minZ = maxZ; maxZ = swap; }
 
          SplittableRandom random = new SplittableRandom(mixCenterSeed(this.mapCenterSeed));
-         int sourceX = minX + random.nextInt(maxX - minX + 1);
-         int sourceZ = minZ + random.nextInt(maxZ - minZ + 1);
+         LandCentreSelection selection = selectRandomLandCentre(loaded, minX, maxX, minZ, maxZ, random);
+         boolean expandedToFullMap = false;
+         if (selection == null) {
+            // A restrictive custom range may contain only ocean. Preserve the
+            // land-only guarantee by widening to the full source map instead of
+            // silently placing the world origin at sea.
+            selection = selectRandomLandCentre(loaded, 0, loaded.width - 1, 0, loaded.height - 1, random);
+            expandedToFullMap = true;
+         }
+         if (selection == null) {
+            throw new IllegalStateException("EarthShape world map contains no land pixel for a random map centre");
+         }
+         int sourceX = selection.x();
+         int sourceZ = selection.z();
          this.selectedCenterX = (double)sourceX + 0.5;
          this.selectedCenterZ = (double)sourceZ + 0.5;
+         double sourceDeltaX = this.selectedCenterX - (double)loaded.width * 0.5;
+         double sourceDeltaZ = this.selectedCenterZ - (double)loaded.height * 0.5;
+         double blocksPerPixel = (double)configuredBlocksPerPixel;
+         long mapTranslationX = Math.round(-sourceDeltaX * blocksPerPixel);
+         long mapTranslationZ = Math.round(-sourceDeltaZ * blocksPerPixel);
+         long translationDistance = Math.round(Math.hypot((double)mapTranslationX, (double)mapTranslationZ));
+         this.mapCenterReady = true;
          EarthShape.LOGGER.info(
-            "[EarthShape] random map centre selected at source pixel ({}, {}) from X={}..{}, Z={}..{}; world spawn remains (0, 0).",
-            sourceX, sourceZ, minX, maxX, minZ, maxZ
+            "[EarthShape] random map centre selected on land at source pixel ({}, {}) from {} eligible land pixels in X={}..{}, Z={}..{}{}; source offset=({}, {}) pixels; map translation=({}, {}) blocks, distance={} blocks; world spawn remains (0, 0).",
+            sourceX, sourceZ, selection.candidates(),
+            expandedToFullMap ? 0 : minX, expandedToFullMap ? loaded.width - 1 : maxX,
+            expandedToFullMap ? 0 : minZ, expandedToFullMap ? loaded.height - 1 : maxZ,
+            expandedToFullMap ? " (configured range had no land; expanded to full map)" : "",
+            sourceDeltaX, sourceDeltaZ, mapTranslationX, mapTranslationZ, translationDistance
          );
       }
    }
+
+   /** Uniform reservoir sampling over set land bits without allocating a list. */
+   private static LandCentreSelection selectRandomLandCentre(
+      RiversMask.Data loaded, int minX, int maxX, int minZ, int maxZ, SplittableRandom random
+   ) {
+      long candidates = 0L;
+      int selectedX = -1;
+      int selectedZ = -1;
+      for (int z = minZ; z <= maxZ; z++) {
+         int rowEnd = z * loaded.width + maxX;
+         for (int index = loaded.land.nextSetBit(z * loaded.width + minX);
+              index >= 0 && index <= rowEnd;
+              index = loaded.land.nextSetBit(index + 1)) {
+            candidates++;
+            if (random.nextLong(candidates) == 0L) {
+               selectedX = index % loaded.width;
+               selectedZ = z;
+            }
+         }
+      }
+      return candidates == 0L ? null : new LandCentreSelection(selectedX, selectedZ, candidates);
+   }
+
+   private record LandCentreSelection(int x, int z, long candidates) {}
 
    private static long mixCenterSeed(long value) {
       value ^= 0x6A09E667F3BCC909L;
@@ -297,17 +416,45 @@ public final class RiversMask {
     * without widening the physical channel or its aquifer water columns.
    */
    public boolean isInlandRiverBiome(int blockX, int blockZ) {
+      return this.inlandRiverBiomeState(blockX, blockZ) != 0;
+   }
+
+   /** Frozen state shared by the complete connected river network. */
+   public boolean isFrozenInlandRiverBiome(int blockX, int blockZ) {
+      return this.inlandRiverBiomeState(blockX, blockZ) == 2;
+   }
+
+   /**
+    * Computes ordinary/frozen river ownership together. Biome lookup asks both
+    * questions consecutively, so caching one combined state avoids repeating the
+    * mouth test, exact coastline sample and two 9x9 source searches.
+    */
+   private int inlandRiverBiomeState(int blockX, int blockZ) {
+      RiversMask.Data loaded = this.data();
+      RiversMask.RiverBiomeCache cache = this.riverBiomeCache.get();
+      if (cache.data == loaded && cache.blockX == blockX && cache.blockZ == blockZ) return cache.state;
+
       // Biome ownership is stricter than physical channel guidance. Painted
       // river ink may continue past the detected mouth into a sea pixel; that
       // extension must remain ocean even though the channel density stays open.
-      if (this.riverMouthOpening(blockX, blockZ) > 0.0) return false;
+      if (this.riverMouthOpening(blockX, blockZ) > 0.0) return cache.set(loaded, blockX, blockZ, 0);
 
-      RiversMask.Data loaded = this.data();
       int imageX = (int)Math.floor(this.mapImageX(blockX, loaded));
       int imageZ = (int)Math.floor(this.mapImageZ(blockZ, loaded));
-      if (!inside(imageX, imageZ, loaded.width, loaded.height)) return false;
+      if (!inside(imageX, imageZ, loaded.width, loaded.height)) return cache.set(loaded, blockX, blockZ, 0);
       int index = imageZ * loaded.width + imageX;
-      if (!loaded.riverInfluence.get(index)) return false;
+      if (!loaded.riverInfluence.get(index)) return cache.set(loaded, blockX, blockZ, 0);
+
+      // Most river columns must remain on authoritative land. A genuine inland
+      // centreline can contain blue source pixels that the land mask cannot
+      // restore, however; accept those only when the precomputed inland flood
+      // reaches them before a mouth. Strait-only lines and post-mouth sea ink do
+      // not belong to inlandRivers and therefore remain ocean.
+      int nearestRiver = nearestRiverSourceIndex(loaded, blockX, blockZ);
+      if (this.sampleExactLand(loaded, blockX, blockZ) < 0.5
+         && (nearestRiver < 0 || !loaded.inlandRivers.get(nearestRiver))) {
+         return cache.set(loaded, blockX, blockZ, 0);
+      }
 
       // At a fork, thinning a wide painted junction leaves some source cells as
       // water-coloured influence rather than exact centreline or restored land.
@@ -315,9 +462,34 @@ public final class RiversMask {
       // land, so accept its full physical-width footprint here. Sea extensions
       // remain excluded by that prefilter and the mouth-opening test above.
       int widthBlocks = this.effectiveRiverWidthBlocks(blockX, blockZ);
-      if (widthBlocks <= 0) return false;
+      if (widthBlocks <= 0) return cache.set(loaded, blockX, blockZ, 0);
       double distanceBlocks = this.riverCentrelineDistance(blockX, blockZ) * (double)this.blocksPerPixel();
-      return distanceBlocks <= (double)widthBlocks * 0.5 + 4.0;
+      if (distanceBlocks > (double)widthBlocks * 0.5 + 4.0) {
+         return cache.set(loaded, blockX, blockZ, 0);
+      }
+      return cache.set(loaded, blockX, blockZ, nearestRiver >= 0 && loaded.frozenRivers.get(nearestRiver) ? 2 : 1);
+   }
+
+   private int nearestRiverSourceIndex(RiversMask.Data loaded, int blockX, int blockZ) {
+      double imageX = this.mapImageX(blockX, loaded);
+      double imageZ = this.mapImageZ(blockZ, loaded);
+      int centreX = (int)Math.floor(imageX);
+      int centreZ = (int)Math.floor(imageZ);
+      int nearest = -1;
+      double best = Double.POSITIVE_INFINITY;
+      for (int z = centreZ - RIVER_SEARCH_RADIUS; z <= centreZ + RIVER_SEARCH_RADIUS; z++) {
+         for (int x = centreX - RIVER_SEARCH_RADIUS; x <= centreX + RIVER_SEARCH_RADIUS; x++) {
+            if (!loaded.river(x, z)) continue;
+            double dx = imageX - ((double)x + 0.5);
+            double dz = imageZ - ((double)z + 0.5);
+            double distance = dx * dx + dz * dz;
+            if (distance < best) {
+               best = distance;
+               nearest = z * loaded.width + x;
+            }
+         }
+      }
+      return nearest;
    }
 
    /**
@@ -360,11 +532,24 @@ public final class RiversMask {
     */
    public double riverMouthOpening(int blockX, int blockZ) {
       RiversMask.Data loaded = this.data();
+      RiversMask.ScalarSampleCache cache = this.riverMouthCache.get();
+      int slot = RiversMask.ScalarSampleCache.slot(blockX, blockZ);
+      if (cache.data == loaded && cache.x[slot] == blockX && cache.z[slot] == blockZ) return cache.value[slot];
+      double value = this.computeRiverMouthOpening(loaded, blockX, blockZ);
+      cache.set(loaded, slot, blockX, blockZ, value);
+      return value;
+   }
+
+   private double computeRiverMouthOpening(RiversMask.Data loaded, int blockX, int blockZ) {
       double imageX = this.mapImageX(blockX, loaded);
       double imageZ = this.mapImageZ(blockZ, loaded);
       int centreX = (int)Math.floor(imageX);
       int centreZ = (int)Math.floor(imageZ);
       if (centreX < 1 || centreZ < 1 || centreX >= loaded.width - 1 || centreZ >= loaded.height - 1) return 0.0;
+      // The precomputed influence covers every source cell reachable by the
+      // four-pixel mouth search. Almost every world column is outside it, so do
+      // not scan 81 BitSet entries for ordinary land and open ocean.
+      if (!loaded.riverInfluence.get(centreZ * loaded.width + centreX)) return 0.0;
 
       double strongest = 0.0;
       for (int z = Math.max(0, centreZ - 4); z <= Math.min(loaded.height - 1, centreZ + 4); z++) {
@@ -701,20 +886,24 @@ public final class RiversMask {
             bridgeSmallRiverGaps(width, height, riverCentrelines, riverWidths);
             stabilizeRiverWidths(width, height, riverCentrelines, riverWidths);
             restoreOnlyInlandRiverPixels(width, height, land, sourceRivers);
-            BitSet riverMouths = createRiverMouths(width, height, land, riverCentrelines, sourceRivers);
+            RiversMask.OceanProximity openOcean = RiversMask.OceanProximity.create(width, height, land);
+            BitSet riverMouths = createRiverMouths(width, height, land, riverCentrelines, sourceRivers, openOcean);
+            BitSet inlandRivers = createInlandRiverCentrelines(width, height, land, riverCentrelines, riverMouths);
+            BitSet frozenRivers = createFrozenRiverComponents(width, height, riverCentrelines);
             byte[] riverCorners = createRiverCornerMasks(width, height, riverCentrelines);
             BitSet riverInfluence = createRiverInfluence(width, height, land, riverCentrelines, riverWidths);
             int coastRadiusPixels = Math.max(2, Math.min(12, (Integer)EarthShapeServerConfig.COAST_HEIGHT_FADE_BLOCKS.get() / Math.max(1, (Integer)EarthShapeServerConfig.BLOCKS_PER_PIXEL.get() * 6)));
             byte[] coastalLandness = createCoastalLandness(width, height, land, coastRadiusPixels);
             byte[] oceanDistance = createOceanDistance(width, height, land);
-            BitSet pregeneration = createPregenerationMask(width, height, land);
+            BitSet pregeneration = createPregenerationMask(width, height, land, openOcean);
+            SouthernSnowRegion southernSnow = SouthernSnowRegion.create(width, height, land);
             EarthShape.LOGGER
                .info(
                   "[EarthShape] worldmap_river.png land/ocean and river mask loaded: {}x{} in {} ms.",
                   new Object[]{width, height, (System.nanoTime() - started) / 1000000L}
                );
             var21x = new RiversMask.Data(
-               width, height, land, riverCentrelines, riverWidths, riverCorners, riverMouths, riverInfluence, coastalLandness, oceanDistance, pregeneration
+               width, height, land, riverCentrelines, inlandRivers, frozenRivers, riverWidths, riverCorners, riverMouths, riverInfluence, coastalLandness, oceanDistance, pregeneration, southernSnow
             );
          }
 
@@ -768,9 +957,10 @@ public final class RiversMask {
       return distance;
    }
 
-   private static BitSet createPregenerationMask(int width, int height, BitSet land) {
+   private static BitSet createPregenerationMask(
+      int width, int height, BitSet land, RiversMask.OceanProximity ocean
+   ) {
       BitSet selection = (BitSet)land.clone();
-      RiversMask.OceanProximity ocean = RiversMask.OceanProximity.create(width, height, land);
 
       // Water which has no connection to the map-edge ocean is an independent
       // inland sea. It must be generated with its surrounding continent.
@@ -882,6 +1072,90 @@ public final class RiversMask {
       }
    }
 
+   /**
+    * Assign one frozen state to every connected source-river network. The mean
+    * latitude is used once for the entire component, so a river cannot alternate
+    * between RIVER and FROZEN_RIVER as local climate samples vary downstream.
+    */
+   private static BitSet createFrozenRiverComponents(int width, int height, BitSet rivers) {
+      BitSet visited = new BitSet(width * height);
+      BitSet frozen = new BitSet(width * height);
+      IntQueue component = new IntQueue();
+      double threshold = (Double)EarthShapeServerConfig.SNOW_TEMPERATURE_THRESHOLD.get();
+      for (int start = rivers.nextSetBit(0); start >= 0; start = rivers.nextSetBit(start + 1)) {
+         if (visited.get(start)) continue;
+         component.clear();
+         component.add(start);
+         visited.set(start);
+         long sumZ = 0L;
+         for (int cursor = 0; cursor < component.size(); cursor++) {
+            int index = component.get(cursor);
+            int x = index % width;
+            int z = index / width;
+            sumZ += z;
+            for (int dz = -1; dz <= 1; dz++) {
+               for (int dx = -1; dx <= 1; dx++) {
+                  if (dx == 0 && dz == 0) continue;
+                  int nx = x + dx;
+                  int nz = z + dz;
+                  if (!inside(nx, nz, width, height)) continue;
+                  int neighbour = nz * width + nx;
+                  if (rivers.get(neighbour) && !visited.get(neighbour)) {
+                     visited.set(neighbour);
+                     component.add(neighbour);
+                  }
+               }
+            }
+         }
+         double meanZ = (double)sumZ / (double)component.size();
+         double latitude = Math.abs(meanZ / Math.max(1.0, (double)height - 1.0) * 2.0 - 1.0);
+         double temperature = 0.55 - 1.35 * latitude * latitude;
+         if (temperature <= threshold) {
+            for (int cursor = 0; cursor < component.size(); cursor++) frozen.set(component.get(cursor));
+         }
+      }
+      return frozen;
+   }
+
+   /**
+    * Flood river centrelines outward from pixels that were positively restored
+    * as inland land. Detected mouth pixels are included but act as flood stops,
+    * so painted river ink beyond a coast cannot become river biome in the sea.
+    * A blue line lying only in a narrow strait has no inland seed and is excluded.
+    */
+   private static BitSet createInlandRiverCentrelines(
+      int width, int height, BitSet land, BitSet rivers, BitSet riverMouths
+   ) {
+      BitSet inland = new BitSet(width * height);
+      IntQueue queue = new IntQueue();
+      for (int index = rivers.nextSetBit(0); index >= 0; index = rivers.nextSetBit(index + 1)) {
+         if (land.get(index)) {
+            inland.set(index);
+            queue.add(index);
+         }
+      }
+      for (int cursor = 0; cursor < queue.size(); cursor++) {
+         int index = queue.get(cursor);
+         if (riverMouths.get(index)) continue;
+         int x = index % width;
+         int z = index / width;
+         for (int dz = -1; dz <= 1; dz++) {
+            for (int dx = -1; dx <= 1; dx++) {
+               if (dx == 0 && dz == 0) continue;
+               int nx = x + dx;
+               int nz = z + dz;
+               if (!inside(nx, nz, width, height)) continue;
+               int neighbour = nz * width + nx;
+               if (rivers.get(neighbour) && !inland.get(neighbour)) {
+                  inland.set(neighbour);
+                  queue.add(neighbour);
+               }
+            }
+         }
+      }
+      return inland;
+   }
+
    private static boolean touchesNonRiverWater(
       int centreX, int centreZ, int width, int height, BitSet land, BitSet rivers, int radius
    ) {
@@ -950,7 +1224,10 @@ public final class RiversMask {
       return Math.max(1, Math.min(RIVER_SEARCH_RADIUS, (int)Math.ceil(reachBlocks / (double)blocksPerPixel) + 1));
    }
 
-   private static BitSet createRiverMouths(int width, int height, BitSet land, BitSet rivers, BitSet sourceRivers) {
+   private static BitSet createRiverMouths(
+      int width, int height, BitSet land, BitSet rivers, BitSet sourceRivers,
+      RiversMask.OceanProximity openOcean
+   ) {
       BitSet mouths = new BitSet(width * height);
 
       for (int index = rivers.nextSetBit(0); index >= 0; index = rivers.nextSetBit(index + 1)) {
@@ -967,7 +1244,14 @@ public final class RiversMask {
                      // A wide junction contains source-river ink that disappears
                      // from the one-cell centreline after thinning. It is still
                      // river, not open sea, and must never create a false mouth.
-                     if (!land.get(sample) && !sourceRivers.get(sample)) {
+                     // An enclosed lake or inland sea is not a river mouth. The
+                     // old test treated every non-river water pixel as ocean,
+                     // stopped the inland-river flood there, and left cold river
+                     // sections to resolve as DEEP_FROZEN_OCEAN. Only water
+                     // connected to the map-edge ocean may terminate a river.
+                     if (!land.get(sample)
+                        && !sourceRivers.get(sample)
+                        && openOcean.isNearOpenOcean(sampleX, sampleZ)) {
                         mouths.set(index);
                         int var13 = 3;
                         break;
@@ -1390,10 +1674,15 @@ public final class RiversMask {
    }
 
    private static boolean isFullMapLand(int red, int green, int blue) {
-      // worldmap_river.png is authoritative: only a fully white source pixel
-      // is land. Any other colour (ocean, river ink, coast antialiasing, or a
-      // palette stray) must not be allowed to select a surface-land biome.
-      return red == 255 && green == 255 && blue == 255;
+      // Land is white and ocean is middle grey in worldmap_river.png. The full
+      // 6000x3400 image contains antialiased coast pixels (254, 253 ... 191),
+      // especially outside the legacy 5632x2048 crop. Requiring exact white
+      // turned that half-pixel contour into frozen ocean, so iceberg features
+      // traced the intended shoreline while the coast itself disappeared.
+      // Threshold at the midpoint of the two source colours. River colours are
+      // handled before this method and chromatic palette noise stays excluded.
+      return Math.max(red, Math.max(green, blue)) - Math.min(red, Math.min(green, blue)) <= 2
+         && (red + green + blue) / 3 >= 189;
    }
 
    private static int riverWidthForColor(int red, int green, int blue) {
@@ -1458,13 +1747,16 @@ public final class RiversMask {
       int height,
       BitSet land,
       BitSet rivers,
+      BitSet inlandRivers,
+      BitSet frozenRivers,
       byte[] riverWidths,
       byte[] riverCorners,
       BitSet riverMouths,
       BitSet riverInfluence,
       byte[] coastalLandness,
       byte[] oceanDistance,
-      BitSet pregeneration
+      BitSet pregeneration,
+      SouthernSnowRegion southernSnow
    ) {
       double land(int x, int z) {
          return this.land.get(z * this.width + x) ? 1.0 : 0.0;
@@ -1708,10 +2000,134 @@ public final class RiversMask {
    }
 
    private static final class LandSampleCache {
+      private static final int SIZE = 256;
+      private RiversMask.Data data;
+      private final int[] x = new int[SIZE];
+      private final int[] z = new int[SIZE];
+      private final double[] land = new double[SIZE];
+
+      private LandSampleCache() {
+         Arrays.fill(this.x, Integer.MIN_VALUE);
+         Arrays.fill(this.z, Integer.MIN_VALUE);
+      }
+
+      void reset(RiversMask.Data data) {
+         this.data = data;
+         Arrays.fill(this.x, Integer.MIN_VALUE);
+         Arrays.fill(this.z, Integer.MIN_VALUE);
+      }
+
+      static int slot(int blockX, int blockZ) {
+         int hash = blockX * 0x9E3779B9 ^ Integer.rotateLeft(blockZ * 0x85EBCA6B, 16);
+         return hash & (SIZE - 1);
+      }
+   }
+
+   /** Coarse component map used only to identify the Antarctic continent. */
+   private static final class SouthernSnowRegion {
+      private static final int CELL_PIXELS = 8;
+      private final int width;
+      private final int height;
+      private final BitSet antarctica;
+
+      private SouthernSnowRegion(int width, int height, BitSet antarctica) {
+         this.width = width;
+         this.height = height;
+         this.antarctica = antarctica;
+      }
+
+      static SouthernSnowRegion create(int sourceWidth, int sourceHeight, BitSet land) {
+         int width = (sourceWidth + CELL_PIXELS - 1) / CELL_PIXELS;
+         int height = (sourceHeight + CELL_PIXELS - 1) / CELL_PIXELS;
+         BitSet landCells = new BitSet(width * height);
+         for (int source = land.nextSetBit(0); source >= 0; source = land.nextSetBit(source + 1)) {
+            int x = source % sourceWidth / CELL_PIXELS;
+            int z = source / sourceWidth / CELL_PIXELS;
+            landCells.set(z * width + x);
+         }
+
+         BitSet visited = new BitSet(width * height);
+         BitSet antarctica = new BitSet(width * height);
+         IntQueue region = new IntQueue();
+         int bestSize = 0;
+         // Antarctica is the largest land component reaching the southernmost
+         // 10% of the source map. Southern islands still receive snow inside the
+         // exact 520-block band, but are not promoted wholesale to a continent.
+         int southernStart = height * 9 / 10;
+         for (int start = landCells.nextSetBit(0); start >= 0; start = landCells.nextSetBit(start + 1)) {
+            if (visited.get(start)) continue;
+            region.clear();
+            region.add(start);
+            visited.set(start);
+            boolean reachesSouth = false;
+            for (int cursor = 0; cursor < region.size(); cursor++) {
+               int index = region.get(cursor);
+               int x = index % width;
+               int z = index / width;
+               if (z >= southernStart) reachesSouth = true;
+               ContinentRegions.addLandNeighbour(landCells, visited, region, x > 0 ? index - 1 : -1);
+               ContinentRegions.addLandNeighbour(landCells, visited, region, x + 1 < width ? index + 1 : -1);
+               ContinentRegions.addLandNeighbour(landCells, visited, region, z > 0 ? index - width : -1);
+               ContinentRegions.addLandNeighbour(landCells, visited, region, z + 1 < height ? index + width : -1);
+            }
+            if (reachesSouth && region.size() > bestSize) {
+               antarctica.clear();
+               for (int cursor = 0; cursor < region.size(); cursor++) antarctica.set(region.get(cursor));
+               bestSize = region.size();
+            }
+         }
+         return new SouthernSnowRegion(width, height, antarctica);
+      }
+
+      boolean isAntarctica(int sourceX, int sourceZ) {
+         int x = sourceX / CELL_PIXELS;
+         int z = sourceZ / CELL_PIXELS;
+         return x >= 0 && z >= 0 && x < this.width && z < this.height && this.antarctica.get(z * this.width + x);
+      }
+   }
+
+   private static final class RiverBiomeCache {
       private RiversMask.Data data;
       private int blockX = Integer.MIN_VALUE;
       private int blockZ = Integer.MIN_VALUE;
-      private double land;
+      private int state;
+
+      int set(RiversMask.Data data, int blockX, int blockZ, int state) {
+         this.data = data;
+         this.blockX = blockX;
+         this.blockZ = blockZ;
+         this.state = state;
+         return state;
+      }
+   }
+
+   private static final class ScalarSampleCache {
+      private static final int SIZE = 256;
+      private RiversMask.Data data;
+      private final int[] x = new int[SIZE];
+      private final int[] z = new int[SIZE];
+      private final double[] value = new double[SIZE];
+
+      private ScalarSampleCache() {
+         Arrays.fill(this.x, Integer.MIN_VALUE);
+         Arrays.fill(this.z, Integer.MIN_VALUE);
+      }
+
+      void set(RiversMask.Data data, int slot, int blockX, int blockZ, double value) {
+         if (this.data != data) {
+            this.data = data;
+            Arrays.fill(this.x, Integer.MIN_VALUE);
+            Arrays.fill(this.z, Integer.MIN_VALUE);
+         }
+         this.x[slot] = blockX;
+         this.z[slot] = blockZ;
+         this.value[slot] = value;
+      }
+
+      static int slot(int blockX, int blockZ) {
+         int hash = blockX * 0x9E3779B9 ^ Integer.rotateLeft(blockZ * 0x85EBCA6B, 16);
+         return hash & (SIZE - 1);
+      }
    }
 
    private static final class RiverWidthCache {
