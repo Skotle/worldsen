@@ -23,6 +23,14 @@ public final class ClimateLayers {
       ThreadLocal.withInitial(ClimateLayers.TerrainScalarCache::new);
    /** Small-scale mountain clusters below this size factor merge into their surroundings. */
    private static final double MINIMUM_MOUNTAIN_REGION_SCALE = 0.10;
+   /**
+    * terrain.bmp contains province-colour crumbs that are too small to represent
+    * a stable biome even when an older server config retained the former, very
+    * permissive thresholds. These floors remove only connected source-map
+    * fragments; broad boundaries and deliberately small but coherent regions stay.
+    */
+   private static final int MINIMUM_TERRAIN_FRAGMENT_PIXELS = 12;
+   private static final int MINIMUM_ISOLATED_TERRAIN_FRAGMENT_PIXELS = 24;
    public static final ClimateLayers INSTANCE = new ClimateLayers();
    private volatile ClimateLayers.Data temperature;
    private volatile ClimateLayers.Data trees;
@@ -224,6 +232,11 @@ public final class ClimateLayers {
       ClimateLayers.TerrainScalarCache cache = RELIEF_CACHE.get();
       if (cache.matches(transformVersion, point)) return cache.value(point);
       double value = sample(layer, layer.relief, unpackX(point), unpackZ(point));
+      // A small island often occupies only the ridge centre of its terrain-map
+      // class. Giving it a continental mountain's full E/PV signal lifts the
+      // entire island as one steep pillar. Keep real relief, but limit it to a
+      // broad low-hill strength on small connected land masses.
+      if (RiversMask.INSTANCE.isSmallIsland(x, z)) value = Math.min(value, 0.35);
       cache.put(transformVersion, point, value);
       return value;
    }
@@ -341,14 +354,26 @@ public final class ClimateLayers {
    private static ClimateLayers.TemperatureSample sampleFullTemperature(ClimateLayers.Data layer, int blockX, int blockZ) {
       double worldX = RiversMask.INSTANCE.mapImageX(blockX);
       double worldZ = RiversMask.INSTANCE.mapImageZ(blockZ);
-      // The temperature image covers the complete 6000x3400 world map, unlike
-      // the legacy terrain layer. Outside that actual map, blend back to the
-      // latitude curve instead of extending the edge pixel forever.
-      if (worldX < 0.0 || worldZ < 0.0
-         || worldX >= (double)RiversMask.INSTANCE.width()
-         || worldZ >= (double)RiversMask.INSTANCE.height()) {
-         return new ClimateLayers.TemperatureSample(0.5, 0.0);
+      double mapWidth = (double)RiversMask.INSTANCE.width();
+      double mapHeight = (double)RiversMask.INSTANCE.height();
+
+      // Apply the configured north/south expansion around the equator. This
+      // option previously existed only in the config and was never consumed.
+      double verticalScale = (Double)EarthShapeServerConfig.TEMPERATURE_VERTICAL_SCALE.get();
+      worldZ = (worldZ - mapHeight * 0.5) / verticalScale + mapHeight * 0.5;
+
+      // Continue the equirectangular temperature field across either pole
+      // instead of dropping to a latitude-only fallback at Z=0/3400. Crossing
+      // a pole reflects latitude and moves longitude by 180 degrees, so mapped
+      // isotherms join naturally rather than ending as a straight tundra line.
+      double foldedZ = positiveModulo(worldZ, mapHeight * 2.0);
+      if (foldedZ >= mapHeight) {
+         foldedZ = mapHeight * 2.0 - foldedZ;
+         worldX += mapWidth * 0.5;
       }
+      worldX = positiveModulo(worldX, mapWidth);
+      worldZ = Math.max(0.0, Math.min(mapHeight - 1.001, foldedZ));
+
       double imageX = Math.max(0.0, Math.min((double)layer.width - 1.001, worldX / (double)RiversMask.INSTANCE.width() * (double)layer.width));
       double imageZ = Math.max(0.0, Math.min((double)layer.height - 1.001, worldZ / (double)RiversMask.INSTANCE.height() * (double)layer.height));
       int x = (int)imageX;
@@ -358,6 +383,11 @@ public final class ClimateLayers {
       double value = lerp(lerp(layer.value(x, z), layer.value(x + 1, z), tx), lerp(layer.value(x, z + 1), layer.value(x + 1, z + 1), tx), tz);
       double coverage = lerp(lerp(layer.coverage(x, z), layer.coverage(x + 1, z), tx), lerp(layer.coverage(x, z + 1), layer.coverage(x + 1, z + 1), tx), tz);
       return new ClimateLayers.TemperatureSample(value, coverage);
+   }
+
+   private static double positiveModulo(double value, double modulus) {
+      double result = value % modulus;
+      return result < 0.0 ? result + modulus : result;
    }
 
    private static int sourceX(ClimateLayers.Data layer, int blockX) {
@@ -477,11 +507,19 @@ public final class ClimateLayers {
             if (kind == ClimateLayers.Kind.TERRAIN_CLASS) {
                values = smoothTerrainClasses(values, width, height);
                values = smoothTerrainClasses(values, width, height);
-               values = removeSmallTerrainRegions(
-                  values, width, height, (Integer)EarthShapeServerConfig.TERRAIN_BIOME_ISOLATED_MINIMUM_REGION_PIXELS.get(), true
+               int isolatedMinimum = Math.max(
+                  MINIMUM_ISOLATED_TERRAIN_FRAGMENT_PIXELS,
+                  (Integer)EarthShapeServerConfig.TERRAIN_BIOME_ISOLATED_MINIMUM_REGION_PIXELS.get()
+               );
+               int generalMinimum = Math.max(
+                  MINIMUM_TERRAIN_FRAGMENT_PIXELS,
+                  (Integer)EarthShapeServerConfig.TERRAIN_BIOME_MINIMUM_REGION_PIXELS.get()
                );
                values = removeSmallTerrainRegions(
-                  values, width, height, (Integer)EarthShapeServerConfig.TERRAIN_BIOME_MINIMUM_REGION_PIXELS.get(), false
+                  values, width, height, isolatedMinimum, true
+               );
+               values = removeSmallTerrainRegions(
+                  values, width, height, generalMinimum, false
                );
                // A few source-map desert pixels occur inside otherwise continuous
                // rocky ranges.  Leaving them intact makes vanilla surface rules put
@@ -857,10 +895,14 @@ public final class ClimateLayers {
          double edgeValue = radius > 0
             ? Math.exp(-0.5 * ((double)radius / sigma) * ((double)radius / sigma))
             : 0.0;
-         // The former 0.5 minimum gave even a zero-scale, one-cell alpine patch
-         // full hill relief, producing needle-like terrain at small map scales.
-         // Relief now grows continuously with the connected region's real span.
-         double maximumRelief = scale;
+         // Regions below the biome threshold still disappear continuously, but
+         // once a region is large enough to remain a MOUNTAIN biome it must also
+         // carry enough physical relief to rise above its surroundings. Using
+         // maximumRelief=scale allowed scale~=0.10 regions to keep the mountain
+         // biome while contributing almost no E/PV terrain signal.
+         double maximumRelief = scale < MINIMUM_MOUNTAIN_REGION_SCALE
+            ? 0.0
+            : 0.45 + 0.55 * scale;
          for (int cursor = 0; cursor < region.size(); cursor++) {
             int index = region.get(cursor);
             scales[index] = encoded;
@@ -875,7 +917,14 @@ public final class ClimateLayers {
                peakFactor = (gaussian - edgeValue) / Math.max(1.0E-9, 1.0 - edgeValue);
                peakFactor = Math.max(0.0, Math.min(1.0, peakFactor));
             }
-            relief[index] = (byte)Math.round(peakFactor * maximumRelief * 255.0);
+            double elevationStrength = switch (terrain[index] & 255) {
+               case MOUNTAIN_LOW -> 0.70;
+               case MOUNTAIN_MID -> 0.82;
+               case MOUNTAIN_HIGH -> 0.92;
+               case MOUNTAIN_ULTRA -> 1.00;
+               default -> 0.70;
+            };
+            relief[index] = (byte)Math.round(peakFactor * maximumRelief * elevationStrength * 255.0);
          }
       }
       return relief;

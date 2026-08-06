@@ -144,6 +144,18 @@ public final class RiversMask {
          * 255.0 / 3.0 * (double)this.blocksPerPixel();
    }
 
+   /** True when the authoritative land pixel belongs to a small connected land mass. */
+   public boolean isSmallIsland(int blockX, int blockZ) {
+      RiversMask.Data loaded = this.data();
+      double sourceX = this.mapImageX(blockX, loaded);
+      double sourceZ = this.mapImageZ(blockZ, loaded);
+      int imageX = (int)Math.floor(sourceX);
+      int imageZ = (int)Math.floor(sourceZ);
+      return imageX >= 0 && imageZ >= 0 && imageX < loaded.width && imageZ < loaded.height
+         && loaded.land.get(imageZ * loaded.width + imageX)
+         && loaded.continentRegions.tier(imageX, imageZ) == 0;
+   }
+
    private double sampleExactLand(RiversMask.Data loaded, int blockX, int blockZ) {
       RiversMask.LandSampleCache cache = this.landSampleCache.get();
       if (cache.data != loaded) cache.reset(loaded);
@@ -897,13 +909,14 @@ public final class RiversMask {
             byte[] oceanDistance = createOceanDistance(width, height, land);
             BitSet pregeneration = createPregenerationMask(width, height, land, openOcean);
             SouthernSnowRegion southernSnow = SouthernSnowRegion.create(width, height, land);
+            ContinentRegions continentRegions = ContinentRegions.create(width, height, land);
             EarthShape.LOGGER
                .info(
                   "[EarthShape] worldmap_river.png land/ocean and river mask loaded: {}x{} in {} ms.",
                   new Object[]{width, height, (System.nanoTime() - started) / 1000000L}
                );
             var21x = new RiversMask.Data(
-               width, height, land, riverCentrelines, inlandRivers, frozenRivers, riverWidths, riverCorners, riverMouths, riverInfluence, coastalLandness, oceanDistance, pregeneration, southernSnow
+               width, height, land, riverCentrelines, inlandRivers, frozenRivers, riverWidths, riverCorners, riverMouths, riverInfluence, coastalLandness, oceanDistance, pregeneration, southernSnow, continentRegions
             );
          }
 
@@ -1756,7 +1769,8 @@ public final class RiversMask {
       byte[] coastalLandness,
       byte[] oceanDistance,
       BitSet pregeneration,
-      SouthernSnowRegion southernSnow
+      SouthernSnowRegion southernSnow,
+      ContinentRegions continentRegions
    ) {
       double land(int x, int z) {
          return this.land.get(z * this.width + x) ? 1.0 : 0.0;

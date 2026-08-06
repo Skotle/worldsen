@@ -36,7 +36,7 @@ public final class EarthShapeCompatibility {
       }
 
       if (terraBlenderLoaded) {
-         EarthShape.LOGGER.info("[EarthShape] TerraBlender detected: keeping its API for dependent mods but disabling its region-biome and surface-rule worldgen paths.");
+         EarthShape.LOGGER.info("[EarthShape] TerraBlender detected: API linkage retained; all region registration, biome selection and surface-rule worldgen paths are disabled.");
       }
    }
 

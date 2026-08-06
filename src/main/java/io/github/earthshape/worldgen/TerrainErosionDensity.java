@@ -60,7 +60,11 @@ public record TerrainErosionDensity(DensityFunction argument) implements Density
       // still recovering completely in the deep ocean and continental interior.
       double coastalLandness = RiversMask.INSTANCE.sampleCoastalLandness(blockX, blockZ);
       double shoreDistance = Math.abs(coastalLandness * 2.0 - 1.0);
+      // Hold the high-erosion waterfront field longer before recovering. The
+      // former single smoothstep was already close to the full mountain E value
+      // halfway through the coastal blend, leaving a steep inner cut face.
       double terrainRecovery = smoothstep(shoreDistance);
+      terrainRecovery *= terrainRecovery;
       // E=0.55 is vanilla's highly eroded low/flat range. Apply it after all
       // terrain-class guidance so mountains, hills, and deserts obey the same
       // waterfront rule.
@@ -78,35 +82,14 @@ public record TerrainErosionDensity(DensityFunction argument) implements Density
       double centreDistance = RiversMask.INSTANCE.riverCentrelineDistance(blockX, blockZ)
          * (double)RiversMask.INSTANCE.blocksPerPixel();
       double bankDistance = Math.max(0.0, centreDistance - (double)width * 0.5);
-      // C and W already restore the Y=64 land baseline within four blocks. E is
-      // kept flat farther out solely to stop a hill from starting beside the
-      // channel and then being cut open by it. Scale that recovery by river width
-      // but cap it so broad rivers do not erase an entire surrounding region.
-      // Ordinary flat terrain needs a longer recovery than the former 12..24
-      // blocks. A short E transition can cross the mountain bands and return to
-      // flat E again, leaving an isolated ridge running along the riverbank.
-      double desiredTransition = Math.min(48.0, Math.max(24.0, (double)width * 0.5 + 24.0));
-      double mappedRelief = ClimateLayers.INSTANCE.terrainRelief(blockX, blockZ);
-      double explicitMountain = smoothstep(Math.max(0.0, (mappedRelief - 0.35) / 0.65));
-      // Preserve mountains explicitly painted beside water. They still begin at
-      // the flat bank value, but regain their E field within 8..12 blocks rather
-      // than being erased by the ordinary 12..24 block no-hill transition.
-      double mountainTransition = Math.min(12.0, Math.max(8.0, (double)width * 0.5 + 6.0));
-      desiredTransition = lerp(desiredTransition, mountainTransition, explicitMountain);
-      double transitionEnd = Math.max(
-         4.0,
-         Math.min((double)EarthShapeServerConfig.RIVER_BANK_FADE_BLOCKS.get(), desiredTransition)
-      );
-      double ordinaryFlatEnd = Math.min(3.0, transitionEnd / 3.0);
-      double flatEnd = lerp(ordinaryFlatEnd, 0.0, explicitMountain);
-
-      // E=0.55 is vanilla's highly eroded, low/flat domain. Keep it constant
-      // through the immediate bank, then recover smoothly before nearby relief.
-      // Explicit mapped mountains skip that hold and rise as a continuous slope.
-      // This does not lower the land: the separate C floor remains authoritative.
-      if (bankDistance <= flatEnd) return 0.55;
+      // Match C's complete height-recovery span. Ending E at bankFadeBlocks
+      // restored hill and mountain erosion long before the continental base had
+      // finished rising, which concentrated the remaining rise into a wall.
+      double transitionEnd = RiverTerrainTransition.distance(blockX, blockZ, width);
       if (bankDistance >= transitionEnd) return terrainGuided;
-      double recovery = smoothstep((bankDistance - flatEnd) / Math.max(1.0, transitionEnd - flatEnd));
+      // Never replace the bank with constant E=0.55. Keep 55..85% of its
+      // original erosion noise at the water edge, then return it to 100%.
+      double recovery = RiverTerrainTransition.recovery(blockX, blockZ, bankDistance, transitionEnd);
       return lerp(0.55, terrainGuided, recovery);
    }
 

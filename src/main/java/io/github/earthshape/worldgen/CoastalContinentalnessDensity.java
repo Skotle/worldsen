@@ -13,6 +13,8 @@ import net.minecraft.world.level.levelgen.DensityFunction;
 public record CoastalContinentalnessDensity(DensityFunction argument) implements DensityFunction {
    /** Fraction of the configured channel width occupied by the level bed core. */
    private static final double RIVER_BED_CORE_RATIO = 0.60;
+   /** One vanilla continentalness step used to lift every dry mapped land column. */
+   private static final double LAND_SURFACE_LIFT = 0.01;
    private static final MapCodec<CoastalContinentalnessDensity> DATA_CODEC = RecordCodecBuilder.mapCodec(
       instance -> instance.group(DensityFunction.HOLDER_HELPER_CODEC.fieldOf("argument").forGetter(CoastalContinentalnessDensity::argument))
          .apply(instance, CoastalContinentalnessDensity::new)
@@ -46,7 +48,7 @@ public record CoastalContinentalnessDensity(DensityFunction argument) implements
       }
       double riverInfluence = riverValleyInfluence(context.blockX(), context.blockZ());
       if (riverInfluence > 0.0) {
-         guided = applyRiverCrossSection(context.blockX(), context.blockZ(), guided, riverInfluence);
+         guided = applyRiverCrossSection(context.blockX(), context.blockZ(), guided);
       }
       // Keep broad deserts near one inland elevation. A small remainder of the
       // original C field is retained so large W/PV hills still have a natural
@@ -56,18 +58,40 @@ public record CoastalContinentalnessDensity(DensityFunction argument) implements
       if (desertInfluence > 0.0 && riverInfluence <= 0.0) {
          guided = lerp(guided, 0.10, 0.85 * desertInfluence * inlandFactor);
       }
-      // Ordinary mapped land starts at the normal overworld baseline (surface
-      // Y=64).  Keep the coastal blend and river mouths unconstrained so their
-      // descent remains noise-shaped instead of becoming a flat terrace.
-      if (mappedLand
-         && mouthOpening <= 0.001
-         && riverInfluence <= 0.0) {
-         // Raise the minimum continuously from near-inland C=-0.10 to the
-         // ordinary Y=64 baseline instead of switching the floor on at t=0.98.
-         guided = Math.max(lerp(-0.10, 0.06, inlandFactor), guided);
+      // Every mapped land column outside the physical riverbank starts at the
+      // normal overworld Y=64 baseline. The channel, its direct bank and a
+      // genuine mouth remain free to descend to their water profile.
+      boolean riverWater = RiversMask.INSTANCE.isInlandRiverColumn(context.blockX(), context.blockZ());
+      ClimateLayers.TerrainKind terrainKind = ClimateLayers.INSTANCE.terrainKind(context.blockX(), context.blockZ());
+      boolean riverBank = RiversMask.INSTANCE.isInlandRiverBank(context.blockX(), context.blockZ());
+      boolean smallIsland = RiversMask.INSTANCE.isSmallIsland(context.blockX(), context.blockZ());
+      // Hills and mountains start at least one terrain band above the ordinary
+      // Y=64 floor. C=0.12 supplies roughly five blocks of vanilla spline lift
+      // without writing a fixed surface Y or bypassing erosion/PV variation.
+      double minimumLandContinentalness =
+         !smallIsland && (terrainKind == ClimateLayers.TerrainKind.HILLS || terrainKind == ClimateLayers.TerrainKind.MOUNTAIN)
+            ? 0.12
+            : 0.06;
+      if (mappedLand && !riverBank && !riverWater && mouthOpening <= 0.001) {
+         guided = Math.max(minimumLandContinentalness, guided);
       }
       if (mappedLand && mouthOpening <= 0.001) {
-         guided = applyRiverBankHeightLimit(context.blockX(), context.blockZ(), guided);
+         guided = applyRiverBankHeightLimit(
+            context.blockX(), context.blockZ(), guided,
+            riverBank || riverWater ? -0.10 : minimumLandContinentalness
+         );
+      }
+      // Apply the requested one-block baseline lift after all terrain and bank
+      // guidance so it affects plains, slopes and peaks uniformly. Actual river
+      // water and mouths retain the sea-level water profile.
+      if (mappedLand && !riverWater && mouthOpening <= 0.001) {
+         guided = Math.min(1.0, guided + LAND_SURFACE_LIFT);
+      }
+      // Small islands must not inherit a continent-scale C peak. Their dry
+      // surface still obeys the raised Y=65 baseline, but additional elevation
+      // is left to the reduced vanilla hill signal above.
+      if (smallIsland && mappedLand && !riverWater && mouthOpening <= 0.001) {
+         guided = Math.min(0.14, guided);
       }
       return guided;
    }
@@ -97,18 +121,17 @@ public record CoastalContinentalnessDensity(DensityFunction argument) implements
       return Math.min(-0.20, natural);
    }
 
-   private static double applyRiverCrossSection(int blockX, int blockZ, double terrain, double valleyInfluence) {
+   private static double applyRiverCrossSection(int blockX, int blockZ, double terrain) {
       int width = RiversMask.INSTANCE.effectiveRiverWidthBlocks(blockX, blockZ);
       if (width <= 0) return terrain;
       double distance = RiversMask.INSTANCE.riverCentrelineDistance(blockX, blockZ)
          * (double)RiversMask.INSTANCE.blocksPerPixel();
       double waterRadius = Math.max(0.5, (double)width * 0.5);
       double bedRadius = Math.min(waterRadius, Math.max(0.5, waterRadius * RIVER_BED_CORE_RATIO));
-      // River guidance may carve or flatten the source terrain, but it must
-      // never raise a low plain into a narrow embankment. The former fixed 0.06
-      // target was above the local C value in coastal and other low flatlands,
-      // producing a wall that followed only the river mask.
-      double bankTarget = Math.min(0.06, terrain);
+      // Preserve part of the original C noise at the water edge. Joining the
+      // channel to a fixed 0.06 bank erased complete hills before the gradual
+      // recovery even began.
+      double bankTarget = lerp(0.06, terrain, RiverTerrainTransition.bankNoiseRetention(blockX, blockZ));
 
       if (distance <= waterRadius) {
          double centre = (Double)EarthShapeServerConfig.RIVER_CHANNEL_CONTINENTALNESS.get();
@@ -124,9 +147,9 @@ public record CoastalContinentalnessDensity(DensityFunction argument) implements
          return lerp(centre, bankTarget, acrossShoulder);
       }
 
-      // Just outside the water, flatten toward at most the local terrain value;
-      // then let the valley influence return to the untouched surrounding noise.
-      return lerp(terrain, bankTarget, valleyInfluence);
+      // The channel cross-section owns water only. Land-side guidance is applied
+      // below as a noise-amplitude blend, never as a flat bank plateau.
+      return terrain;
    }
 
    private static double riverValleyInfluence(int blockX, int blockZ) {
@@ -152,13 +175,13 @@ public record CoastalContinentalnessDensity(DensityFunction argument) implements
    }
 
    /**
-    * Beyond the three-block low bank, start at the ordinary Y=64 continental
-    * baseline and release the surrounding C field through a smooth height cap.
-    * This prevents both a wide sea-level lawn and an immediate high wall. A
-    * mapped waterfront mountain keeps a shorter 8..12 block recovery so genuine
-    * coastal relief is retained rather than flattened like ordinary terrain.
+    * Retain mapped C noise directly from the water edge and progressively return
+    * it to full strength. This lowers excessive waterfront relief without
+    * replacing the riverbank with a broad Y=64 plane.
     */
-   private static double applyRiverBankHeightLimit(int blockX, int blockZ, double terrain) {
+   private static double applyRiverBankHeightLimit(
+      int blockX, int blockZ, double terrain, double minimumContinentalness
+   ) {
       if (!(Boolean)EarthShapeServerConfig.RIVER_BIOMES_ENABLED.get()
          || !RiversMask.INSTANCE.hasInlandRiverInfluence(blockX, blockZ)) {
          return terrain;
@@ -168,20 +191,17 @@ public record CoastalContinentalnessDensity(DensityFunction argument) implements
       double distance = RiversMask.INSTANCE.riverCentrelineDistance(blockX, blockZ)
          * (double)RiversMask.INSTANCE.blocksPerPixel();
       double bankDistance = distance - (double)width * 0.5;
-      if (bankDistance <= 3.0) return terrain;
+      if (bankDistance < 0.0) return terrain;
 
-      double ordinaryTransition = Math.min(48.0, Math.max(24.0, (double)width * 0.5 + 24.0));
-      ordinaryTransition = Math.min(ordinaryTransition, (double)EarthShapeServerConfig.RIVER_BANK_FADE_BLOCKS.get());
-      ordinaryTransition = Math.min(ordinaryTransition, (double)EarthShapeServerConfig.RIVER_HEIGHT_FADE_BLOCKS.get());
-      double mappedRelief = ClimateLayers.INSTANCE.terrainRelief(blockX, blockZ);
-      double explicitMountain = smoothstep(Math.max(0.0, (mappedRelief - 0.35) / 0.65));
-      double mountainTransition = Math.min(12.0, Math.max(8.0, (double)width * 0.5 + 6.0));
-      double transitionEnd = lerp(ordinaryTransition, mountainTransition, explicitMountain);
+      // Height recovery uses one automatic relief-aware span. Do not cap it by
+      // bankFadeBlocks: that setting controls the immediate water edge, and
+      // using it here made high terrain return within only 48 blocks.
+      double transitionEnd = RiverTerrainTransition.distance(blockX, blockZ, width);
       if (bankDistance >= transitionEnd) return terrain;
 
-      double recovery = smoothstep((bankDistance - 3.0) / Math.max(1.0, transitionEnd - 3.0));
-      double limited = lerp(0.06, terrain, recovery);
-      return Math.max(0.06, limited);
+      double recovery = RiverTerrainTransition.recovery(blockX, blockZ, bankDistance, transitionEnd);
+      double limited = lerp(minimumContinentalness, terrain, recovery);
+      return Math.max(minimumContinentalness, limited);
    }
 
    private static double smoothstep(double value) {

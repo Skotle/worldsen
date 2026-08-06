@@ -25,8 +25,24 @@ public record RiverWeirdnessDensity(DensityFunction argument) implements Density
    @Override
    public double compute(FunctionContext context) {
       double weirdness = this.argument.compute(context);
-      if (EarthShapeCompatibility.disablesWorldgen()
-         || !(Boolean)EarthShapeServerConfig.RIVER_BIOMES_ENABLED.get()
+      if (EarthShapeCompatibility.disablesWorldgen()) return weirdness;
+
+      // A mountain layer cannot rely on E alone: with an unlucky vanilla W/PV
+      // sample it receives the mountain biome but remains a flat lowland. Guide
+      // W toward the centre of vanilla's Peaks fold (|W| ~= 0.67) in proportion
+      // to the region's smooth relief. Vanilla terrain splines still decide Y.
+      if ((Boolean)EarthShapeServerConfig.TERRAIN_BIOMES_ENABLED.get()
+         && RiversMask.INSTANCE.sampleLand(context.blockX(), context.blockZ()) >= 0.5
+         && ClimateLayers.INSTANCE.terrainKind(context.blockX(), context.blockZ())
+            == ClimateLayers.TerrainKind.MOUNTAIN) {
+         double relief = ClimateLayers.INSTANCE.terrainRelief(context.blockX(), context.blockZ());
+         if (relief > 0.0) {
+            double target = weirdness < 0.0 ? -0.67 : 0.67;
+            weirdness = lerp(weirdness, target, Math.min(0.72, relief * 0.72));
+         }
+      }
+
+      if (!(Boolean)EarthShapeServerConfig.RIVER_BIOMES_ENABLED.get()
          || !RiversMask.INSTANCE.hasInlandRiverInfluence(context.blockX(), context.blockZ())) {
          return weirdness;
       }
@@ -38,48 +54,30 @@ public record RiverWeirdnessDensity(DensityFunction argument) implements Density
          * (double)RiversMask.INSTANCE.blocksPerPixel();
       double waterRadius = Math.max(0.5, (double)width * 0.5);
       double bedRadius = Math.min(waterRadius, Math.max(0.5, waterRadius * RIVER_BED_CORE_RATIO));
-      double mappedRelief = ClimateLayers.INSTANCE.terrainRelief(context.blockX(), context.blockZ());
-      double explicitMountain = smoothstep(Math.max(0.0, (mappedRelief - 0.35) / 0.65));
-      // W/PV previously recovered in only 2..4 blocks while erosion recovered
-      // much farther out. That mismatch could create a narrow peak band beside
-      // an otherwise flat river. Keep broad valley guidance on flat terrain,
-      // but retain the short shoulder where the layer explicitly paints a
-      // waterfront mountain.
-      double ordinaryFade = Math.min(
-         32.0,
-         Math.max(16.0, waterRadius + 12.0)
-      );
-      double configuredFade = Math.min(
-         ordinaryFade,
-         (double)EarthShapeServerConfig.RIVER_BANK_FADE_BLOCKS.get()
-      );
-      double mountainFade = Math.max(
-         2.0,
-         Math.min(4.0, (double)EarthShapeServerConfig.RIVER_CHANNEL_EDGE_FADE_BLOCKS.get())
-      );
-      double edgeFade = lerp(configuredFade, mountainFade, explicitMountain);
-      double radius = waterRadius + edgeFade;
-      if (distance >= radius) return weirdness;
+      // W/PV must recover over the same broad shoulder for every terrain family.
+      // The former mountain-only 2..4 block recovery reinstated peaks while C
+      // and E were still flat, producing a narrow cliff beside the water.
+      double edgeFade = RiverTerrainTransition.distance(context.blockX(), context.blockZ(), width);
+      if (distance >= waterRadius + edgeFade) return weirdness;
       if (distance <= bedRadius) return 0.0;
 
-      // Hold W=0 over the same width-proportional bed used by C, then recover
-      // through a Gaussian shoulder. This prevents PV relief from roughening
-      // the floor while retaining a naturally curved transition into the bank.
-      double shoulderDistance = distance - bedRadius;
-      double shoulderRadius = radius - bedRadius;
-      double sigma = Math.max(1.0, shoulderRadius * 0.42);
-      double normalizedDistance = shoulderDistance / sigma;
-      double edgeDistance = shoulderRadius / sigma;
-      double gaussianDrop = Math.exp(-0.5 * normalizedDistance * normalizedDistance);
-      double edgeDrop = Math.exp(-0.5 * edgeDistance * edgeDistance);
-      double recovery = (1.0 - gaussianDrop) / (1.0 - edgeDrop);
-      recovery = Math.max(0.0, Math.min(1.0, recovery));
+      // W=0 is restricted to the actual level bed. The submerged shoulder joins
+      // it to 55..85% of the source noise at the water edge; dry land then
+      // recovers from that noise instead of remaining a wide PV=valley plane.
+      if (distance < waterRadius) {
+         double channelT = (distance - bedRadius) / Math.max(0.5, waterRadius - bedRadius);
+         double retained = RiverTerrainTransition.bankNoiseRetention(context.blockX(), context.blockZ());
+         return weirdness * retained * smootherstep(channelT);
+      }
+      double recovery = RiverTerrainTransition.recovery(
+         context.blockX(), context.blockZ(), distance - waterRadius, edgeFade
+      );
       return weirdness * recovery;
    }
 
-   private static double smoothstep(double value) {
+   private static double smootherstep(double value) {
       double clamped = Math.max(0.0, Math.min(1.0, value));
-      return clamped * clamped * (3.0 - 2.0 * clamped);
+      return clamped * clamped * clamped * (clamped * (clamped * 6.0 - 15.0) + 10.0);
    }
 
    private static double lerp(double from, double to, double amount) {

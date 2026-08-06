@@ -179,6 +179,13 @@ tasks.withType(JavaCompile).configureEach {
     options.encoding = 'UTF-8' // Use the UTF-8 charset for Java compilation
 }
 
+// The terrablender.api sources are compile-time compatibility shims only. A real
+// TerraBlender installation must own that mod id and those runtime classes; bundling
+// the shims made NeoForge reject EarthShape as a duplicate terrablender mod.
+tasks.withType(Jar).configureEach {
+    exclude('terrablender/**')
+}
+
 // IDEA no longer automatically downloads sources/javadoc jars for dependencies, so we need to explicitly enable the behavior.
 idea {
     module {
