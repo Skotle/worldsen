@@ -95,6 +95,12 @@ configurations {
     runtimeClasspath.extendsFrom localRuntime
 }
 
+// TerraBlender remains a compile-time API only. Packs commonly receive the real
+// mod transitively (for example from Gardens of the Dead); EarthShape disables
+// its biome/surface intervention at runtime instead of publishing a second copy
+// of the same mod id.
+def terraBlenderCompatJar = file('C:/Users/Administrator/Downloads/neoforge/neoforge-launcher/mods452/TerraBlender-neoforge-1.21.1-4.1.0.8.jar.disabled')
+
 dependencies {
     // Specify the version of Minecraft to use.
     // Depending on the plugin applied there are several options. We will assume you applied the userdev plugin as shown above.
@@ -106,7 +112,8 @@ dependencies {
 
     // Chunky is optional at runtime.  Its public shape API lets EarthShape
     // exclude ocean-only chunks from a pregeneration selection.
-    compileOnly files("C:/Users/user/Desktop/neoforge-launcher/mods/Chunky-NeoForge-1.4.23.jar")
+    compileOnly files("C:/Users/Administrator/Downloads/neoforge/neoforge-launcher/mods452/Chunky-NeoForge-1.4.23.jar")
+    compileOnly files(terraBlenderCompatJar)
 
     // Example optional mod dependency with JEI
     // The JEI API is declared for compile time use, while the full JEI artifact is used at runtime
@@ -179,9 +186,9 @@ tasks.withType(JavaCompile).configureEach {
     options.encoding = 'UTF-8' // Use the UTF-8 charset for Java compilation
 }
 
-// The terrablender.api sources are compile-time compatibility shims only. A real
-// TerraBlender installation must own that mod id and those runtime classes; bundling
-// the shims made NeoForge reject EarthShape as a duplicate terrablender mod.
+// Local terrablender.api sources are linkage shims for compilation only. Never
+// package them: doing so either duplicates the real API classes or, when paired
+// with a second [[mods]] entry, makes NeoForge reject the pack as duplicate mod id.
 tasks.withType(Jar).configureEach {
     exclude('terrablender/**')
 }

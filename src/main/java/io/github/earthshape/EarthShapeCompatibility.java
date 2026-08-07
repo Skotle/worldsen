@@ -1,11 +1,15 @@
 package io.github.earthshape;
 
 import java.util.LinkedHashSet;
+import java.util.Map;
 import java.util.Set;
 import net.neoforged.fml.ModList;
 
 public final class EarthShapeCompatibility {
-   private static final Set<String> HARD_WORLDGEN_MODS = Set.of("climate_rivers", "climaterivers");
+   // External biome selectors are allowed to initialize and calculate normally.
+   // TerrainBiomeMixin discards their returned holder at the final RETURN point,
+   // so none of them needs to disable EarthShape's map worldgen globally.
+   private static final Set<String> HARD_WORLDGEN_MODS = Set.of();
    private static volatile Set<String> conflicts = Set.of();
    private static volatile boolean terralithLoaded;
    private static volatile boolean terraBlenderLoaded;
@@ -15,7 +19,7 @@ public final class EarthShapeCompatibility {
 
    public static void initialize() {
       terralithLoaded = ModList.get().isLoaded("terralith");
-      terraBlenderLoaded = ModList.get().isLoaded("terrablender");
+      terraBlenderLoaded = hasRealTerraBlenderImplementation();
       Set<String> found = new LinkedHashSet<>();
 
       for (String modId : HARD_WORLDGEN_MODS) {
@@ -31,12 +35,19 @@ public final class EarthShapeCompatibility {
       }
 
       if (terralithLoaded) {
+         disableIncompatibleTerralithTerrainModules();
          EarthShape.LOGGER
-            .info("[EarthShape] Terralith detected: retaining Terralith-selected biomes and features; EarthShape only supplies map shape and density relief.");
+            .info("[EarthShape] Terralith compatibility active: EarthShape owns C/E/W and final surface placement; tagged Terralith surface/cave biomes, features, carvers and surface rules remain available.");
       }
 
       if (terraBlenderLoaded) {
-         EarthShape.LOGGER.info("[EarthShape] TerraBlender detected: API linkage retained; all region registration, biome selection and surface-rule worldgen paths are disabled.");
+         EarthShape.LOGGER.info("[EarthShape] TerraBlender detected: regions may initialize, but EarthShape replaces the completed Overworld biome result at final return.");
+      } else if (ModList.get().isLoaded("terrablender")) {
+         EarthShape.LOGGER.info("[EarthShape] inert TerraBlender API compatibility active; TerraBlender world generation is not installed.");
+      }
+
+      if (ModList.get().isLoaded("climaterivers") || ModList.get().isLoaded("climate_rivers")) {
+         EarthShape.LOGGER.info("[EarthShape] Climate Rivers detected: its parameter candidates may initialize, but its selected river holder is discarded by the final EarthShape selector.");
       }
    }
 
@@ -56,10 +67,48 @@ public final class EarthShapeCompatibility {
       // MultiNoiseBiomeSource can first be queried after additional mod loading
       // has completed. Re-check here so a constructor-time ordering difference
       // can never allow TerraBlender's positional selector to win the first call.
-      boolean detected = ModList.get().isLoaded("terrablender");
+      boolean detected = hasRealTerraBlenderImplementation();
       if (detected) {
          terraBlenderLoaded = true;
       }
       return detected;
+   }
+
+   /**
+    * Skylands and terrain slabs add solid density independently of the mapped
+    * continentalness axis. Disable them for this server session without rewriting
+    * the user's terralith.json; every biome/feature/structure module stays intact.
+    */
+   @SuppressWarnings("unchecked")
+   private static void disableIncompatibleTerralithTerrainModules() {
+      try {
+         ClassLoader loader = EarthShapeCompatibility.class.getClassLoader();
+         Class<?> handlerClass = Class.forName("net.stardustlabs.terralith.config.ConfigHandler", false, loader);
+         Object state = handlerClass.getMethod("getState").invoke(null);
+         if (state == null) {
+            EarthShape.LOGGER.warn("[EarthShape] Terralith config was not initialized before compatibility setup; skylands/slabs could not be disabled.");
+            return;
+         }
+         Object modules = state.getClass().getField("modules").get(state);
+         Map<String, Boolean> values = (Map<String, Boolean>)modules.getClass().getField("modules").get(modules);
+         values.put("skylands", false);
+         values.put("terrain_slabs", false);
+         EarthShape.LOGGER.info("[EarthShape] Terralith skylands and terrain_slabs disabled in memory for mapped-continent compatibility; terralith.json was not changed.");
+      } catch (ReflectiveOperationException | LinkageError exception) {
+         EarthShape.LOGGER.warn("[EarthShape] Could not apply Terralith terrain-module compatibility; continuing with layer and biome compatibility only.", exception);
+      }
+   }
+
+   private static boolean hasRealTerraBlenderImplementation() {
+      if (!ModList.get().isLoaded("terrablender")) {
+         return false;
+      }
+
+      try {
+         Class.forName("terrablender.core.TerraBlenderNeoForge", false, EarthShapeCompatibility.class.getClassLoader());
+         return true;
+      } catch (ClassNotFoundException ignored) {
+         return false;
+      }
    }
 }

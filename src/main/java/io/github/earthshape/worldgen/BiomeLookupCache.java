@@ -18,6 +18,7 @@ public final class BiomeLookupCache {
    private boolean frozenRiver;
    private ClimateLayers.TreeCover trees;
    private double temperature;
+   private int regionalVariant = Integer.MIN_VALUE;
    private Climate.ParameterList<Holder<Biome>> parameterSource0;
    private Climate.ParameterList<Holder<Biome>> candidates0;
    private int candidateGroup0 = Integer.MIN_VALUE;
@@ -60,6 +61,15 @@ public final class BiomeLookupCache {
       this.frozenRiver = frozenRiver;
       this.trees = trees;
       this.temperature = temperature;
+      this.regionalVariant = Integer.MIN_VALUE;
+   }
+
+   public int regionalVariant() {
+      return this.regionalVariant;
+   }
+
+   public void cacheRegionalVariant(int regionalVariant) {
+      this.regionalVariant = regionalVariant;
    }
 
    public Climate.ParameterList<Holder<Biome>> candidates(

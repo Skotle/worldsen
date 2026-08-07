@@ -26,3 +26,20 @@ versionRange="${minecraft_version_range}"
 ordering="NONE"
 side="BOTH"
 
+# EarthShape's three climate-axis density functions must be decoded after
+# Terralith's built-in datapack. Terralith's final density, surface rules,
+# carvers, structures and biome JSON remain active around those axes.
+[[dependencies.${mod_id}]]
+modId="terralith"
+type="optional"
+versionRange="[2,)"
+ordering="AFTER"
+side="BOTH"
+
+[[dependencies.${mod_id}]]
+modId="lithostitched"
+type="optional"
+versionRange="[1,)"
+ordering="AFTER"
+side="BOTH"
+

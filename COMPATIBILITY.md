@@ -1,6 +1,8 @@
 # EarthShape compatibility policy
 
-EarthShape owns Overworld continentalness, density relief, source-river placement, and final biome selection.  Mods that own the same router or deliberately dither biome boundaries cannot safely be merged without version-specific APIs and joint world-generation tests.
+EarthShape owns Overworld continentalness, density relief, source-river placement, and final biome selection.
+
+External selectors are allowed to initialize and finish their calculation so dependent mods keep their normal startup path. At every Overworld `MultiNoiseBiomeSource#getNoiseBiome` return, EarthShape discards that completed holder and performs the final selection itself. Candidates injected into the climate table are excluded; additional mod biomes can be placed only through EarthShape's layer/tag registry.
 
 ## Compatible without an EarthShape code patch
 
@@ -15,14 +17,21 @@ EarthShape owns Overworld continentalness, density relief, source-river placemen
 - Wetland Whimsy
 - Stony Cliffs Are Cool
 - Hearths
-
-EarthShape retains the original non-vanilla biome selected by these mods rather than replacing it with a vanilla `terrain.bmp` biome. This also takes precedence over a source-river line: custom-biome features, surface rules and terrain intent are not erased merely because the map has a river at that position. EarthShape still applies its continent mask and heightmap relief. Test each pack in a new world because feature density is pack-dependent.
-
-## Incompatible: EarthShape world generation is automatically disabled
-
 - Climate Rivers
 
-Climate Rivers owns the same source-river generation stage. EarthShape detects it at startup and leaves vanilla/other-mod generation active instead of combining two river generators.
+TerraBlender, Biolith, Lithostitched, Climate Rivers and backport selectors may calculate candidates, but their returned biome does not survive the final hook. BYG and other registered additional biomes remain available only when their common biome tags match the active EarthShape terrain/temperature condition. Source rivers and land/ocean masks therefore remain authoritative.
+
+Pufferfish's biome dither can still vary surface-material sampling inside a biome boundary; it cannot replace the biome holder returned by the final EarthShape selector.
+
+## Terralith 2.6.2
+
+- EarthShape loads after Terralith/Lithostitched so `overworld/erosion` cannot replace EarthShape's mapped erosion axis.
+- EarthShape owns continentalness, erosion, weirdness and the final chunk biome holder.
+- Terralith's final-density graph, surface rules, vanilla-biome enhancements, carvers, configured features and structures remain loaded.
+- Terralith `skylands` and `terrain_slabs` are disabled in memory because they add solid density outside the mapped continentalness axis. The user's `terralith.json` is not modified.
+- Terralith surface biomes enter only through their `c:is_*` terrain tag after the active EarthShape layer admits that family.
+- Terralith cave biomes use a separate vanilla-plus-Terralith-cave parameter tree below Y=48; Terralith surface biomes cannot leak into cave mouths.
+- Warm Terralith rivers may replace a non-frozen mapped river in broad hot-region patches. Frozen connected rivers remain exactly `minecraft:frozen_river`.
 
 
 ## 픽셀당 4블록 기준의 엄격한 육지 마스크(`#FFFFFF`) 집계 결과입니다.

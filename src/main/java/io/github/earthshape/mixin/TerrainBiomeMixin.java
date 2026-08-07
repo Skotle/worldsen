@@ -6,6 +6,9 @@ import io.github.earthshape.map.ClimateLayers;
 import io.github.earthshape.map.RiversMask;
 import io.github.earthshape.worldgen.BiomeLookupCache;
 import io.github.earthshape.worldgen.FilteredParameterCache;
+import io.github.earthshape.worldgen.AdditionalBiomeRegistry;
+import io.github.earthshape.worldgen.EarthShapeFinalBiomeResolver;
+import io.github.earthshape.worldgen.ExternalBiomeCapture;
 import net.minecraft.core.Holder;
 import net.minecraft.resources.ResourceKey;
 import net.minecraft.tags.TagKey;
@@ -24,14 +27,20 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
 
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.ConcurrentHashMap;
+import java.lang.reflect.Field;
+import java.lang.reflect.Modifier;
 import java.util.ArrayList;
+import java.util.Collections;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
+import java.util.Set;
 
-// TerraBlender cancels getNoiseBiome at HEAD. This mixin must run first when that
-// library is present, otherwise its RETURN hook would never be reached.
-@Mixin(value = {MultiNoiseBiomeSource.class}, priority = 2000)
-public abstract class TerrainBiomeMixin {
-   private static final AtomicBoolean TERRABLENDER_INTERCEPT_LOGGED = new AtomicBoolean();
+// Apply after TerraBlender, Biolith, Lithostitched and other biome selectors.
+// Their completed holder is intentionally discarded at every return path.
+@Mixin(value = {MultiNoiseBiomeSource.class}, priority = 1)
+public abstract class TerrainBiomeMixin implements EarthShapeFinalBiomeResolver {
+   private static final AtomicBoolean FINAL_OVERRIDE_LOGGED = new AtomicBoolean();
    /** Bounds duplicated climate RTrees so long Chunky runs cannot exhaust the VM. */
    private static final int MAX_FILTERED_PARAMETER_LISTS = 12;
 
@@ -40,56 +49,18 @@ public abstract class TerrainBiomeMixin {
    @Unique
    private static final ConcurrentHashMap<Climate.ParameterList<Holder<Biome>>, FilteredParameterCache> earthshape$filteredParameterLists = new ConcurrentHashMap<>();
    @Unique
+   private static final ConcurrentHashMap<Climate.ParameterList<Holder<Biome>>, Climate.ParameterList<Holder<Biome>>> earthshape$baseVanillaParameterLists = new ConcurrentHashMap<>();
+   @Unique
+   private static final ConcurrentHashMap<Climate.ParameterList<Holder<Biome>>, Climate.ParameterList<Holder<Biome>>> earthshape$terralithCaveParameterLists = new ConcurrentHashMap<>();
+   @Unique
+   private static final ConcurrentHashMap<Climate.ParameterList<Holder<Biome>>, Map<ResourceKey<Biome>, Holder<Biome>>> earthshape$exactBiomes = new ConcurrentHashMap<>();
+   @Unique
+   private static final Set<ResourceKey<Biome>> earthshape$baseVanillaBiomes = discoverBaseVanillaBiomes();
+   @Unique
    private static final ThreadLocal<BiomeLookupCache> earthshape$lookupCache = ThreadLocal.withInitial(BiomeLookupCache::new);
 
    @Shadow(remap = false)
    public abstract Climate.ParameterList<Holder<Biome>> parameters();
-
-   @Inject(
-      method = {"getNoiseBiome(IIILnet/minecraft/world/level/biome/Climate$Sampler;)Lnet/minecraft/core/Holder;"},
-      at = {@At("HEAD")},
-      cancellable = true,
-      remap = false
-   )
-   private void earthshape$beforeTerraBlender(int quartX, int quartY, int quartZ, Sampler sampler, CallbackInfoReturnable<Holder<Biome>> callback) {
-      if (!EarthShapeCompatibility.disablesWorldgen() && EarthShapeCompatibility.isTerraBlenderLoaded()) {
-         int blockX = quartX << 2;
-         int blockY = quartY << 2;
-         int blockZ = quartZ << 2;
-         // Cave biomes use their own multi-noise ranges. Never replace that
-         // selection with a surface map-layer family merely to block TerraBlender.
-         if (blockY < 48) return;
-         // TerraBlender replaces this method at HEAD with a weighted region RTree.
-         // EarthShape owns the final biome decision while its map worldgen is active,
-         // so cancel every lookup here rather than allowing that RTree to run on
-         // locations where the selected vanilla holder happened to be unchanged.
-         ClimateLayers layers = ClimateLayers.INSTANCE;
-         Climate.TargetPoint source = sampler.sample(quartX, quartY, quartZ);
-         // The full coastline extends beyond legacy terrain.bmp. On uncovered
-         // land, keep vanilla's multi-noise biome instead of fabricating a PLAINS
-         // class and painting the high-latitude land-mask outline with snow.
-         if (RiversMask.INSTANCE.sampleLayerLand(blockX, blockZ) >= 0.5
-            && !layers.hasTerrainCoverage(blockX, blockZ)
-            && !RiversMask.INSTANCE.isInlandRiverBiome(blockX, blockZ)) {
-            if (RiversMask.INSTANCE.isPermanentSouthernSnowLand(blockX, blockZ)) {
-               callback.setReturnValue(this.findBiome(Biomes.SNOWY_PLAINS, this.parameters().findValue(source)));
-               return;
-            }
-            // terrain.bmp is the smaller legacy map, but earth_temperature.png
-            // covers the full 6000x3400 land mask. Preserve vanilla humidity,
-            // erosion, depth and weirdness while applying mapped temperature and
-            // enough coastline continentalness to keep this land out of oceans.
-            callback.setReturnValue(this.parameters().findValue(this.temperatureGuidedClimatePoint(layers, blockX, blockZ, source)));
-            return;
-         }
-         Climate.TargetPoint point = this.guidedClimatePoint(layers, blockX, blockZ, source);
-         Holder<Biome> mapped = this.selectLayerCandidate(layers, blockX, blockY, blockZ, point);
-         if (TERRABLENDER_INTERCEPT_LOGGED.compareAndSet(false, true)) {
-            io.github.earthshape.EarthShape.LOGGER.info("[EarthShape] TerraBlender biome lookup intercepted; applying EarthShape layer result before TerraBlender's region RTree.");
-         }
-         callback.setReturnValue(mapped);
-      }
-   }
 
    @Inject(
       method = {"getNoiseBiome(IIILnet/minecraft/world/level/biome/Climate$Sampler;)Lnet/minecraft/core/Holder;"},
@@ -98,41 +69,66 @@ public abstract class TerrainBiomeMixin {
       remap = false
    )
    private void earthshape$chooseTerrainBiome(int quartX, int quartY, int quartZ, Sampler sampler, CallbackInfoReturnable<Holder<Biome>> callback) {
+      if (ExternalBiomeCapture.active()) {
+         return;
+      }
+      callback.setReturnValue(this.earthshape$resolveFinalBiome(
+         quartX, quartY, quartZ, sampler, callback.getReturnValue()
+      ));
+   }
+
+   @Override
+   public Holder<Biome> earthshape$resolveFinalBiome(
+      int quartX,
+      int quartY,
+      int quartZ,
+      Sampler sampler,
+      Holder<Biome> discardedExternalResult
+   ) {
       int blockX = quartX << 2;
       int blockY = quartY << 2;
       int blockZ = quartZ << 2;
-      if (!EarthShapeCompatibility.disablesWorldgen()) {
-         // The HEAD injector above already owns and cancels every TerraBlender
-         // surface lookup. Cancellation jumps through RETURN, so without this
-         // guard the same climate sampling and RTree lookup runs a second time.
-         if (blockY >= 48 && EarthShapeCompatibility.isTerraBlenderLoaded()) return;
-         ClimateLayers layers = ClimateLayers.INSTANCE;
-         if (blockY < 48) {
-            // Preserve real cave biomes, but do not let vanilla's three-dimensional
-            // climate lattice insert a surface snow biome below an otherwise normal
-            // column. When exposed by a carver, that stray snowy_taiga/plains cell
-            // placed snow specifically around the cave mouth.
-            Holder<Biome> current = callback.getReturnValue();
-            if ((Boolean)EarthShapeServerConfig.TERRAIN_BIOMES_ENABLED.get()
-               && layers.hasTerrainCoverage(blockX, blockZ)
-               && isSnowBiome(current)) {
-               callback.setReturnValue(this.undergroundNonSnowBiome(layers, blockX, blockZ, current));
-            }
-         } else if ((Boolean)EarthShapeServerConfig.TERRAIN_BIOMES_ENABLED.get()) {
-            boolean mappedWater = RiversMask.INSTANCE.sampleLayerLand(blockX, blockZ) < 0.5;
-            if (mappedWater || layers.hasTerrainCoverage(blockX, blockZ)
-               || RiversMask.INSTANCE.isInlandRiverBiome(blockX, blockZ)) {
-               Climate.TargetPoint point = this.guidedClimatePoint(layers, blockX, blockZ, sampler.sample(quartX, quartY, quartZ));
-               callback.setReturnValue(this.selectLayerCandidate(layers, blockX, blockY, blockZ, point));
-            } else if (RiversMask.INSTANCE.sampleLayerLand(blockX, blockZ) >= 0.5
-               && layers.hasLegacyTemperature(blockX, blockZ)) {
-               Climate.TargetPoint source = sampler.sample(quartX, quartY, quartZ);
-               callback.setReturnValue(RiversMask.INSTANCE.isPermanentSouthernSnowLand(blockX, blockZ)
-                  ? this.findBiome(Biomes.SNOWY_PLAINS, callback.getReturnValue())
-                  : this.parameters().findValue(this.temperatureGuidedClimatePoint(layers, blockX, blockZ, source)));
-            }
-         }
+      if (EarthShapeCompatibility.disablesWorldgen()) {
+         return discardedExternalResult;
       }
+
+      ClimateLayers layers = ClimateLayers.INSTANCE;
+      Climate.TargetPoint source = sampler.sample(quartX, quartY, quartZ);
+      long layerPoint = warpedLayerPoint(blockX, blockZ);
+      int layerX = unpackX(layerPoint);
+      int layerZ = unpackZ(layerPoint);
+      Holder<Biome> selected;
+      if (blockY < 48) {
+         Holder<Biome> baseVanilla = EarthShapeCompatibility.isTerralithLoaded()
+            ? this.terralithCaveParameters().findValue(source)
+            : this.baseVanillaParameters().findValue(source);
+         selected = (Boolean)EarthShapeServerConfig.TERRAIN_BIOMES_ENABLED.get()
+            && layers.hasTerrainCoverage(layerX, layerZ)
+            && isSnowBiome(baseVanilla)
+            ? this.undergroundNonSnowBiome(layers, blockX, blockZ, baseVanilla)
+            : baseVanilla;
+      } else if ((Boolean)EarthShapeServerConfig.TERRAIN_BIOMES_ENABLED.get()) {
+         boolean mappedWater = RiversMask.INSTANCE.sampleLayerLand(blockX, blockZ) < 0.5;
+         if (mappedWater || layers.hasTerrainCoverage(layerX, layerZ)
+            || RiversMask.INSTANCE.isInlandRiverBiome(blockX, blockZ)) {
+            Climate.TargetPoint point = this.guidedClimatePoint(layers, blockX, blockZ, source);
+            selected = this.selectLayerCandidate(layers, blockX, blockY, blockZ, point);
+         } else if (RiversMask.INSTANCE.sampleLayerLand(blockX, blockZ) >= 0.5
+            && layers.hasLegacyTemperature(layerX, layerZ)) {
+            Holder<Biome> baseVanilla = this.baseVanillaParameters().findValue(source);
+            selected = RiversMask.INSTANCE.isPermanentSouthernSnowLand(blockX, blockZ)
+               ? this.findBiome(Biomes.SNOWY_PLAINS, baseVanilla)
+               : this.baseVanillaParameters().findValue(this.temperatureGuidedClimatePoint(layers, blockX, blockZ, source));
+         } else {
+            selected = this.baseVanillaParameters().findValue(source);
+         }
+      } else {
+         selected = this.baseVanillaParameters().findValue(source);
+      }
+      if (FINAL_OVERRIDE_LOGGED.compareAndSet(false, true)) {
+         io.github.earthshape.EarthShape.LOGGER.info("[EarthShape] outermost Overworld biome resolver active; discarded external holder and stored EarthShape's final result.");
+      }
+      return selected;
    }
 
    /**
@@ -141,13 +137,16 @@ public abstract class TerrainBiomeMixin {
     * closest vanilla climate entry chosen from the allowed terrain family.
     */
    private Climate.TargetPoint guidedClimatePoint(ClimateLayers layers, int blockX, int blockZ, Climate.TargetPoint source) {
-      ClimateLayers.TerrainKind terrain = layers.terrainKind(blockX, blockZ);
+      long layerPoint = warpedLayerPoint(blockX, blockZ);
+      int layerX = unpackX(layerPoint);
+      int layerZ = unpackZ(layerPoint);
+      ClimateLayers.TerrainKind terrain = layers.terrainKind(layerX, layerZ);
       boolean sourceRiver = (Boolean)EarthShapeServerConfig.RIVER_BIOMES_ENABLED.get() && RiversMask.INSTANCE.isInlandRiverBiome(blockX, blockZ);
       if (!sourceRiver) {
          terrain = layers.terrainKindAtRiverbank(blockX, blockZ, terrain);
       }
-      ClimateLayers.TreeCover trees = layers.treeCover(blockX, blockZ);
-      double layerTemperature = layers.temperature(blockX, blockZ);
+      ClimateLayers.TreeCover trees = layers.treeCover(layerX, layerZ);
+      double layerTemperature = layers.temperature(layerX, layerZ);
       float temperature = (float)layerTemperature;
       float humidity = -0.08F;
       float continentalness = RiversMask.INSTANCE.sampleLayerLand(blockX, blockZ) >= 0.5 ? 0.14F : -0.50F;
@@ -156,7 +155,7 @@ public abstract class TerrainBiomeMixin {
       float sourceErosion = Climate.unquantizeCoord(source.erosion());
       float sourceWeirdness = Climate.unquantizeCoord(source.weirdness());
       float weirdness = sourceWeirdness * 0.20F;
-      float relief = (float)layers.steepness(blockX, blockZ);
+      float relief = (float)layers.steepness(layerX, layerZ);
 
       // trees.bmp only refines already-vegetated terrain.  It cannot turn an explicit
       // plains or desert colour into a forest/jungle family.
@@ -251,15 +250,25 @@ public abstract class TerrainBiomeMixin {
       // An exact holder lookup keeps both ordinary and frozen inland channels out
       // of every ocean family and also avoids building an unnecessary RTree.
       if (sourceRiver) {
-         Holder<Biome> river = this.findBiome(Biomes.RIVER, this.parameters().findValue(point));
-         return frozenRiver ? this.findBiome(Biomes.FROZEN_RIVER, river) : river;
+         Holder<Biome> river = this.findBiome(Biomes.RIVER, this.fallbackBiome());
+         if (frozenRiver) {
+            return this.findBiome(Biomes.FROZEN_RIVER, river);
+         }
+         Holder<Biome> additionalRiver = layerTemperature > 0.2 && regionalVariant(blockX, blockZ) % 3 == 0
+            ? this.additionalTaggedBiome(Tags.Biomes.IS_RIVER, blockX, blockZ, false, false)
+            : null;
+         return additionalRiver != null
+            && !additionalRiver.is(Tags.Biomes.IS_OCEAN)
+            && !additionalRiver.is(Tags.Biomes.IS_SNOWY)
+            ? additionalRiver
+            : river;
       }
       // The southern polar cap is deliberately treeless: keep the mapped
       // topography, but use one plain snow-cover biome for every land family.
       // Avoid ICE_SPIKES, GROVE, TAIGA and peak biomes because each can add
       // vegetation or terrain features beyond a simple snow blanket.
       if (surfaceClimateAllowed && RiversMask.INSTANCE.isPermanentSouthernSnowLand(blockX, blockZ)) {
-         return this.findBiome(Biomes.SNOWY_PLAINS, this.parameters().findValue(point));
+         return this.findBiome(Biomes.SNOWY_PLAINS, this.fallbackBiome());
       }
       // Temperate forest directly below a mapped mountain otherwise repeatedly
       // resolves to the same lush/cherry-like forest candidates.  Convert only a
@@ -307,6 +316,21 @@ public abstract class TerrainBiomeMixin {
          && selectedTerrain == ClimateLayers.TerrainKind.MOUNTAIN
          && largeMountainSystem
          && (layers.isUltraMountain(blockX, blockZ) || layers.isPolarTemperatureZone(blockX, blockZ));
+      if (surfaceClimateAllowed && regionalVariant(blockX, blockZ) % 3 != 0) {
+         Holder<Biome> additional = beachEligible
+            ? this.additionalTaggedBiome(Tags.Biomes.IS_BEACH, blockX, blockZ, snowBiomeAllowed, snowBiomeAllowed)
+            : this.additionalTerrainBiome(
+               selectedTerrain,
+               layerTemperature,
+               snowBiomeAllowed,
+               frozenPeaksAllowed,
+               blockX,
+               blockZ
+            );
+         if (additional != null) {
+            return additional;
+         }
+      }
       int biomeFamily = sourceRiver
          ? (frozenRiver ? 2 : 1)
          : (riverMouth || selectedTerrain == ClimateLayers.TerrainKind.WATER ? 3 : selectedTerrain.ordinal() + 4);
@@ -329,6 +353,17 @@ public abstract class TerrainBiomeMixin {
                selectedTerrain, sourceRiver, frozenRiver, riverMouth, frozenPeaksAllowed, beachEligible, cherryGroveAllowed, snowBiomeAllowed, borealAllowed
             )
          );
+         // terrain.bmp is authoritative immediately below the land/ocean and
+         // river masks.  Never fall back to the unfiltered climate tree when a
+         // datapack omits a requested family: a hot DESERT point would otherwise
+         // be free to resolve to savanna or jungle. Use an explicit vanilla member
+         // of the mapped family instead.
+         if (candidates == null) {
+            return this.strictTerrainFallback(
+               layers, selectedTerrain, blockX, blockY, blockZ, point,
+               riverMouth, frozenPeaksAllowed, beachEligible, snowBiomeAllowed
+            );
+         }
          filtered.touch(cacheGroup);
          lookup.cacheCandidates(parameters, cacheGroup, candidates);
          filtered.trim(cacheGroup, MAX_FILTERED_PARAMETER_LISTS);
@@ -340,6 +375,9 @@ public abstract class TerrainBiomeMixin {
    private Climate.TargetPoint temperatureGuidedClimatePoint(
       ClimateLayers layers, int blockX, int blockZ, Climate.TargetPoint source
    ) {
+      long layerPoint = warpedLayerPoint(blockX, blockZ);
+      int layerX = unpackX(layerPoint);
+      int layerZ = unpackZ(layerPoint);
       double coast = RiversMask.INSTANCE.sampleCoastalLandness(blockX, blockZ);
       coast = coast * coast * (3.0 - 2.0 * coast);
       // This helper is used for mapped land outside terrain.bmp. Keep the biome
@@ -348,7 +386,7 @@ public abstract class TerrainBiomeMixin {
       // biome places frozen-ocean icebergs on it.
       float continentalness = (float)(-0.10 + 0.24 * coast);
       return Climate.target(
-         (float)layers.temperature(blockX, blockZ),
+         (float)layers.temperature(layerX, layerZ),
          Climate.unquantizeCoord(source.humidity()),
          continentalness,
          Climate.unquantizeCoord(source.erosion()),
@@ -374,18 +412,21 @@ public abstract class TerrainBiomeMixin {
             allowed.add(entry);
          }
       }
-      // A datapack can omit an entire vanilla tag family. Preserve vanilla's
-      // behaviour in that case instead of crashing while constructing an empty RTree.
-      return allowed.isEmpty() ? this.parameters() : new Climate.ParameterList<>(List.copyOf(allowed));
+      // Returning null deliberately delegates to strictTerrainFallback. Returning
+      // the complete list here would demote terrain.bmp below temperature and let
+      // unrelated climate families enter an explicitly mapped terrain region.
+      return allowed.isEmpty() ? null : new Climate.ParameterList<>(List.copyOf(allowed));
    }
 
    private boolean isAllowedTerrainCandidate(
       ClimateLayers.TerrainKind terrain, boolean sourceRiver, boolean frozenRiver, boolean riverMouth, boolean frozenPeaksAllowed, boolean beachEligible,
       boolean cherryGroveAllowed, boolean snowBiomeAllowed, boolean borealAllowed, Holder<Biome> biome
    ) {
-      // Keep TerraBlender present as an API for dependent mods, but do not allow
-      // its registered region biomes to enter EarthShape's final selector.
-      if (EarthShapeCompatibility.isTerraBlenderLoaded() && !isVanillaBiome(biome)) return false;
+      // All candidates injected into the multi-noise table by TerraBlender,
+      // Biolith, Lithostitched, Climate Rivers or a backport are discarded.
+      // Mod biomes can enter only through AdditionalBiomeRegistry after the
+      // EarthShape layer family has explicitly admitted their published tag.
+      if (!isVanillaBiome(biome)) return false;
       // A connected river has one precomputed frozen state. Resolve it before
       // local snow gates so downstream temperature cannot split the same river.
       if (sourceRiver) return frozenRiver ? biome.is(Biomes.FROZEN_RIVER) : biome.is(Biomes.RIVER);
@@ -407,7 +448,7 @@ public abstract class TerrainBiomeMixin {
          return biome.is(Tags.Biomes.IS_BEACH) || biome.is(Biomes.SNOWY_BEACH);
       }
       return switch (terrain) {
-         case DESERT -> biome.is(Tags.Biomes.IS_DESERT) || biome.is(Tags.Biomes.IS_BADLANDS);
+         case DESERT -> isStrictDesertCandidate(biome);
          case WETLAND -> biome.is(Tags.Biomes.IS_SWAMP);
          // Climate stages are exclusive. Previously all forest and taiga
          // candidates remained in one RTree, allowing humidity/erosion to pick
@@ -434,6 +475,93 @@ public abstract class TerrainBiomeMixin {
                && !isSnowBiome(biome);
          case WATER -> false;
       };
+   }
+
+   private Holder<Biome> strictTerrainFallback(
+      ClimateLayers layers,
+      ClimateLayers.TerrainKind terrain,
+      int blockX,
+      int blockY,
+      int blockZ,
+      Climate.TargetPoint point,
+      boolean riverMouth,
+      boolean frozenPeaksAllowed,
+      boolean beachEligible,
+      boolean snowBiomeAllowed
+   ) {
+      Holder<Biome> fallback = this.baseVanillaParameters().findValue(point);
+      if (riverMouth || terrain == ClimateLayers.TerrainKind.WATER) {
+         return this.oceanBiome(layers.temperature(blockX, blockZ), blockX, blockZ, fallback);
+      }
+      if (beachEligible) {
+         if (terrain == ClimateLayers.TerrainKind.HILLS || terrain == ClimateLayers.TerrainKind.MOUNTAIN) {
+            return this.findBiome(snowBiomeAllowed ? Biomes.SNOWY_BEACH : Biomes.STONY_SHORE, fallback);
+         }
+         return this.findBiome(snowBiomeAllowed ? Biomes.SNOWY_BEACH : Biomes.BEACH, fallback);
+      }
+
+      double temperature = layers.temperature(blockX, blockZ);
+      int region = regionalVariant(blockX, blockZ);
+      return switch (terrain) {
+         case DESERT -> layers.isMesaRegion(blockX, blockZ)
+            ? this.findBiome(region % 10 == 0 ? Biomes.ERODED_BADLANDS : (region % 5 == 0 ? Biomes.WOODED_BADLANDS : Biomes.BADLANDS), fallback)
+            : this.findBiome(Biomes.DESERT, fallback);
+         case WETLAND -> this.findBiome(temperature > 0.3 ? Biomes.MANGROVE_SWAMP : Biomes.SWAMP, fallback);
+         case FOREST -> this.forestBiome(temperature, snowBiomeAllowed, region, fallback);
+         case JUNGLE -> this.findBiome(region % 12 == 0 ? Biomes.BAMBOO_JUNGLE : (region % 6 == 0 ? Biomes.SPARSE_JUNGLE : Biomes.JUNGLE), fallback);
+         case HILLS -> snowBiomeAllowed
+            ? this.findBiome(temperature < -0.55 ? Biomes.SNOWY_SLOPES : Biomes.GROVE, fallback)
+            : this.findBiome(temperature > 0.45 ? Biomes.WINDSWEPT_SAVANNA : (region % 5 == 0 ? Biomes.WINDSWEPT_FOREST : Biomes.WINDSWEPT_HILLS), fallback);
+         case MOUNTAIN -> this.findBiome(frozenPeaksAllowed ? Biomes.FROZEN_PEAKS : Biomes.STONY_PEAKS, fallback);
+         case PLAINS, CITY, SURROUNDING -> this.plainsBiome(temperature, snowBiomeAllowed, region, fallback);
+         case WATER -> this.oceanBiome(temperature, blockX, blockZ, fallback);
+      };
+   }
+
+   private static boolean isStrictDesertCandidate(Holder<Biome> biome) {
+      if (!biome.is(Tags.Biomes.IS_DESERT) && !biome.is(Tags.Biomes.IS_BADLANDS)) {
+         return false;
+      }
+      // Some biome packs publish broad, overlapping climate tags. Explicit
+      // terrain DESERT accepts only the desert/badlands identity and rejects a
+      // candidate that is simultaneously advertised as another hot land family.
+      if (biome.is(Tags.Biomes.IS_JUNGLE)
+         || biome.is(Tags.Biomes.IS_SAVANNA)
+         || biome.is(Tags.Biomes.IS_SWAMP)
+         || biome.is(Tags.Biomes.IS_PLAINS)) {
+         return false;
+      }
+      if (biome.is(Tags.Biomes.IS_FOREST)
+         || biome.is(Tags.Biomes.IS_TAIGA)
+         || biome.is(Tags.Biomes.IS_MOUNTAIN)
+         || biome.is(Tags.Biomes.IS_SNOWY)
+         || biome.is(Tags.Biomes.IS_OCEAN)
+         || biome.is(Tags.Biomes.IS_BEACH)) {
+         return false;
+      }
+
+      return biome.unwrapKey().map(key -> {
+         if (isVanillaBiome(biome)) {
+            return true;
+         }
+         // Terralith's reference/desert_all and badlands_all sets are curated,
+         // mutually exclusive climate families. Trust those tags even for names
+         // such as ancient_sands which a generic name heuristic cannot classify.
+         if ("terralith".equals(key.location().getNamespace())) {
+            return true;
+         }
+         // Common tags alone are not reliable enough for modded packs: several
+         // lush/outback biomes advertise IS_DESERT for structure spawning. Only
+         // explicitly desert-shaped identities may occupy a terrain.bmp desert.
+         String path = key.location().getPath();
+         return path.contains("desert")
+            || path.contains("badland")
+            || path.contains("mesa")
+            || path.contains("dune")
+            || path.contains("sand")
+            || path.contains("wasteland")
+            || path.contains("red_rock");
+      }).orElse(false);
    }
 
    private static boolean isSnowBiome(Holder<Biome> biome) {
@@ -516,6 +644,12 @@ public abstract class TerrainBiomeMixin {
       // an occasional terrain-specific transition instead of exposing the mask.
       boolean beachPatch = regionalVariant(blockX, blockZ) % 5 == 0;
       if (!nextToLayerRiver && beachPatch && isCoastalLand(blockX, blockZ)) {
+         Holder<Biome> additionalBeach = this.additionalTaggedBiome(
+            Tags.Biomes.IS_BEACH, blockX, blockZ, snowAllowed, snowAllowed
+         );
+         if (additionalBeach != null) {
+            return additionalBeach;
+         }
          if (terrain == ClimateLayers.TerrainKind.HILLS || terrain == ClimateLayers.TerrainKind.MOUNTAIN) {
             return this.findBiome(Biomes.STONY_SHORE, fallback);
          }
@@ -525,8 +659,10 @@ public abstract class TerrainBiomeMixin {
             return this.findBiome(snowAllowed ? Biomes.SNOWY_BEACH : Biomes.BEACH, fallback);
          }
       }
-      Holder<Biome> terraBiome = this.terraBlenderTerrainBiome(terrain, snowAllowed, frozenPeaksAllowed, blockX, blockZ);
-      if (terraBiome != null) return terraBiome;
+      Holder<Biome> additionalBiome = this.additionalTerrainBiome(
+         terrain, temperature, snowAllowed, frozenPeaksAllowed, blockX, blockZ
+      );
+      if (additionalBiome != null) return additionalBiome;
       return switch (terrain) {
          case DESERT -> layers.isMesaRegion(blockX, blockZ)
          ? this.findBiome(region % 10 == 0 ? Biomes.ERODED_BADLANDS : (region % 5 == 0 ? Biomes.WOODED_BADLANDS : Biomes.BADLANDS), fallback)
@@ -576,8 +712,10 @@ public abstract class TerrainBiomeMixin {
 
    private Holder<Biome> oceanBiome(double temperature, int blockX, int blockZ, Holder<Biome> fallback) {
       boolean deep = isOpenOcean(blockX, blockZ);
-      Holder<Biome> terraOcean = this.terraBlenderTaggedBiome(Tags.Biomes.IS_OCEAN, blockX, blockZ);
-      if (terraOcean != null) return terraOcean;
+      Holder<Biome> additionalOcean = regionalVariant(blockX, blockZ) % 3 != 0
+         ? this.additionalTaggedBiome(Tags.Biomes.IS_OCEAN, blockX, blockZ, true, temperature <= -0.5)
+         : null;
+      if (additionalOcean != null) return additionalOcean;
       if (temperature > 0.65) {
          return this.findBiome(Biomes.WARM_OCEAN, fallback);
       } else if (temperature > 0.15) {
@@ -611,12 +749,27 @@ public abstract class TerrainBiomeMixin {
          && RiversMask.INSTANCE.sampleLand(blockX, blockZ + distance) < 0.25;
    }
 
-   private static int regionalVariant(int blockX, int blockZ) {
-      long value = (long)(blockX >> 10) * 341873128712L ^ (long)(blockZ >> 10) * 132897987541L ^ 42317861L;
+   private int regionalVariant(int blockX, int blockZ) {
+      BiomeLookupCache lookup = earthshape$lookupCache.get();
+      if (lookup.matches(blockX, blockZ) && lookup.regionalVariant() != Integer.MIN_VALUE) {
+         return lookup.regionalVariant();
+      }
+      // The old >>10 lookup changed on exact 1024-block X/Z lines, producing
+      // rectangular biome mosaics. Domain-warp a larger regional grid so one
+      // biome occupies a broad coherent patch and its boundary follows curves.
+      int warpedX = blockX + (int)Math.round(smoothNoise(blockX, blockZ, 0x2545F4914F6CDD1DL) * 520.0);
+      int warpedZ = blockZ + (int)Math.round(smoothNoise(blockX, blockZ, 0x369DEA0F31A53F85L) * 520.0);
+      int cellX = Math.floorDiv(warpedX, 1536);
+      int cellZ = Math.floorDiv(warpedZ, 1536);
+      long value = (long)cellX * 341873128712L ^ (long)cellZ * 132897987541L ^ 42317861L;
       value ^= value >>> 33;
       value *= -49064778989728563L;
       value ^= value >>> 33;
-      return (int)(value ^ value >>> 32) & 2147483647;
+      int variant = (int)(value ^ value >>> 32) & 2147483647;
+      if (lookup.matches(blockX, blockZ)) {
+         lookup.cacheRegionalVariant(variant);
+      }
+      return variant;
    }
 
    private static boolean allowsSnow(ClimateLayers.TerrainKind terrain, int blockY, double temperature) {
@@ -635,7 +788,10 @@ public abstract class TerrainBiomeMixin {
          return packPoint(blockX, blockZ);
       } else {
          int strength = Math.min((Integer)EarthShapeServerConfig.BIOME_BOUNDARY_WARP_BLOCKS.get(), Math.max(4, RiversMask.INSTANCE.blocksPerPixel() * 3 / 4));
-         if (strength == 0 || ClimateLayers.INSTANCE.isTerrainBoundary(blockX, blockZ, Math.max(8, strength * 2))) {
+         // Only boundary samples need displacement. Applying noise in the
+         // interior changes nothing, while skipping the boundary preserved the
+         // source bitmap's exact horizontal and vertical pixel edges.
+         if (strength == 0 || !ClimateLayers.INSTANCE.isTerrainBoundary(blockX, blockZ, Math.max(8, strength * 2))) {
             return packPoint(blockX, blockZ);
          } else {
             int warpedX = blockX + (int)Math.round(smoothNoise(blockX, blockZ, 7640891576956012809L) * (double)strength);
@@ -683,7 +839,17 @@ public abstract class TerrainBiomeMixin {
    }
 
    private Holder<Biome> findBiome(ResourceKey<Biome> key, Holder<Biome> fallback) {
-      return ((MultiNoiseBiomeSource)(Object)this).possibleBiomes().stream().filter(holder -> holder.is(key)).findFirst().orElse(fallback);
+      Map<ResourceKey<Biome>, Holder<Biome>> exact = earthshape$exactBiomes.computeIfAbsent(this.parameters(), ignored -> {
+         Map<ResourceKey<Biome>, Holder<Biome>> indexed = new java.util.HashMap<>();
+         ((MultiNoiseBiomeSource)(Object)this).possibleBiomes().forEach(holder -> holder.unwrapKey().ifPresent(holderKey -> indexed.put(holderKey, holder)));
+         return Map.copyOf(indexed);
+      });
+      return exact.getOrDefault(key, fallback);
+   }
+
+   private Holder<Biome> fallbackBiome() {
+      List<com.mojang.datafixers.util.Pair<Climate.ParameterPoint, Holder<Biome>>> values = this.parameters().values();
+      return values.get(0).getSecond();
    }
 
    /**
@@ -691,28 +857,114 @@ public abstract class TerrainBiomeMixin {
     * select them. EarthShape selects only holders whose published biome tag matches
     * the terrain.bmp class at this exact map position.
     */
-   private Holder<Biome> terraBlenderTerrainBiome(ClimateLayers.TerrainKind terrain, boolean snowAllowed, boolean frozenPeaksAllowed, int blockX, int blockZ) {
-      // TerraBlender remains loaded only to satisfy dependent mods. Its tagged
-      // biome entries must not bypass the EarthShape layer selector.
-      if (EarthShapeCompatibility.isTerraBlenderLoaded()) return null;
+   private Holder<Biome> additionalTerrainBiome(
+      ClimateLayers.TerrainKind terrain,
+      double temperature,
+      boolean snowAllowed,
+      boolean frozenPeaksAllowed,
+      int blockX,
+      int blockZ
+   ) {
+      if (!AdditionalBiomeRegistry.hasAdditionalBiomes()) return null;
+      if (regionalVariant(blockX, blockZ) % 3 == 0) return null;
       return switch (terrain) {
-         case DESERT -> this.terraBlenderTaggedBiome(ClimateLayers.INSTANCE.isMesaRegion(blockX, blockZ) ? Tags.Biomes.IS_BADLANDS : Tags.Biomes.IS_DESERT, blockX, blockZ);
-         case WETLAND -> this.terraBlenderTaggedBiome(Tags.Biomes.IS_SWAMP, blockX, blockZ);
-         case JUNGLE -> this.terraBlenderTaggedBiome(Tags.Biomes.IS_JUNGLE, blockX, blockZ);
-         case FOREST -> this.terraBlenderTaggedBiome(snowAllowed ? Tags.Biomes.IS_TAIGA : Tags.Biomes.IS_FOREST, blockX, blockZ);
-         case HILLS -> this.terraBlenderTaggedBiome(Tags.Biomes.IS_MOUNTAIN_SLOPE, blockX, blockZ);
-         case MOUNTAIN -> frozenPeaksAllowed ? this.terraBlenderTaggedBiome(Tags.Biomes.IS_MOUNTAIN_PEAK, blockX, blockZ) : null;
-         case WATER -> this.terraBlenderTaggedBiome(Tags.Biomes.IS_OCEAN, blockX, blockZ);
-         case PLAINS, CITY, SURROUNDING -> null;
+         case DESERT -> this.additionalDesertBiome(blockX, blockZ);
+         case WETLAND -> this.additionalTaggedBiome(Tags.Biomes.IS_SWAMP, blockX, blockZ, snowAllowed, snowAllowed);
+         case JUNGLE -> this.additionalTaggedBiome(Tags.Biomes.IS_JUNGLE, blockX, blockZ, false, false);
+         case FOREST -> this.additionalTaggedBiome(
+            temperature < -0.2 ? Tags.Biomes.IS_TAIGA : Tags.Biomes.IS_FOREST,
+            blockX, blockZ, snowAllowed, snowAllowed
+         );
+         case HILLS -> this.additionalTaggedBiome(
+            Tags.Biomes.IS_MOUNTAIN_SLOPE, blockX, blockZ, snowAllowed, snowAllowed
+         );
+         case MOUNTAIN -> this.additionalTaggedBiome(
+            Tags.Biomes.IS_MOUNTAIN_PEAK, blockX, blockZ, frozenPeaksAllowed, frozenPeaksAllowed
+         );
+         case WATER -> this.additionalTaggedBiome(Tags.Biomes.IS_OCEAN, blockX, blockZ, true, temperature <= -0.5);
+         case PLAINS, CITY, SURROUNDING -> this.additionalTaggedBiome(
+            temperature > 0.4 ? Tags.Biomes.IS_SAVANNA : Tags.Biomes.IS_PLAINS,
+            blockX, blockZ, snowAllowed, snowAllowed
+         );
       };
    }
 
-   private Holder<Biome> terraBlenderTaggedBiome(TagKey<Biome> tag, int blockX, int blockZ) {
-      if (EarthShapeCompatibility.isTerraBlenderLoaded()) return null;
-      List<Holder<Biome>> candidates = ((MultiNoiseBiomeSource)(Object)this).possibleBiomes().stream()
-         .filter(holder -> !isVanillaBiome(holder) && holder.is(tag))
-         .toList();
-      return candidates.isEmpty() ? null : candidates.get(regionalVariant(blockX, blockZ) % candidates.size());
+   private Holder<Biome> additionalDesertBiome(int blockX, int blockZ) {
+      Holder<Biome> candidate = this.additionalTaggedBiome(
+         ClimateLayers.INSTANCE.isMesaRegion(blockX, blockZ) ? Tags.Biomes.IS_BADLANDS : Tags.Biomes.IS_DESERT,
+         blockX, blockZ, false, false
+      );
+      return candidate != null && isStrictDesertCandidate(candidate) ? candidate : null;
+   }
+
+   private Holder<Biome> additionalTaggedBiome(
+      TagKey<Biome> tag,
+      int blockX,
+      int blockZ,
+      boolean allowSnow,
+      boolean preferSnow
+   ) {
+      return AdditionalBiomeRegistry.select(
+         tag,
+         regionalVariant(blockX, blockZ),
+         allowSnow,
+         preferSnow
+      );
+   }
+
+   @Unique
+   private Climate.ParameterList<Holder<Biome>> baseVanillaParameters() {
+      Climate.ParameterList<Holder<Biome>> parameters = this.parameters();
+      return earthshape$baseVanillaParameterLists.computeIfAbsent(parameters, source -> {
+         List<com.mojang.datafixers.util.Pair<Climate.ParameterPoint, Holder<Biome>>> vanilla = source.values().stream()
+            .filter(entry -> isVanillaBiome(entry.getSecond()))
+            .toList();
+         // The stock Overworld list always contains base Minecraft entries. Keep
+         // a defensive fallback for nonstandard biome sources without crashing.
+         return vanilla.isEmpty() ? source : new Climate.ParameterList<>(vanilla);
+      });
+   }
+
+   @Unique
+   private Climate.ParameterList<Holder<Biome>> terralithCaveParameters() {
+      Climate.ParameterList<Holder<Biome>> parameters = this.parameters();
+      return earthshape$terralithCaveParameterLists.computeIfAbsent(parameters, source -> {
+         List<com.mojang.datafixers.util.Pair<Climate.ParameterPoint, Holder<Biome>>> compatible = source.values().stream()
+            .filter(entry -> {
+               Holder<Biome> biome = entry.getSecond();
+               if (isVanillaBiome(biome)) {
+                  return true;
+               }
+               return biome.unwrapKey().map(key -> "terralith".equals(key.location().getNamespace())).orElse(false)
+                  && (biome.is(Tags.Biomes.IS_CAVE) || biome.is(Tags.Biomes.IS_UNDERGROUND));
+            })
+            .toList();
+         // Surface Terralith biomes never enter this tree. Vanilla surface
+         // entries remain so cave biomes still have to win their intended D/H/E
+         // ranges instead of occupying every underground climate cell.
+         return compatible.isEmpty() ? this.baseVanillaParameters() : new Climate.ParameterList<>(compatible);
+      });
+   }
+
+   @Unique
+   private static Set<ResourceKey<Biome>> discoverBaseVanillaBiomes() {
+      Set<ResourceKey<Biome>> found = new HashSet<>();
+      for (Field field : Biomes.class.getFields()) {
+         if (!Modifier.isStatic(field.getModifiers()) || !ResourceKey.class.isAssignableFrom(field.getType())) {
+            continue;
+         }
+         try {
+            Object value = field.get(null);
+            if (value instanceof ResourceKey<?> key) {
+               @SuppressWarnings("unchecked")
+               ResourceKey<Biome> biomeKey = (ResourceKey<Biome>)key;
+               found.add(biomeKey);
+            }
+         } catch (IllegalAccessException exception) {
+            throw new ExceptionInInitializerError(exception);
+         }
+      }
+      return Collections.unmodifiableSet(found);
    }
 
    private ClimateLayers.TerrainKind surfaceTerrain(ClimateLayers layers, int blockX, int blockZ) {
@@ -728,7 +980,10 @@ public abstract class TerrainBiomeMixin {
    }
 
    private static boolean isVanillaBiome(Holder<Biome> biome) {
-      return biome.unwrapKey().map(key -> "minecraft".equals(key.location().getNamespace())).orElse(false);
+      // Namespace alone is insufficient: backport mods register new candidates
+      // such as minecraft:pale_garden. Only keys declared by the Minecraft 1.21.1
+      // Biomes class belong to the base climate tree.
+      return biome.unwrapKey().map(earthshape$baseVanillaBiomes::contains).orElse(false);
    }
 
    private static boolean isVanillaRiver(Holder<Biome> biome) {
