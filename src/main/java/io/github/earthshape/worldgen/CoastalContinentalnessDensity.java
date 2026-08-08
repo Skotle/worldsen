@@ -106,6 +106,17 @@ public record CoastalContinentalnessDensity(DensityFunction argument) implements
       if (smallIsland && mappedLand && !riverWater && mouthOpening <= 0.001) {
          guided = Math.min(0.14, guided);
       }
+      // Terralith's replacement offset/factor splines become amplified-world
+      // terrain above the ordinary mid-inland C range (their values rise as
+      // high as 1.5 and 20). Keep EarthShape's mapped relief, E and W control,
+      // but prevent a harmless retained vanilla C lobe from entering that
+      // extreme branch. Mountains receive a little more headroom than plains.
+      if (EarthShapeCompatibility.isTerralithLoaded()
+         && mappedLand && !riverWater && mouthOpening <= 0.001) {
+         double relief = ClimateLayers.INSTANCE.terrainRelief(context.blockX(), context.blockZ());
+         double terralithCap = 0.30 + 0.08 * smoothstep(relief);
+         guided = Math.min(terralithCap, guided);
+      }
       return guided;
    }
 

@@ -37,8 +37,15 @@ public record RiverWeirdnessDensity(DensityFunction argument) implements Density
             == ClimateLayers.TerrainKind.MOUNTAIN) {
          double relief = ClimateLayers.INSTANCE.terrainRelief(context.blockX(), context.blockZ());
          if (relief > 0.0) {
-            double target = weirdness < 0.0 ? -0.67 : 0.67;
-            weirdness = lerp(weirdness, target, Math.min(0.72, relief * 0.72));
+            boolean terralith = EarthShapeCompatibility.isTerralithLoaded();
+            // Terralith applies a second, much stronger jaggedness/factor spline
+            // to W/PV. Its full peak centre combined with EarthShape's broad
+            // mountain mask resembles amplified world generation, so retain a
+            // high-slope PV value without forcing every centre to PV~=1.
+            double peakTarget = terralith ? 0.55 : 0.67;
+            double maximumGuidance = terralith ? 0.48 : 0.72;
+            double target = weirdness < 0.0 ? -peakTarget : peakTarget;
+            weirdness = lerp(weirdness, target, Math.min(maximumGuidance, relief * maximumGuidance));
          }
       }
 

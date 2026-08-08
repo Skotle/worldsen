@@ -39,8 +39,22 @@ public record TerrainErosionDensity(DensityFunction argument) implements Density
          double relief = ClimateLayers.INSTANCE.terrainRelief(context.blockX(), context.blockZ());
          double coverage = smoothstep(Math.min(1.0, relief * 2.0));
          double mountain = smoothstep(Math.max(0.0, (relief - 0.5) * 2.0));
-         double target = -0.55 - 0.30 * mountain;
+         // Terralith has several large offset/factor steps between E=-0.55 and
+         // E=-0.85. Letting the distance-based mountain relief cross all of
+         // them produces concentric plateaus whose centre can approach Y=200.
+         // Stay inside one mountain band when Terralith owns the final density;
+         // vanilla keeps the full erosion range.
+         double mountainErosionSpan = EarthShapeCompatibility.isTerralithLoaded() ? 0.08 : 0.30;
+         double target = -0.55 - mountainErosionSpan * mountain;
          terrainGuided = lerp(vanilla, Math.min(vanilla, target), coverage);
+         if (EarthShapeCompatibility.isTerralithLoaded()) {
+            // Math.min above deliberately preserves a more mountainous vanilla
+            // sample. Under Terralith that can still fall through to E=-1 and
+            // re-enter the extreme spline, so raise the lower bound gradually
+            // with mapped mountain coverage instead of clipping its boundary.
+            double safeLowerBound = lerp(-1.0, -0.65, coverage);
+            terrainGuided = Math.max(safeLowerBound, terrainGuided);
+         }
 
          // Blend the desert correction through the pre-smoothed class mask.
          // The old categorical E=0.30 assignment formed an abrupt step at every
