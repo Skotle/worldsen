@@ -125,7 +125,11 @@ public final class RiversMask {
       RiversMask.ScalarSampleCache cache = this.coastalLandnessCache.get();
       int slot = RiversMask.ScalarSampleCache.slot(blockX, blockZ);
       if (cache.data == loaded && cache.x[slot] == blockX && cache.z[slot] == blockZ) return cache.value[slot];
-      double value = this.sampleBytes(loaded, loaded.coastalLandness, blockX, blockZ);
+      // The authoritative coastline is displaced by coastWarpNoise in
+      // sampleExactLand. Read its transition field through the same coordinate
+      // transform; otherwise the height fade can finish beside the old raster
+      // edge and restore inland relief directly against the new water edge.
+      double value = this.sampleCoastAlignedBytes(loaded, loaded.coastalLandness, blockX, blockZ);
       cache.set(loaded, slot, blockX, blockZ, value);
       return value;
    }
@@ -140,7 +144,7 @@ public final class RiversMask {
       RiversMask.Data loaded = this.data();
       if (this.sampleExactLand(loaded, blockX, blockZ) >= 0.5) return 0.0;
       // Values use three units per source pixel (4 on a diagonal).
-      return this.sampleBytes(loaded, loaded.oceanDistance, blockX, blockZ)
+      return this.sampleCoastAlignedBytes(loaded, loaded.oceanDistance, blockX, blockZ)
          * 255.0 / 3.0 * (double)this.blocksPerPixel();
    }
 
@@ -226,6 +230,28 @@ public final class RiversMask {
    private double sampleBytes(RiversMask.Data loaded, byte[] values, int blockX, int blockZ) {
       double imageX = this.mapImageX(blockX, loaded);
       double imageZ = this.mapImageZ(blockZ, loaded);
+      return sampleBytesAt(loaded, values, imageX, imageZ);
+   }
+
+   private double sampleCoastAlignedBytes(RiversMask.Data loaded, byte[] values, int blockX, int blockZ) {
+      double imageX = this.mapImageX(blockX, loaded);
+      double imageZ = this.mapImageZ(blockZ, loaded);
+      int originalX = (int)Math.floor(imageX);
+      int originalZ = (int)Math.floor(imageZ);
+      boolean nearRiver = originalX >= 0
+         && originalZ >= 0
+         && originalX < loaded.width
+         && originalZ < loaded.height
+         && loaded.riverInfluence.get(originalZ * loaded.width + originalX);
+      if (!nearRiver) {
+         double amplitudePixels = 0.38;
+         imageX += coastWarpNoise(blockX, blockZ, 0x243F6A8885A308D3L) * amplitudePixels;
+         imageZ += coastWarpNoise(blockX, blockZ, 0x13198A2E03707344L) * amplitudePixels;
+      }
+      return sampleBytesAt(loaded, values, imageX, imageZ);
+   }
+
+   private static double sampleBytesAt(RiversMask.Data loaded, byte[] values, double imageX, double imageZ) {
       if (!(imageX < 0.0) && !(imageZ < 0.0) && !(imageX >= (double)(loaded.width - 1)) && !(imageZ >= (double)(loaded.height - 1))) {
          int x = (int)Math.floor(imageX);
          int z = (int)Math.floor(imageZ);

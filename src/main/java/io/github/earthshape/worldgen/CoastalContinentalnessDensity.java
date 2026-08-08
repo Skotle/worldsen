@@ -25,7 +25,8 @@ public record CoastalContinentalnessDensity(DensityFunction argument) implements
    public double compute(FunctionContext context) {
       double vanilla = this.argument.compute(context);
       if (EarthShapeCompatibility.disablesWorldgen() || !(Boolean)EarthShapeServerConfig.CONTINENTS_ENABLED.get()) return vanilla;
-      double t = RiversMask.INSTANCE.sampleCoastalLandness(context.blockX(), context.blockZ());
+      double coastalLandness = RiversMask.INSTANCE.sampleCoastalLandness(context.blockX(), context.blockZ());
+      double t = coastalLandness;
       t = t * t * (3.0 - 2.0 * t);
       boolean mappedLand = RiversMask.INSTANCE.sampleLand(context.blockX(), context.blockZ()) >= 0.5;
       // Inland-river handling intentionally stops at a mouth so the biome can
@@ -79,6 +80,18 @@ public record CoastalContinentalnessDensity(DensityFunction argument) implements
          guided = applyRiverBankHeightLimit(
             context.blockX(), context.blockZ(), guided,
             riverBank || riverWater ? -0.10 : minimumLandContinentalness
+         );
+      }
+      // Land/ocean classification changes at one exact contour, but its height
+      // signal must not recover at that same step. Start dry land at its normal
+      // minimum and return the guided C field with a zero-slope curve across the
+      // already blurred coast field. This prevents a narrow continentalness
+      // ridge from following otherwise flat shorelines.
+      if (mappedLand && !riverBank && !riverWater && mouthOpening <= 0.001) {
+         double inlandRecovery = smootherstep((coastalLandness - 0.48) / 0.44);
+         guided = Math.max(
+            minimumLandContinentalness,
+            lerp(minimumLandContinentalness, guided, inlandRecovery)
          );
       }
       // Apply the requested one-block baseline lift after all terrain and bank
@@ -207,6 +220,11 @@ public record CoastalContinentalnessDensity(DensityFunction argument) implements
    private static double smoothstep(double value) {
       double clamped = Math.max(0.0, Math.min(1.0, value));
       return clamped * clamped * (3.0 - 2.0 * clamped);
+   }
+
+   private static double smootherstep(double value) {
+      double clamped = Math.max(0.0, Math.min(1.0, value));
+      return clamped * clamped * clamped * (clamped * (clamped * 6.0 - 15.0) + 10.0);
    }
 
    private static double lerp(double from, double to, double amount) {

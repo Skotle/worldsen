@@ -7,6 +7,8 @@ import io.github.earthshape.map.RiversMask;
 import io.github.earthshape.worldgen.BiomeLookupCache;
 import io.github.earthshape.worldgen.FilteredParameterCache;
 import io.github.earthshape.worldgen.AdditionalBiomeRegistry;
+import io.github.earthshape.worldgen.AdditionalBiomeRegistry.Hydrology;
+import io.github.earthshape.worldgen.AdditionalBiomeRegistry.LayerKey;
 import io.github.earthshape.worldgen.EarthShapeFinalBiomeResolver;
 import io.github.earthshape.worldgen.ExternalBiomeCapture;
 import net.minecraft.core.Holder;
@@ -255,7 +257,7 @@ public abstract class TerrainBiomeMixin implements EarthShapeFinalBiomeResolver 
             return this.findBiome(Biomes.FROZEN_RIVER, river);
          }
          Holder<Biome> additionalRiver = layerTemperature > 0.2 && regionalVariant(blockX, blockZ) % 3 == 0
-            ? this.additionalTaggedBiome(Tags.Biomes.IS_RIVER, blockX, blockZ, false, false)
+            ? this.additionalLayerBiome(terrain, trees, layerTemperature, Hydrology.RIVER, false, false, false, blockX, blockZ)
             : null;
          return additionalRiver != null
             && !additionalRiver.is(Tags.Biomes.IS_OCEAN)
@@ -318,9 +320,11 @@ public abstract class TerrainBiomeMixin implements EarthShapeFinalBiomeResolver 
          && (layers.isUltraMountain(blockX, blockZ) || layers.isPolarTemperatureZone(blockX, blockZ));
       if (surfaceClimateAllowed && regionalVariant(blockX, blockZ) % 3 != 0) {
          Holder<Biome> additional = beachEligible
-            ? this.additionalTaggedBiome(Tags.Biomes.IS_BEACH, blockX, blockZ, snowBiomeAllowed, snowBiomeAllowed)
+            ? this.additionalLayerBiome(selectedTerrain, trees, layerTemperature, Hydrology.COAST, snowBiomeAllowed, frozenPeaksAllowed,
+               layers.isMesaRegion(blockX, blockZ), blockX, blockZ)
             : this.additionalTerrainBiome(
                selectedTerrain,
+               trees,
                layerTemperature,
                snowBiomeAllowed,
                frozenPeaksAllowed,
@@ -633,6 +637,7 @@ public abstract class TerrainBiomeMixin implements EarthShapeFinalBiomeResolver 
       int layerX = unpackX(layerPoint);
       int layerZ = unpackZ(layerPoint);
       ClimateLayers.TerrainKind terrain = this.surfaceTerrain(layers, blockX, blockZ);
+      ClimateLayers.TreeCover trees = layers.treeCover(layerX, layerZ);
       double temperature = layers.temperature(layerX, layerZ);
       boolean snowAllowed = allowsSnow(terrain, blockY, temperature);
       boolean frozenPeaksAllowed = layers.mountainRegionHeightScale(blockX, blockZ) >= 0.55
@@ -644,8 +649,9 @@ public abstract class TerrainBiomeMixin implements EarthShapeFinalBiomeResolver 
       // an occasional terrain-specific transition instead of exposing the mask.
       boolean beachPatch = regionalVariant(blockX, blockZ) % 5 == 0;
       if (!nextToLayerRiver && beachPatch && isCoastalLand(blockX, blockZ)) {
-         Holder<Biome> additionalBeach = this.additionalTaggedBiome(
-            Tags.Biomes.IS_BEACH, blockX, blockZ, snowAllowed, snowAllowed
+         Holder<Biome> additionalBeach = this.additionalLayerBiome(
+            terrain, trees, temperature, Hydrology.COAST, snowAllowed, frozenPeaksAllowed,
+            terrain == ClimateLayers.TerrainKind.DESERT && layers.isMesaRegion(blockX, blockZ), blockX, blockZ
          );
          if (additionalBeach != null) {
             return additionalBeach;
@@ -660,7 +666,7 @@ public abstract class TerrainBiomeMixin implements EarthShapeFinalBiomeResolver 
          }
       }
       Holder<Biome> additionalBiome = this.additionalTerrainBiome(
-         terrain, temperature, snowAllowed, frozenPeaksAllowed, blockX, blockZ
+         terrain, trees, temperature, snowAllowed, frozenPeaksAllowed, blockX, blockZ
       );
       if (additionalBiome != null) return additionalBiome;
       return switch (terrain) {
@@ -713,7 +719,8 @@ public abstract class TerrainBiomeMixin implements EarthShapeFinalBiomeResolver 
    private Holder<Biome> oceanBiome(double temperature, int blockX, int blockZ, Holder<Biome> fallback) {
       boolean deep = isOpenOcean(blockX, blockZ);
       Holder<Biome> additionalOcean = regionalVariant(blockX, blockZ) % 3 != 0
-         ? this.additionalTaggedBiome(Tags.Biomes.IS_OCEAN, blockX, blockZ, true, temperature <= -0.5)
+         ? this.additionalLayerBiome(ClimateLayers.TerrainKind.WATER, ClimateLayers.TreeCover.NONE, temperature,
+            Hydrology.OCEAN, temperature <= -0.5, false, false, blockX, blockZ)
          : null;
       if (additionalOcean != null) return additionalOcean;
       if (temperature > 0.65) {
@@ -859,6 +866,7 @@ public abstract class TerrainBiomeMixin implements EarthShapeFinalBiomeResolver 
     */
    private Holder<Biome> additionalTerrainBiome(
       ClimateLayers.TerrainKind terrain,
+      ClimateLayers.TreeCover trees,
       double temperature,
       boolean snowAllowed,
       boolean frozenPeaksAllowed,
@@ -867,48 +875,28 @@ public abstract class TerrainBiomeMixin implements EarthShapeFinalBiomeResolver 
    ) {
       if (!AdditionalBiomeRegistry.hasAdditionalBiomes()) return null;
       if (regionalVariant(blockX, blockZ) % 3 == 0) return null;
-      return switch (terrain) {
-         case DESERT -> this.additionalDesertBiome(blockX, blockZ);
-         case WETLAND -> this.additionalTaggedBiome(Tags.Biomes.IS_SWAMP, blockX, blockZ, snowAllowed, snowAllowed);
-         case JUNGLE -> this.additionalTaggedBiome(Tags.Biomes.IS_JUNGLE, blockX, blockZ, false, false);
-         case FOREST -> this.additionalTaggedBiome(
-            temperature < -0.2 ? Tags.Biomes.IS_TAIGA : Tags.Biomes.IS_FOREST,
-            blockX, blockZ, snowAllowed, snowAllowed
-         );
-         case HILLS -> this.additionalTaggedBiome(
-            Tags.Biomes.IS_MOUNTAIN_SLOPE, blockX, blockZ, snowAllowed, snowAllowed
-         );
-         case MOUNTAIN -> this.additionalTaggedBiome(
-            Tags.Biomes.IS_MOUNTAIN_PEAK, blockX, blockZ, frozenPeaksAllowed, frozenPeaksAllowed
-         );
-         case WATER -> this.additionalTaggedBiome(Tags.Biomes.IS_OCEAN, blockX, blockZ, true, temperature <= -0.5);
-         case PLAINS, CITY, SURROUNDING -> this.additionalTaggedBiome(
-            temperature > 0.4 ? Tags.Biomes.IS_SAVANNA : Tags.Biomes.IS_PLAINS,
-            blockX, blockZ, snowAllowed, snowAllowed
-         );
-      };
-   }
-
-   private Holder<Biome> additionalDesertBiome(int blockX, int blockZ) {
-      Holder<Biome> candidate = this.additionalTaggedBiome(
-         ClimateLayers.INSTANCE.isMesaRegion(blockX, blockZ) ? Tags.Biomes.IS_BADLANDS : Tags.Biomes.IS_DESERT,
-         blockX, blockZ, false, false
+      Hydrology hydrology = terrain == ClimateLayers.TerrainKind.WATER ? Hydrology.OCEAN : Hydrology.LAND;
+      Holder<Biome> candidate = this.additionalLayerBiome(
+         terrain, trees, temperature, hydrology, snowAllowed, terrain == ClimateLayers.TerrainKind.MOUNTAIN,
+         terrain == ClimateLayers.TerrainKind.DESERT && ClimateLayers.INSTANCE.isMesaRegion(blockX, blockZ), blockX, blockZ
       );
-      return candidate != null && isStrictDesertCandidate(candidate) ? candidate : null;
+      return terrain == ClimateLayers.TerrainKind.DESERT && candidate != null && !isStrictDesertCandidate(candidate) ? null : candidate;
    }
 
-   private Holder<Biome> additionalTaggedBiome(
-      TagKey<Biome> tag,
+   private Holder<Biome> additionalLayerBiome(
+      ClimateLayers.TerrainKind terrain,
+      ClimateLayers.TreeCover trees,
+      double temperature,
+      Hydrology hydrology,
+      boolean snowAllowed,
+      boolean fullMountainPeak,
+      boolean mesa,
       int blockX,
-      int blockZ,
-      boolean allowSnow,
-      boolean preferSnow
+      int blockZ
    ) {
       return AdditionalBiomeRegistry.select(
-         tag,
-         regionalVariant(blockX, blockZ),
-         allowSnow,
-         preferSnow
+         LayerKey.of(terrain, trees, temperature, hydrology, snowAllowed, fullMountainPeak, mesa),
+         regionalVariant(blockX, blockZ)
       );
    }
 
