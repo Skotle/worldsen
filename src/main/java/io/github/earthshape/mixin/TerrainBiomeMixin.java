@@ -12,7 +12,9 @@ import io.github.earthshape.worldgen.AdditionalBiomeRegistry.LayerKey;
 import io.github.earthshape.worldgen.EarthShapeFinalBiomeResolver;
 import io.github.earthshape.worldgen.ExternalBiomeCapture;
 import net.minecraft.core.Holder;
+import net.minecraft.core.registries.Registries;
 import net.minecraft.resources.ResourceKey;
+import net.minecraft.resources.ResourceLocation;
 import net.minecraft.tags.TagKey;
 import net.minecraft.world.level.biome.Biome;
 import net.minecraft.world.level.biome.Biomes;
@@ -55,9 +57,19 @@ public abstract class TerrainBiomeMixin implements EarthShapeFinalBiomeResolver 
    @Unique
    private static final ConcurrentHashMap<Climate.ParameterList<Holder<Biome>>, Climate.ParameterList<Holder<Biome>>> earthshape$terralithCaveParameterLists = new ConcurrentHashMap<>();
    @Unique
+   private static final ConcurrentHashMap<Climate.ParameterList<Holder<Biome>>, Boolean> earthshape$overworldParameterLists = new ConcurrentHashMap<>();
+   @Unique
    private static final ConcurrentHashMap<Climate.ParameterList<Holder<Biome>>, Map<ResourceKey<Biome>, Holder<Biome>>> earthshape$exactBiomes = new ConcurrentHashMap<>();
    @Unique
    private static final Set<ResourceKey<Biome>> earthshape$baseVanillaBiomes = discoverBaseVanillaBiomes();
+   @Unique
+   private static final ResourceKey<Biome> earthshape$bopGlowingGrotto = ResourceKey.create(
+      Registries.BIOME, ResourceLocation.fromNamespaceAndPath("biomesoplenty", "glowing_grotto")
+   );
+   @Unique
+   private static final ResourceKey<Biome> earthshape$bopSpiderNest = ResourceKey.create(
+      Registries.BIOME, ResourceLocation.fromNamespaceAndPath("biomesoplenty", "spider_nest")
+   );
    @Unique
    private static final ThreadLocal<BiomeLookupCache> earthshape$lookupCache = ThreadLocal.withInitial(BiomeLookupCache::new);
 
@@ -93,6 +105,9 @@ public abstract class TerrainBiomeMixin implements EarthShapeFinalBiomeResolver 
       if (EarthShapeCompatibility.disablesWorldgen()) {
          return discardedExternalResult;
       }
+      if (!this.earthshape$isOverworldSource()) {
+         return discardedExternalResult;
+      }
 
       ClimateLayers layers = ClimateLayers.INSTANCE;
       Climate.TargetPoint source = sampler.sample(quartX, quartY, quartZ);
@@ -109,6 +124,9 @@ public abstract class TerrainBiomeMixin implements EarthShapeFinalBiomeResolver 
             && isSnowBiome(baseVanilla)
             ? this.undergroundNonSnowBiome(layers, blockX, blockZ, baseVanilla)
             : baseVanilla;
+         if (isVanillaBiome(selected)) {
+            selected = this.biomesOPlentyUndergroundBiome(source, selected);
+         }
       } else if ((Boolean)EarthShapeServerConfig.TERRAIN_BIOMES_ENABLED.get()) {
          boolean mappedWater = RiversMask.INSTANCE.sampleLayerLand(blockX, blockZ) < 0.5;
          if (mappedWater || layers.hasTerrainCoverage(layerX, layerZ)
@@ -256,9 +274,9 @@ public abstract class TerrainBiomeMixin implements EarthShapeFinalBiomeResolver 
          if (frozenRiver) {
             return this.findBiome(Biomes.FROZEN_RIVER, river);
          }
-         Holder<Biome> additionalRiver = layerTemperature > 0.2 && regionalVariant(blockX, blockZ) % 3 == 0
-            ? this.additionalLayerBiome(terrain, trees, layerTemperature, Hydrology.RIVER, false, false, false, blockX, blockZ)
-            : null;
+         Holder<Biome> additionalRiver = this.additionalLayerBiome(
+            terrain, trees, layerTemperature, Hydrology.RIVER, false, false, false, blockX, blockZ
+         );
          return additionalRiver != null
             && !additionalRiver.is(Tags.Biomes.IS_OCEAN)
             && !additionalRiver.is(Tags.Biomes.IS_SNOWY)
@@ -318,7 +336,7 @@ public abstract class TerrainBiomeMixin implements EarthShapeFinalBiomeResolver 
          && selectedTerrain == ClimateLayers.TerrainKind.MOUNTAIN
          && largeMountainSystem
          && (layers.isUltraMountain(blockX, blockZ) || layers.isPolarTemperatureZone(blockX, blockZ));
-      if (surfaceClimateAllowed && regionalVariant(blockX, blockZ) % 3 != 0) {
+      if (surfaceClimateAllowed) {
          Holder<Biome> additional = beachEligible
             ? this.additionalLayerBiome(selectedTerrain, trees, layerTemperature, Hydrology.COAST, snowBiomeAllowed, frozenPeaksAllowed,
                layers.isMesaRegion(blockX, blockZ), blockX, blockZ)
@@ -608,6 +626,37 @@ public abstract class TerrainBiomeMixin implements EarthShapeFinalBiomeResolver 
       };
    }
 
+   /**
+    * Restores the two Overworld cave parameter points registered by BOP's
+    * BOPOverworldBiomeBuilder. EarthShape supplies an inert TerraBlender API, so
+    * BOP can load safely but its Region consumer is intentionally not forwarded
+    * into the surface biome table. Recreate only its original underground points:
+    * depth 0.2..0.9, with far-inland continentalness for spider_nest and high
+    * humidity for glowing_grotto. A previously selected modded cave (notably a
+    * Terralith cave) is never replaced by this method.
+    */
+   private Holder<Biome> biomesOPlentyUndergroundBiome(Climate.TargetPoint source, Holder<Biome> fallback) {
+      if (!EarthShapeCompatibility.isBiomesOPlentyLoaded()) {
+         return fallback;
+      }
+
+      float depth = Climate.unquantizeCoord(source.depth());
+      if (depth < 0.2F || depth > 0.9F) {
+         return fallback;
+      }
+
+      float continentalness = Climate.unquantizeCoord(source.continentalness());
+      if (continentalness >= 0.8F) {
+         return this.findBiome(earthshape$bopSpiderNest, fallback);
+      }
+
+      float humidity = Climate.unquantizeCoord(source.humidity());
+      if (humidity >= 0.7F) {
+         return this.findBiome(earthshape$bopGlowingGrotto, fallback);
+      }
+      return fallback;
+   }
+
    private Holder<Biome> applyLayerBiome(ClimateLayers layers, int blockX, int blockY, int blockZ, Holder<Biome> current) {
       // Biome lookup occurs for all vertical noise cells. Do not let the river column
       // below Y=48 fall back to a vanilla ocean biome.
@@ -718,10 +767,10 @@ public abstract class TerrainBiomeMixin implements EarthShapeFinalBiomeResolver 
 
    private Holder<Biome> oceanBiome(double temperature, int blockX, int blockZ, Holder<Biome> fallback) {
       boolean deep = isOpenOcean(blockX, blockZ);
-      Holder<Biome> additionalOcean = regionalVariant(blockX, blockZ) % 3 != 0
-         ? this.additionalLayerBiome(ClimateLayers.TerrainKind.WATER, ClimateLayers.TreeCover.NONE, temperature,
-            Hydrology.OCEAN, temperature <= -0.5, false, false, blockX, blockZ)
-         : null;
+      Holder<Biome> additionalOcean = this.additionalLayerBiome(
+         ClimateLayers.TerrainKind.WATER, ClimateLayers.TreeCover.NONE, temperature,
+         Hydrology.OCEAN, temperature <= -0.5, false, false, blockX, blockZ
+      );
       if (additionalOcean != null) return additionalOcean;
       if (temperature > 0.65) {
          return this.findBiome(Biomes.WARM_OCEAN, fallback);
@@ -874,7 +923,6 @@ public abstract class TerrainBiomeMixin implements EarthShapeFinalBiomeResolver 
       int blockZ
    ) {
       if (!AdditionalBiomeRegistry.hasAdditionalBiomes()) return null;
-      if (regionalVariant(blockX, blockZ) % 3 == 0) return null;
       Hydrology hydrology = terrain == ClimateLayers.TerrainKind.WATER ? Hydrology.OCEAN : Hydrology.LAND;
       Holder<Biome> candidate = this.additionalLayerBiome(
          terrain, trees, temperature, hydrology, snowAllowed, terrain == ClimateLayers.TerrainKind.MOUNTAIN,
@@ -911,6 +959,13 @@ public abstract class TerrainBiomeMixin implements EarthShapeFinalBiomeResolver 
          // a defensive fallback for nonstandard biome sources without crashing.
          return vanilla.isEmpty() ? source : new Climate.ParameterList<>(vanilla);
       });
+   }
+
+   @Unique
+   private boolean earthshape$isOverworldSource() {
+      Climate.ParameterList<Holder<Biome>> parameters = this.parameters();
+      return earthshape$overworldParameterLists.computeIfAbsent(parameters, source -> source.values().stream()
+         .anyMatch(entry -> entry.getSecond().is(Biomes.PLAINS) || entry.getSecond().is(Biomes.OCEAN)));
    }
 
    @Unique

@@ -1,9 +1,12 @@
 package io.github.earthshape;
 
 import java.util.LinkedHashSet;
+import java.util.HashMap;
+import java.util.IdentityHashMap;
 import java.util.Map;
 import java.util.Set;
 import net.neoforged.fml.ModList;
+import net.minecraft.world.level.levelgen.SurfaceRules;
 
 public final class EarthShapeCompatibility {
    // External biome selectors are allowed to initialize and calculate normally.
@@ -13,6 +16,9 @@ public final class EarthShapeCompatibility {
    private static volatile Set<String> conflicts = Set.of();
    private static volatile boolean terralithLoaded;
    private static volatile boolean terraBlenderLoaded;
+   private static volatile boolean biomesOPlentyLoaded;
+   private static final Map<String, IdentityHashMap<SurfaceRules.RuleSource, SurfaceRules.RuleSource>> BOP_SURFACE_CACHE = new HashMap<>();
+   private static final Set<String> BOP_SURFACE_LOGGED = new LinkedHashSet<>();
 
    private EarthShapeCompatibility() {
    }
@@ -20,6 +26,7 @@ public final class EarthShapeCompatibility {
    public static void initialize() {
       terralithLoaded = ModList.get().isLoaded("terralith");
       terraBlenderLoaded = hasRealTerraBlenderImplementation();
+      biomesOPlentyLoaded = ModList.get().isLoaded("biomesoplenty");
       Set<String> found = new LinkedHashSet<>();
 
       for (String modId : HARD_WORLDGEN_MODS) {
@@ -37,13 +44,19 @@ public final class EarthShapeCompatibility {
       if (terralithLoaded) {
          disableIncompatibleTerralithTerrainModules();
          EarthShape.LOGGER
-            .info("[EarthShape] Terralith compatibility active: EarthShape owns C/E/W and final surface placement; tagged Terralith surface/cave biomes, features, carvers and surface rules remain available.");
+            .info("[EarthShape] Terralith compatibility active: EarthShape owns C/E/W, disables amplified arch/dune/spike/cliff density additions, and retains tagged Terralith biomes, surface rules, caves, features and structures.");
       }
 
       if (terraBlenderLoaded) {
          EarthShape.LOGGER.info("[EarthShape] TerraBlender detected: regions may initialize, but EarthShape replaces the completed Overworld biome result at final return.");
       } else if (ModList.get().isLoaded("terrablender")) {
          EarthShape.LOGGER.info("[EarthShape] inert TerraBlender API compatibility active; TerraBlender world generation is not installed.");
+      }
+
+      if (biomesOPlentyLoaded) {
+         EarthShape.LOGGER.info(
+            "[EarthShape] Biomes O' Plenty compatibility active: original glowing_grotto and spider_nest underground climate ranges are restored without enabling TerraBlender's surface selector."
+         );
       }
 
       if (ModList.get().isLoaded("climaterivers") || ModList.get().isLoaded("climate_rivers")) {
@@ -57,6 +70,48 @@ public final class EarthShapeCompatibility {
 
    public static boolean isTerralithLoaded() {
       return terralithLoaded;
+   }
+
+   public static boolean isBiomesOPlentyLoaded() {
+      return biomesOPlentyLoaded;
+   }
+
+   /**
+    * Restores BOP's biome-conditional Overworld surface rules after EarthShape
+    * removes TerraBlender's positional biome wrapper. The BOP rule returns no
+    * state outside BOP biomes, so the vanilla/Terralith base remains authoritative
+    * everywhere else.
+    */
+   public static SurfaceRules.RuleSource compatibleSurfaceRules(SurfaceRules.RuleSource base, String dimensionMethod) {
+      if (!biomesOPlentyLoaded) {
+         return base;
+      }
+      synchronized (EarthShapeCompatibility.class) {
+         IdentityHashMap<SurfaceRules.RuleSource, SurfaceRules.RuleSource> cache = BOP_SURFACE_CACHE.computeIfAbsent(
+            dimensionMethod, ignored -> new IdentityHashMap<>()
+         );
+         SurfaceRules.RuleSource cached = cache.get(base);
+         if (cached != null) {
+            return cached;
+         }
+         try {
+            Class<?> rulesClass = Class.forName(
+               "biomesoplenty.worldgen.BOPSurfaceRuleData", true, EarthShapeCompatibility.class.getClassLoader()
+            );
+            SurfaceRules.RuleSource bop = (SurfaceRules.RuleSource)rulesClass.getMethod(dimensionMethod).invoke(null);
+            SurfaceRules.RuleSource combined = SurfaceRules.sequence(bop, base);
+            cache.put(base, combined);
+            if (BOP_SURFACE_LOGGED.add(dimensionMethod)) {
+               EarthShape.LOGGER.info("[EarthShape] Biomes O' Plenty {} surface rules restored ahead of the base rules.", dimensionMethod);
+            }
+            return combined;
+         } catch (ReflectiveOperationException | LinkageError exception) {
+            if (BOP_SURFACE_LOGGED.add(dimensionMethod)) {
+               EarthShape.LOGGER.warn("[EarthShape] Could not restore Biomes O' Plenty {} surface rules; retaining the base rule.", dimensionMethod, exception);
+            }
+            return base;
+         }
+      }
    }
 
    public static boolean isTerraBlenderLoaded() {

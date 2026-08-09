@@ -15,6 +15,7 @@ import net.minecraft.core.Holder;
 import net.minecraft.core.Registry;
 import net.minecraft.core.registries.Registries;
 import net.minecraft.resources.ResourceKey;
+import net.minecraft.resources.ResourceLocation;
 import net.minecraft.tags.TagKey;
 import net.minecraft.world.level.biome.Biome;
 import net.minecraft.world.level.biome.BiomeSource;
@@ -30,6 +31,9 @@ import net.neoforged.neoforge.event.server.ServerStoppingEvent;
  * after server start, so chunk workers only perform constant-time reads.
  */
 public final class AdditionalBiomeRegistry {
+   private static final TagKey<Biome> IS_CONIFEROUS = TagKey.create(
+      Registries.BIOME, ResourceLocation.fromNamespaceAndPath("c", "is_tree/coniferous")
+   );
    private static final List<TagKey<Biome>> CLASSIFICATION_TAGS = List.of(
       Tags.Biomes.IS_DESERT,
       Tags.Biomes.IS_BADLANDS,
@@ -51,7 +55,7 @@ public final class AdditionalBiomeRegistry {
 
    private static volatile Map<TagKey<Biome>, CandidatePool> pools = Map.of();
    private static volatile List<Holder<Biome>> allBiomes = List.of();
-   private static final ConcurrentHashMap<LayerKey, List<Holder<Biome>>> layerPools = new ConcurrentHashMap<>();
+   private static final ConcurrentHashMap<LayerKey, LayerCandidatePool> layerPools = new ConcurrentHashMap<>();
 
    public enum Hydrology {
       LAND,
@@ -104,18 +108,40 @@ public final class AdditionalBiomeRegistry {
    }
 
    public static Holder<Biome> select(LayerKey key, int variant) {
-      List<Holder<Biome>> candidates = layerPools.computeIfAbsent(key, AdditionalBiomeRegistry::buildLayerPool);
-      if (candidates.isEmpty()) return null;
+      LayerCandidatePool pool = layerPools.computeIfAbsent(key, AdditionalBiomeRegistry::buildLayerPool);
+      if (pool.all().isEmpty()) return null;
+      // IS_RARE is a placement constraint, not merely descriptive metadata.
+      // Keep the decision on the broad regional variant so rare BOP biomes form
+      // coherent regions rather than quart-sized speckles.
+      boolean rareSlot = Math.floorMod(variant, 11) == 0;
+      List<Holder<Biome>> candidates;
+      if (rareSlot && !pool.bopRare().isEmpty()) {
+         candidates = pool.bopRare();
+      } else if (!rareSlot && pool.regular().isEmpty()) {
+         return null;
+      } else if (!pool.regular().isEmpty()) {
+         candidates = pool.regular();
+      } else {
+         candidates = pool.all();
+      }
       int saltedVariant = variant ^ key.hashCode() * 0x45d9f3b;
       return candidates.get(Math.floorMod(saltedVariant, candidates.size()));
    }
 
-   private static List<Holder<Biome>> buildLayerPool(LayerKey key) {
-      return allBiomes.stream().filter(candidate -> matchesLayerCombination(key, candidate)).toList();
+   private static LayerCandidatePool buildLayerPool(LayerKey key) {
+      List<Holder<Biome>> all = allBiomes.stream()
+         .filter(candidate -> matchesLayerCombination(key, candidate))
+         .toList();
+      return new LayerCandidatePool(
+         all,
+         all.stream().filter(AdditionalBiomeRegistry::isBopRare).toList(),
+         all.stream().filter(candidate -> !isBopRare(candidate)).toList()
+      );
    }
 
    private static boolean matchesLayerCombination(LayerKey key, Holder<Biome> biome) {
       if (!matchesTemperature(key, biome)) return false;
+      if (!matchesBopTagConstraints(key, biome)) return false;
       return switch (key.hydrology()) {
          case CAVE -> (biome.is(Tags.Biomes.IS_CAVE) || biome.is(Tags.Biomes.IS_UNDERGROUND))
             && !isAny(biome, Tags.Biomes.IS_OCEAN, Tags.Biomes.IS_BEACH, Tags.Biomes.IS_RIVER);
@@ -123,7 +149,7 @@ public final class AdditionalBiomeRegistry {
             && !isAny(biome, Tags.Biomes.IS_OCEAN, Tags.Biomes.IS_BEACH, Tags.Biomes.IS_CAVE);
          case OCEAN -> biome.is(Tags.Biomes.IS_OCEAN)
             && !isAny(biome, Tags.Biomes.IS_RIVER, Tags.Biomes.IS_BEACH, Tags.Biomes.IS_CAVE);
-         case COAST -> biome.is(Tags.Biomes.IS_BEACH)
+         case COAST -> (biome.is(Tags.Biomes.IS_BEACH) || bopFamily(biome) == BopFamily.COAST)
             && !isAny(biome, Tags.Biomes.IS_OCEAN, Tags.Biomes.IS_RIVER, Tags.Biomes.IS_CAVE);
          case LAND -> matchesLandFamily(key, biome)
             && !isAny(biome, Tags.Biomes.IS_OCEAN, Tags.Biomes.IS_BEACH, Tags.Biomes.IS_RIVER, Tags.Biomes.IS_CAVE, Tags.Biomes.IS_UNDERGROUND);
@@ -131,6 +157,19 @@ public final class AdditionalBiomeRegistry {
    }
 
    private static boolean matchesLandFamily(LayerKey key, Holder<Biome> biome) {
+      BopFamily bop = bopFamily(biome);
+      if (bop != BopFamily.NONE) {
+         return switch (key.terrain()) {
+            case DESERT -> bop == BopFamily.DESERT;
+            case WETLAND -> bop == BopFamily.WETLAND;
+            case JUNGLE -> bop == BopFamily.JUNGLE;
+            case FOREST -> bop == BopFamily.FOREST;
+            case HILLS -> bop == BopFamily.HILLS;
+            case MOUNTAIN -> bop == BopFamily.MOUNTAIN;
+            case PLAINS, CITY, SURROUNDING -> bop == BopFamily.PLAINS;
+            case WATER -> false;
+         };
+      }
       return switch (key.terrain()) {
          case DESERT -> key.mesa()
             ? biome.is(Tags.Biomes.IS_BADLANDS) && !hasForeignPrimary(biome, Tags.Biomes.IS_BADLANDS)
@@ -164,13 +203,99 @@ public final class AdditionalBiomeRegistry {
    private static boolean matchesTemperature(LayerKey key, Holder<Biome> biome) {
       int band = key.temperatureBand();
       if (!key.snowAllowed() && biome.is(Tags.Biomes.IS_SNOWY)) return false;
-      if (band <= 2 && biome.is(Tags.Biomes.IS_HOT)) return false;
-      if (band >= 6 && (biome.is(Tags.Biomes.IS_COLD) || biome.is(Tags.Biomes.IS_SNOWY))) return false;
+      if (biome.is(Tags.Biomes.IS_HOT) && band < 5) return false;
+      if (biome.is(Tags.Biomes.IS_COLD) && band > 3) return false;
+      if (biome.is(Tags.Biomes.IS_SNOWY) && band > 3 && !key.fullMountainPeak()) return false;
       if (band <= 1 && key.snowAllowed() && key.hydrology() == Hydrology.LAND
          && !biome.is(Tags.Biomes.IS_SNOWY) && !biome.is(Tags.Biomes.IS_COLD)) return false;
+      boolean coldBopDesert = biome.unwrapKey().map(candidate ->
+         "biomesoplenty".equals(candidate.location().getNamespace())
+            && "cold_desert".equals(candidate.location().getPath())
+      ).orElse(false);
       if ((key.terrain() == ClimateLayers.TerrainKind.DESERT || key.terrain() == ClimateLayers.TerrainKind.JUNGLE)
-         && band < 4) return false;
+         && band < 4 && !coldBopDesert) return false;
       return true;
+   }
+
+   /** Applies every BOP 21.1 convention tag that maps to an EarthShape layer. */
+   private static boolean matchesBopTagConstraints(LayerKey key, Holder<Biome> biome) {
+      if (!isBop(biome)) return true;
+
+      ClimateLayers.TerrainKind terrain = key.terrain();
+      ClimateLayers.TreeCover trees = key.trees();
+      boolean cave = key.hydrology() == Hydrology.CAVE;
+      boolean coast = key.hydrology() == Hydrology.COAST;
+      boolean wetTerrain = terrain == ClimateLayers.TerrainKind.WETLAND
+         || terrain == ClimateLayers.TerrainKind.JUNGLE;
+      boolean rugged = terrain == ClimateLayers.TerrainKind.HILLS
+         || terrain == ClimateLayers.TerrainKind.MOUNTAIN;
+
+      if (biome.is(Tags.Biomes.IS_SANDY)
+         && terrain != ClimateLayers.TerrainKind.DESERT && !coast) return false;
+      if (biome.is(Tags.Biomes.IS_AQUATIC)
+         && !wetTerrain && key.hydrology() != Hydrology.RIVER
+         && key.hydrology() != Hydrology.OCEAN && !coast) return false;
+      if (biome.is(Tags.Biomes.IS_PLATEAU) && !rugged) return false;
+      if (biome.is(Tags.Biomes.IS_WASTELAND)
+         && terrain != ClimateLayers.TerrainKind.DESERT && !rugged
+         && !(terrain == ClimateLayers.TerrainKind.PLAINS && trees == ClimateLayers.TreeCover.NONE)) return false;
+
+      if (biome.is(Tags.Biomes.IS_DENSE_VEGETATION) && trees == ClimateLayers.TreeCover.NONE && !cave) return false;
+      if (biome.is(Tags.Biomes.IS_SPARSE_VEGETATION) && trees == ClimateLayers.TreeCover.TROPICAL) return false;
+      if (biome.is(Tags.Biomes.IS_WET) && !wetTerrain
+         && trees == ClimateLayers.TreeCover.NONE && !cave) return false;
+      if (biome.is(Tags.Biomes.IS_DRY) && terrain != ClimateLayers.TerrainKind.DESERT
+         && !rugged && trees != ClimateLayers.TreeCover.NONE) return false;
+      if (biome.is(Tags.Biomes.IS_LUSH) && !wetTerrain
+         && terrain != ClimateLayers.TerrainKind.FOREST
+         && trees == ClimateLayers.TreeCover.NONE && !coast && !cave) return false;
+      if (biome.is(IS_CONIFEROUS) && trees == ClimateLayers.TreeCover.TROPICAL) return false;
+
+      if (biome.is(Tags.Biomes.IS_MUSHROOM)
+         && terrain != ClimateLayers.TerrainKind.JUNGLE && !cave) return false;
+      if (biome.is(Tags.Biomes.IS_SPOOKY)
+         && terrain != ClimateLayers.TerrainKind.FOREST && !cave) return false;
+      if (biome.is(Tags.Biomes.IS_MAGICAL)
+         && terrain != ClimateLayers.TerrainKind.FOREST
+         && terrain != ClimateLayers.TerrainKind.JUNGLE && !rugged && !cave) return false;
+      return true;
+   }
+
+   private static boolean isBop(Holder<Biome> biome) {
+      return biome.unwrapKey().map(key -> "biomesoplenty".equals(key.location().getNamespace())).orElse(false);
+   }
+
+   private static boolean isBopRare(Holder<Biome> biome) {
+      return isBop(biome) && biome.is(Tags.Biomes.IS_RARE);
+   }
+
+   /** BOP 21.1's primary EarthShape family, independent of incomplete common tags. */
+   private static BopFamily bopFamily(Holder<Biome> biome) {
+      return biome.unwrapKey().map(key -> {
+         if (!"biomesoplenty".equals(key.location().getNamespace())) return BopFamily.NONE;
+         return switch (key.location().getPath()) {
+            case "cold_desert", "dryland", "lush_desert", "wasteland", "wasteland_steppe" -> BopFamily.DESERT;
+            case "bayou", "bog", "floodplain", "marsh", "moor", "muskeg", "wetland" -> BopFamily.WETLAND;
+            case "fungal_jungle", "rainforest", "tropics" -> BopFamily.JUNGLE;
+            case "aspen_glade", "auroral_garden", "coniferous_forest", "dead_forest", "fir_clearing",
+                 "forested_field", "jacaranda_glade", "maple_woods", "mediterranean_forest", "mystic_grove",
+                 "old_growth_dead_forest", "old_growth_woodland", "ominous_woods", "pumpkin_patch",
+                 "redwood_forest", "seasonal_forest", "snowblossom_grove", "snowy_coniferous_forest",
+                 "snowy_fir_clearing", "snowy_maple_woods", "woodland" -> BopFamily.FOREST;
+            case "highland", "hot_springs", "rocky_rainforest", "rocky_shrubland" -> BopFamily.HILLS;
+            case "crag", "jade_cliffs", "volcano" -> BopFamily.MOUNTAIN;
+            case "field", "grassland", "lavender_field", "lush_savanna", "orchard", "origin_valley",
+                 "overgrown_greens", "pasture", "prairie", "scrubland", "shrubland", "tundra",
+                 "volcanic_plains", "wintry_origin_valley" -> BopFamily.PLAINS;
+            case "dune_beach", "gravel_beach" -> BopFamily.COAST;
+            case "glowing_grotto", "spider_nest" -> BopFamily.CAVE;
+            default -> BopFamily.NONE;
+         };
+      }).orElse(BopFamily.NONE);
+   }
+
+   private enum BopFamily {
+      NONE, DESERT, WETLAND, JUNGLE, FOREST, HILLS, MOUNTAIN, PLAINS, COAST, CAVE
    }
 
    @SafeVarargs
@@ -265,6 +390,13 @@ public final class AdditionalBiomeRegistry {
       List<Holder<Biome>> all,
       List<Holder<Biome>> snowy,
       List<Holder<Biome>> nonSnowy
+   ) {
+   }
+
+   private record LayerCandidatePool(
+      List<Holder<Biome>> all,
+      List<Holder<Biome>> bopRare,
+      List<Holder<Biome>> regular
    ) {
    }
 }

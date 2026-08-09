@@ -24,7 +24,8 @@ public final class SurfaceAquiferGuardMixin {
       int y = context.blockY();
       // Vanilla sea_level=63 means water blocks end at Y62 and their top face is
       // Y63. Filling Y63 itself raised only mapped rivers one metre above oceans.
-      int riverWaterFloorY = 63 - (Integer)EarthShapeServerConfig.RIVER_MAXIMUM_DEPTH_BLOCKS.get();
+      int riverDepth = Math.min(6, (Integer)EarthShapeServerConfig.RIVER_MAXIMUM_DEPTH_BLOCKS.get());
+      int riverWaterFloorY = 63 - riverDepth;
       // Fill every open cell from the configured channel floor through the
       // highest underwater block Y62. Previously only Y61..63 was guaranteed,
       // which both left deeper carved parts dry and raised the surface by one.

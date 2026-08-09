@@ -529,6 +529,24 @@ public final class ClimateLayers {
                mountainScale = new byte[values.length];
                relief = distanceMountainRelief(values, mountainScale, width, height);
                desertBlend = terrainClassBlend(values, width, height, TerrainKind.DESERT);
+            } else if (kind == ClimateLayers.Kind.TEMPERATURE) {
+               // A one-pixel cold island in a warm ocean is enough for an
+               // iceberg feature, even though the surrounding biome is warm.
+               // Merge undersized connected temperature bands before any
+               // interpolation can expose them as independent biomes.
+               values = removeSmallCategoricalRegions(
+                  values, coverage, width, height,
+                  (Integer)EarthShapeServerConfig.BIOME_MINIMUM_REGION_PIXELS.get()
+               );
+            } else if (kind == ClimateLayers.Kind.VEGETATION) {
+               // Several source colours intentionally map to the same effective
+               // tree-cover family. Normalize first so two temperate colours do
+               // not split one legitimate forest into artificial components.
+               values = normalizeTreeCoverClasses(values);
+               values = removeSmallCategoricalRegions(
+                  values, coverage, width, height,
+                  (Integer)EarthShapeServerConfig.BIOME_MINIMUM_REGION_PIXELS.get()
+               );
             }
 
             EarthShape.LOGGER.info("[EarthShape] {} climate layer loaded: {}x{}.", new Object[]{name, width, height});
@@ -977,6 +995,78 @@ public final class ClimateLayers {
          }
       }
       return result;
+   }
+
+   private static byte[] normalizeTreeCoverClasses(byte[] source) {
+      byte[] normalized = source.clone();
+      for (int index = 0; index < normalized.length; index++) {
+         int value = source[index] & 255;
+         normalized[index] = (byte)(value >= 235 ? 255 : (value >= 150 ? 190 : 0));
+      }
+      return normalized;
+   }
+
+   /** Removes undersized four-connected islands from any categorical layer. */
+   private static byte[] removeSmallCategoricalRegions(
+      byte[] source, byte[] coverage, int width, int height, int minimumArea
+   ) {
+      if (minimumArea <= 1) return source;
+      byte[] result = source.clone();
+      boolean[] visited = new boolean[source.length];
+      TerrainRegionQueue region = new TerrainRegionQueue();
+      int[] neighbours = new int[256];
+
+      for (int start = 0; start < source.length; start++) {
+         if (visited[start]) continue;
+         if ((coverage[start] & 255) == 0) {
+            visited[start] = true;
+            continue;
+         }
+
+         int category = source[start] & 255;
+         region.clear();
+         region.add(start);
+         visited[start] = true;
+         java.util.Arrays.fill(neighbours, 0);
+         for (int cursor = 0; cursor < region.size(); cursor++) {
+            int index = region.get(cursor);
+            int x = index % width;
+            int z = index / width;
+            if (x > 0) collectCategoricalNeighbour(source, coverage, visited, region, index - 1, category, neighbours);
+            if (x + 1 < width) collectCategoricalNeighbour(source, coverage, visited, region, index + 1, category, neighbours);
+            if (z > 0) collectCategoricalNeighbour(source, coverage, visited, region, index - width, category, neighbours);
+            if (z + 1 < height) collectCategoricalNeighbour(source, coverage, visited, region, index + width, category, neighbours);
+         }
+
+         if (region.size() >= minimumArea) continue;
+         int surrounding = -1;
+         for (int candidate = 0; candidate < neighbours.length; candidate++) {
+            if (neighbours[candidate] > 0
+               && (surrounding < 0 || neighbours[candidate] > neighbours[surrounding])) {
+               surrounding = candidate;
+            }
+         }
+         if (surrounding >= 0) {
+            for (int cursor = 0; cursor < region.size(); cursor++) {
+               result[region.get(cursor)] = (byte)surrounding;
+            }
+         }
+      }
+      return result;
+   }
+
+   private static void collectCategoricalNeighbour(
+      byte[] source, byte[] coverage, boolean[] visited, TerrainRegionQueue region,
+      int index, int category, int[] neighbours
+   ) {
+      if ((coverage[index] & 255) == 0) return;
+      int neighbour = source[index] & 255;
+      if (neighbour != category) {
+         neighbours[neighbour]++;
+      } else if (!visited[index]) {
+         visited[index] = true;
+         region.add(index);
+      }
    }
 
    private static void collectMountainNeighbour(

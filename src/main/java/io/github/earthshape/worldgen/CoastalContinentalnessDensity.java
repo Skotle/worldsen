@@ -65,6 +65,11 @@ public record CoastalContinentalnessDensity(DensityFunction argument) implements
       boolean riverWater = RiversMask.INSTANCE.isInlandRiverColumn(context.blockX(), context.blockZ());
       ClimateLayers.TerrainKind terrainKind = ClimateLayers.INSTANCE.terrainKind(context.blockX(), context.blockZ());
       boolean riverBank = RiversMask.INSTANCE.isInlandRiverBank(context.blockX(), context.blockZ());
+      double surfaceBankDistance = RiversMask.INSTANCE.surfaceBankDistanceBlocks(context.blockX(), context.blockZ());
+      boolean lowSurfaceBank = surfaceBankDistance > 0.0 && surfaceBankDistance <= 3.0;
+      // Do not cut a three-block shelf through an existing hill or mountain.
+      // Only already-low terrain receives the climbable water-level profile.
+      boolean waterLevelBank = lowSurfaceBank && guided <= 0.16;
       boolean smallIsland = RiversMask.INSTANCE.isSmallIsland(context.blockX(), context.blockZ());
       // Hills and mountains start at least one terrain band above the ordinary
       // Y=64 floor. C=0.12 supplies roughly five blocks of vanilla spline lift
@@ -73,13 +78,21 @@ public record CoastalContinentalnessDensity(DensityFunction argument) implements
          !smallIsland && (terrainKind == ClimateLayers.TerrainKind.HILLS || terrainKind == ClimateLayers.TerrainKind.MOUNTAIN)
             ? 0.12
             : 0.06;
-      if (mappedLand && !riverBank && !riverWater && mouthOpening <= 0.001) {
+      if (mappedLand && !riverBank && !riverWater && !waterLevelBank && mouthOpening <= 0.001) {
          guided = Math.max(minimumLandContinentalness, guided);
+      }
+      if (mappedLand && !riverWater && waterLevelBank && mouthOpening <= 0.001) {
+         // Begin with a water-level landing edge and recover over only three
+         // blocks. The final value meets the ordinary land floor gradually,
+         // avoiding both an un-climbable wall and a wide shoreline terrace.
+         double recovery = smoothstep((surfaceBankDistance - 1.0) / 2.0);
+         double bankTarget = lerp(-0.08, 0.02, recovery);
+         guided = Math.min(guided, bankTarget);
       }
       if (mappedLand && mouthOpening <= 0.001) {
          guided = applyRiverBankHeightLimit(
             context.blockX(), context.blockZ(), guided,
-            riverBank || riverWater ? -0.10 : minimumLandContinentalness
+            riverBank || riverWater || waterLevelBank ? -0.10 : minimumLandContinentalness
          );
       }
       // Land/ocean classification changes at one exact contour, but its height
@@ -87,7 +100,7 @@ public record CoastalContinentalnessDensity(DensityFunction argument) implements
       // minimum and return the guided C field with a zero-slope curve across the
       // already blurred coast field. This prevents a narrow continentalness
       // ridge from following otherwise flat shorelines.
-      if (mappedLand && !riverBank && !riverWater && mouthOpening <= 0.001) {
+      if (mappedLand && !riverBank && !riverWater && !waterLevelBank && mouthOpening <= 0.001) {
          double inlandRecovery = smootherstep((coastalLandness - 0.48) / 0.44);
          guided = Math.max(
             minimumLandContinentalness,
@@ -97,7 +110,7 @@ public record CoastalContinentalnessDensity(DensityFunction argument) implements
       // Apply the requested one-block baseline lift after all terrain and bank
       // guidance so it affects plains, slopes and peaks uniformly. Actual river
       // water and mouths retain the sea-level water profile.
-      if (mappedLand && !riverWater && mouthOpening <= 0.001) {
+      if (mappedLand && !riverWater && !waterLevelBank && mouthOpening <= 0.001) {
          guided = Math.min(1.0, guided + LAND_SURFACE_LIFT);
       }
       // Small islands must not inherit a continent-scale C peak. Their dry
@@ -114,7 +127,9 @@ public record CoastalContinentalnessDensity(DensityFunction argument) implements
       if (EarthShapeCompatibility.isTerralithLoaded()
          && mappedLand && !riverWater && mouthOpening <= 0.001) {
          double relief = ClimateLayers.INSTANCE.terrainRelief(context.blockX(), context.blockZ());
-         double terralithCap = 0.30 + 0.08 * smoothstep(relief);
+         // Remain below Terralith's C=0.20 amplified factor branch even at the
+         // centre of a mapped mountain. E/W still supply ordinary relief.
+         double terralithCap = 0.10 + 0.06 * smoothstep(relief);
          guided = Math.min(terralithCap, guided);
       }
       return guided;

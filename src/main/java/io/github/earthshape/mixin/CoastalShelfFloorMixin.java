@@ -14,14 +14,14 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
 
 /**
  * Guarantees a continuous shallow-water cross-section at every mapped coast.
- * Vanilla density remains untouched below the one-block shelf cap and outside
- * the configured continental-shelf transition.
+ * A compact stone support joins the shaped floor to the natural seabed; deeper
+ * caves and terrain outside the configured continental shelf remain untouched.
  */
 @Mixin(NoiseChunk.class)
 public abstract class CoastalShelfFloorMixin {
    @Unique
    private static final ThreadLocal<long[]> EARTHSHAPE_SHELF_COLUMN = ThreadLocal.withInitial(
-      () -> new long[]{Integer.MIN_VALUE, Integer.MIN_VALUE, Long.MIN_VALUE, 0L, 0L}
+      () -> new long[]{Integer.MIN_VALUE, Integer.MIN_VALUE, Long.MIN_VALUE, 0L, 0L, 0L}
    );
 
    @Inject(method = "getInterpolatedState", at = @At("RETURN"), cancellable = true)
@@ -39,14 +39,59 @@ public abstract class CoastalShelfFloorMixin {
       if (column[0] != x || column[1] != z || column[2] != transformVersion) {
          earthshape$updateShelfColumn(column, x, z, transformVersion);
       }
-      if (column[3] == 0L) return;
+      long mode = column[3];
+      if (mode == 0L) return;
 
       int y = chunk.blockY();
       int floorY = (int)column[4];
+      if (mode == 2L) {
+         // A solid block at Y63 has its walkable top at Y64. Only repair an
+         // empty/water cell, so ordinary vanilla terrain above this minimum is
+         // completely untouched. Wetland surface water is intentionally kept.
+         if (y == 63) {
+            BlockState result = callback.getReturnValue();
+            // Non-wetland surface water has already been removed by
+            // SurfaceAquiferGuardMixin. Do not replace remaining water here,
+            // because it is intentional wetland water.
+            if (result != null && result.isAir()) {
+               callback.setReturnValue(Blocks.STONE.defaultBlockState());
+            }
+         }
+         return;
+      }
+      if (mode == 3L) {
+         // Close the channel at the configured lower limit. The aquifer mixin
+         // fills only naturally open cells above it, retaining a variable bed
+         // while making water deeper than six blocks impossible.
+         if (y == floorY) {
+            callback.setReturnValue(Blocks.STONE.defaultBlockState());
+         }
+         return;
+      }
+      if (mode == 4L) {
+         // The first one-to-three land blocks beside water use a solid Y62
+         // footing, whose top face is exactly level with the Y63 water surface.
+         // Only fill an empty cell; naturally higher slopes remain untouched.
+         if (y == 62) {
+            BlockState result = callback.getReturnValue();
+            if (result != null && result.isAir()) {
+               callback.setReturnValue(Blocks.STONE.defaultBlockState());
+            }
+         }
+         return;
+      }
+
+      int supportBaseY = (int)column[5];
       if (y == floorY) {
-         // One solid cap is enough to close surface caves without replacing the
-         // vanilla seabed, ores or caves below it.
          callback.setReturnValue(Blocks.STONE.defaultBlockState());
+      } else if (y >= supportBaseY && y < floorY) {
+         // Fill only holes inside the shelf support. Existing stone, ores and
+         // other solid density remain vanilla, while caves below the support
+         // base remain available instead of being erased to world bottom.
+         BlockState result = callback.getReturnValue();
+         if (result != null && (result.isAir() || result.is(Blocks.WATER))) {
+            callback.setReturnValue(Blocks.STONE.defaultBlockState());
+         }
       } else if (y > floorY && y <= 62) {
          callback.setReturnValue(Blocks.WATER.defaultBlockState());
       } else if (y >= 63) {
@@ -68,9 +113,32 @@ public abstract class CoastalShelfFloorMixin {
       column[1] = blockZ;
       column[2] = version;
       column[3] = 0L;
+      column[5] = Long.MIN_VALUE;
 
-      if (RiversMask.INSTANCE.sampleLayerLand(blockX, blockZ) >= 0.5
-         || RiversMask.INSTANCE.riverMouthOpening(blockX, blockZ) > 0.001) {
+      boolean mappedLand = RiversMask.INSTANCE.sampleLayerLand(blockX, blockZ) >= 0.5;
+      double mouthOpening = RiversMask.INSTANCE.riverMouthOpening(blockX, blockZ);
+      if (mappedLand) {
+         if (mouthOpening > 0.001) return;
+         if ((Boolean)EarthShapeServerConfig.RIVER_BIOMES_ENABLED.get()
+            && RiversMask.INSTANCE.isInlandRiverColumn(blockX, blockZ)) {
+            int depth = Math.min(6, (Integer)EarthShapeServerConfig.RIVER_MAXIMUM_DEPTH_BLOCKS.get());
+            column[3] = 3L;
+            column[4] = 62L - depth;
+            return;
+         }
+
+         if (RiversMask.INSTANCE.surfaceBankDistanceBlocks(blockX, blockZ) > 0.0) {
+            column[3] = 4L;
+            column[4] = 62L;
+            return;
+         }
+
+         column[3] = 2L;
+         column[4] = 63L;
+         return;
+      }
+
+      if (mouthOpening > 0.001) {
          return;
       }
 
@@ -102,5 +170,10 @@ public abstract class CoastalShelfFloorMixin {
 
       column[3] = 1L;
       column[4] = 62L - (long)Math.round(depth);
+      int deepFloorY = (Integer)EarthShapeServerConfig.COAST_SHELF_DEEP_FLOOR_Y.get();
+      // Join every shaped nearshore floor to one common compact support datum.
+      // Keeping the datum eight blocks below the configured deep shelf avoids
+      // the former one-block ceiling without sealing the deeper cave system.
+      column[5] = Math.min(column[4], Math.max(-64L, (long)deepFloorY - 8L));
    }
 }

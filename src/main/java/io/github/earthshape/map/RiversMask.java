@@ -23,6 +23,7 @@ public final class RiversMask {
    private volatile ThreadLocal<RiversMask.RiverBiomeCache> riverBiomeCache = ThreadLocal.withInitial(RiversMask.RiverBiomeCache::new);
    private volatile ThreadLocal<RiversMask.ScalarSampleCache> coastalLandnessCache = ThreadLocal.withInitial(RiversMask.ScalarSampleCache::new);
    private volatile ThreadLocal<RiversMask.ScalarSampleCache> riverMouthCache = ThreadLocal.withInitial(RiversMask.ScalarSampleCache::new);
+   private volatile ThreadLocal<RiversMask.ScalarSampleCache> surfaceBankDistanceCache = ThreadLocal.withInitial(RiversMask.ScalarSampleCache::new);
    private volatile long mapCenterSeed;
    private volatile long mapTransformVersion;
    private volatile double selectedCenterX = Double.NaN;
@@ -50,6 +51,7 @@ public final class RiversMask {
       this.riverBiomeCache = ThreadLocal.withInitial(RiversMask.RiverBiomeCache::new);
       this.coastalLandnessCache = ThreadLocal.withInitial(RiversMask.ScalarSampleCache::new);
       this.riverMouthCache = ThreadLocal.withInitial(RiversMask.ScalarSampleCache::new);
+      this.surfaceBankDistanceCache = ThreadLocal.withInitial(RiversMask.ScalarSampleCache::new);
       this.mapTransformVersion++;
    }
 
@@ -146,6 +148,52 @@ public final class RiversMask {
       // Values use three units per source pixel (4 on a diagonal).
       return this.sampleCoastAlignedBytes(loaded, loaded.oceanDistance, blockX, blockZ)
          * 255.0 / 3.0 * (double)this.blocksPerPixel();
+   }
+
+   /**
+    * Distance across mapped land from an actual ocean or inland-river surface.
+    * Only the first three blocks are reported. This is intentionally measured
+    * in world blocks rather than source pixels, so increasing map scale never
+    * turns the climbable water edge into a wide flat strip.
+    */
+   public double surfaceBankDistanceBlocks(int blockX, int blockZ) {
+      RiversMask.Data loaded = this.data();
+      RiversMask.ScalarSampleCache cache = this.surfaceBankDistanceCache.get();
+      int slot = RiversMask.ScalarSampleCache.slot(blockX, blockZ);
+      if (cache.data == loaded && cache.x[slot] == blockX && cache.z[slot] == blockZ) {
+         return cache.value[slot];
+      }
+
+      double nearest = Double.POSITIVE_INFINITY;
+      if (this.sampleExactLand(loaded, blockX, blockZ) >= 0.5) {
+         if (this.hasInlandRiverInfluence(blockX, blockZ)) {
+            int width = this.effectiveRiverWidthBlocks(blockX, blockZ);
+            if (width > 0) {
+               double centreDistance = this.riverCentrelineDistance(blockX, blockZ)
+                  * (double)this.blocksPerPixel();
+               double bankDistance = centreDistance - (double)width * 0.5;
+               if (bankDistance > 0.0 && bankDistance <= 3.0) nearest = bankDistance;
+            }
+         }
+
+         // The blurred field is a cheap inland rejection. Exact binary samples
+         // below still determine the final distance to the warped coastline.
+         if (this.sampleCoastalLandness(blockX, blockZ) < 0.999) {
+            for (int dz = -3; dz <= 3; dz++) {
+               for (int dx = -3; dx <= 3; dx++) {
+                  int distanceSquared = dx * dx + dz * dz;
+                  if (distanceSquared == 0 || distanceSquared > 9) continue;
+                  if (this.sampleExactLand(loaded, blockX + dx, blockZ + dz) < 0.5) {
+                     nearest = Math.min(nearest, Math.sqrt((double)distanceSquared));
+                  }
+               }
+            }
+         }
+      }
+
+      double result = nearest <= 3.0 ? nearest : -1.0;
+      cache.set(loaded, slot, blockX, blockZ, result);
+      return result;
    }
 
    /** True when the authoritative land pixel belongs to a small connected land mass. */

@@ -27,25 +27,41 @@ public record RiverWeirdnessDensity(DensityFunction argument) implements Density
       double weirdness = this.argument.compute(context);
       if (EarthShapeCompatibility.disablesWorldgen()) return weirdness;
 
+      boolean mappedLand = RiversMask.INSTANCE.sampleLand(context.blockX(), context.blockZ()) >= 0.5;
+      double coastalPeakRecovery = 1.0;
+      if (mappedLand) {
+         // C and E already descend smoothly toward the authoritative coast, but
+         // retaining a full mountain W/PV signal in the last land columns can
+         // still build razor-thin peaks that the ocean mask cuts vertically.
+         // Fade the ridge axis through the same land-side coastal interval.
+         double coastalLandness = RiversMask.INSTANCE.sampleCoastalLandness(context.blockX(), context.blockZ());
+         coastalPeakRecovery = smootherstep((coastalLandness - 0.48) / 0.44);
+         weirdness *= coastalPeakRecovery;
+      }
+
       // A mountain layer cannot rely on E alone: with an unlucky vanilla W/PV
       // sample it receives the mountain biome but remains a flat lowland. Guide
       // W toward the centre of vanilla's Peaks fold (|W| ~= 0.67) in proportion
       // to the region's smooth relief. Vanilla terrain splines still decide Y.
       if ((Boolean)EarthShapeServerConfig.TERRAIN_BIOMES_ENABLED.get()
-         && RiversMask.INSTANCE.sampleLand(context.blockX(), context.blockZ()) >= 0.5
+         && mappedLand
          && ClimateLayers.INSTANCE.terrainKind(context.blockX(), context.blockZ())
             == ClimateLayers.TerrainKind.MOUNTAIN) {
-         double relief = ClimateLayers.INSTANCE.terrainRelief(context.blockX(), context.blockZ());
+         double relief = ClimateLayers.INSTANCE.terrainRelief(context.blockX(), context.blockZ())
+            * coastalPeakRecovery;
          if (relief > 0.0) {
             boolean terralith = EarthShapeCompatibility.isTerralithLoaded();
             // Terralith applies a second, much stronger jaggedness/factor spline
             // to W/PV. Its full peak centre combined with EarthShape's broad
             // mountain mask resembles amplified world generation, so retain a
             // high-slope PV value without forcing every centre to PV~=1.
-            double peakTarget = terralith ? 0.55 : 0.67;
-            double maximumGuidance = terralith ? 0.48 : 0.72;
+            double peakTarget = terralith ? 0.45 : 0.67;
+            double maximumGuidance = terralith ? 0.32 : 0.72;
             double target = weirdness < 0.0 ? -peakTarget : peakTarget;
             weirdness = lerp(weirdness, target, Math.min(maximumGuidance, relief * maximumGuidance));
+            if (terralith) {
+               weirdness = Math.max(-0.60, Math.min(0.60, weirdness));
+            }
          }
       }
 

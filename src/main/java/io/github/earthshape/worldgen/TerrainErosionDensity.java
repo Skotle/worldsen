@@ -44,7 +44,7 @@ public record TerrainErosionDensity(DensityFunction argument) implements Density
          // them produces concentric plateaus whose centre can approach Y=200.
          // Stay inside one mountain band when Terralith owns the final density;
          // vanilla keeps the full erosion range.
-         double mountainErosionSpan = EarthShapeCompatibility.isTerralithLoaded() ? 0.08 : 0.30;
+         double mountainErosionSpan = EarthShapeCompatibility.isTerralithLoaded() ? 0.03 : 0.30;
          double target = -0.55 - mountainErosionSpan * mountain;
          terrainGuided = lerp(vanilla, Math.min(vanilla, target), coverage);
          if (EarthShapeCompatibility.isTerralithLoaded()) {
@@ -52,7 +52,7 @@ public record TerrainErosionDensity(DensityFunction argument) implements Density
             // sample. Under Terralith that can still fall through to E=-1 and
             // re-enter the extreme spline, so raise the lower bound gradually
             // with mapped mountain coverage instead of clipping its boundary.
-            double safeLowerBound = lerp(-1.0, -0.65, coverage);
+            double safeLowerBound = lerp(-1.0, -0.60, coverage);
             terrainGuided = Math.max(safeLowerBound, terrainGuided);
          }
 

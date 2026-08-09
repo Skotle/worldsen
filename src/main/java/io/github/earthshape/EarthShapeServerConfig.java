@@ -19,6 +19,7 @@ public final class EarthShapeServerConfig {
    public static final BooleanValue TERRAIN_BIOMES_ENABLED;
    public static final IntValue TERRAIN_BIOME_MINIMUM_REGION_PIXELS;
    public static final IntValue TERRAIN_BIOME_ISOLATED_MINIMUM_REGION_PIXELS;
+   public static final IntValue BIOME_MINIMUM_REGION_PIXELS;
    public static final BooleanValue OCEAN_TEMPERATURE_ENABLED;
    public static final BooleanValue TUNDRA_TEMPERATURE_ENABLED;
    public static final DoubleValue TUNDRA_TEMPERATURE_THRESHOLD;
@@ -91,6 +92,10 @@ public final class EarthShapeServerConfig {
               .defineInRange("terrainBiomeMinimumRegionPixels", 4, 1, 4096);
       TERRAIN_BIOME_ISOLATED_MINIMUM_REGION_PIXELS = builder.comment("Minimum source-pixel area for a terrain island surrounded by one terrain family.")
               .defineInRange("terrainBiomeIsolatedMinimumRegionPixels", 12, 1, 4096);
+      BIOME_MINIMUM_REGION_PIXELS = builder.comment(
+                      "온도 및 수목 레이어에서 독립된 바이옴 분류가 유지되기 위한 최소 연결 원본 픽셀 수. 작은 조각은 가장 넓게 접한 주변 분류로 병합됩니다."
+              )
+              .defineInRange("biomeMinimumRegionPixels", 16, 1, 4096);
       OCEAN_TEMPERATURE_ENABLED = builder.comment("해양 바이옴의 온도를 선택할 때만 earth_temperature.png를 사용합니다.").define("oceanTemperatureEnabled", true);
       TUNDRA_TEMPERATURE_ENABLED = builder.comment("충분히 추운 육지에서 툰드라, 타이가, 설산 바이옴을 선택할 때 earth_temperature.png를 사용합니다.")
               .define("tundraTemperatureEnabled", true);
@@ -142,8 +147,8 @@ public final class EarthShapeServerConfig {
                       "개별 산악 영역이 대륙 최대 고도를 전부 사용할 수 있게 되는 대표 월드 폭. blocksPerPixel이 커지면 같은 원본 영역도 더 높은 한계를 받습니다."
               )
               .defineInRange("mountainRegionFullHeightSpanBlocks", 1200, 160, 8192);
-      RIVER_MAXIMUM_DEPTH_BLOCKS = builder.comment("바닐라 대수층 및 지표 생성 이전, 원본 강 바닥이 내려가는 최대 블록 수.")
-              .defineInRange("riverMaximumDepthBlocks", 7, 1, 7);
+      RIVER_MAXIMUM_DEPTH_BLOCKS = builder.comment("바닐라 대수층 및 지표 생성 이전, 원본 강 바닥이 내려가는 최대 블록 수. 강 수심은 최대 6블록으로 제한됩니다.")
+              .defineInRange("riverMaximumDepthBlocks", 6, 6, 6);
       builder.pop();
       builder.push("river_widths");
       RIVER_WIDTH_000064 = builder.comment("rivers.bmp 색상 #000064의 강 너비(블록 단위).").defineInRange("color_000064", 27, 1, 256);
