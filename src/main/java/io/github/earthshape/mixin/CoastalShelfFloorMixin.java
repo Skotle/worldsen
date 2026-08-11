@@ -121,13 +121,15 @@ public abstract class CoastalShelfFloorMixin {
          if (mouthOpening > 0.001) return;
          if ((Boolean)EarthShapeServerConfig.RIVER_BIOMES_ENABLED.get()
             && RiversMask.INSTANCE.isInlandRiverColumn(blockX, blockZ)) {
-            int depth = Math.min(6, (Integer)EarthShapeServerConfig.RIVER_MAXIMUM_DEPTH_BLOCKS.get());
+            int depth = RiversMask.INSTANCE.riverBedDepthBlocks(blockX, blockZ);
             column[3] = 3L;
             column[4] = 62L - depth;
             return;
          }
 
-         if (RiversMask.INSTANCE.surfaceBankDistanceBlocks(blockX, blockZ) > 0.0) {
+         double bankDistance = RiversMask.INSTANCE.surfaceBankDistanceBlocks(blockX, blockZ);
+         if (bankDistance > 0.0
+            && bankDistance <= (double)RiversMask.INSTANCE.surfaceBankWidthBlocks(blockX, blockZ)) {
             column[3] = 4L;
             column[4] = 62L;
             return;

@@ -196,6 +196,35 @@ public final class RiversMask {
       return result;
    }
 
+   /** Coherent one-to-three-block landing width; never changes per individual block. */
+   public int surfaceBankWidthBlocks(int blockX, int blockZ) {
+      double noise = coastWarpNoise(
+         blockX, blockZ, 0x6A09E667F3BCC909L ^ this.mapCenterSeed
+      );
+      return noise < -0.28 ? 1 : (noise > 0.28 ? 3 : 2);
+   }
+
+   /**
+    * Variable visible river depth. The centre meanders between three and six
+    * blocks while the submerged shoulder rises toward one block at the bank.
+    */
+   public int riverBedDepthBlocks(int blockX, int blockZ) {
+      int maximum = Math.min(6, (Integer)EarthShapeServerConfig.RIVER_MAXIMUM_DEPTH_BLOCKS.get());
+      int width = this.effectiveRiverWidthBlocks(blockX, blockZ);
+      if (width <= 0) return maximum;
+
+      double noise = coastWarpNoise(
+         blockX, blockZ, 0xBB67AE8584CAA73BL ^ Long.rotateLeft(this.mapCenterSeed, 23)
+      );
+      double normalized = Math.max(0.0, Math.min(1.0, noise * 0.5 + 0.5));
+      int centreDepth = Math.min(maximum, 3 + (int)Math.round(normalized * 3.0));
+      double radius = Math.max(0.5, (double)width * 0.5);
+      double distance = this.riverCentrelineDistance(blockX, blockZ) * (double)this.blocksPerPixel();
+      double shoulder = smoothstep((distance / radius - 0.58) / 0.42);
+      int depth = (int)Math.round(lerp((double)centreDepth, 1.0, shoulder));
+      return Math.max(1, Math.min(maximum, depth));
+   }
+
    /** True when the authoritative land pixel belongs to a small connected land mass. */
    public boolean isSmallIsland(int blockX, int blockZ) {
       RiversMask.Data loaded = this.data();

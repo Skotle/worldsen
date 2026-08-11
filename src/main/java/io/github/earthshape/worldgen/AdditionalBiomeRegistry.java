@@ -148,6 +148,7 @@ public final class AdditionalBiomeRegistry {
          case RIVER -> biome.is(Tags.Biomes.IS_RIVER)
             && !isAny(biome, Tags.Biomes.IS_OCEAN, Tags.Biomes.IS_BEACH, Tags.Biomes.IS_CAVE);
          case OCEAN -> biome.is(Tags.Biomes.IS_OCEAN)
+            && !createsUnmappedOceanLand(biome)
             && !isAny(biome, Tags.Biomes.IS_RIVER, Tags.Biomes.IS_BEACH, Tags.Biomes.IS_CAVE);
          case COAST -> (biome.is(Tags.Biomes.IS_BEACH) || bopFamily(biome) == BopFamily.COAST)
             && !isAny(biome, Tags.Biomes.IS_OCEAN, Tags.Biomes.IS_RIVER, Tags.Biomes.IS_CAVE);
@@ -267,6 +268,19 @@ public final class AdditionalBiomeRegistry {
 
    private static boolean isBopRare(Holder<Biome> biome) {
       return isBop(biome) && biome.is(Tags.Biomes.IS_RARE);
+   }
+
+   /**
+    * Some biomes are tagged as oceans but deliberately generate substantial
+    * terrain above sea level. They cannot be selected in mapped ocean columns:
+    * doing so bypasses the authoritative land mask through biome features and
+    * repeats similarly shaped islands in every regional biome cell.
+    */
+   private static boolean createsUnmappedOceanLand(Holder<Biome> biome) {
+      return biome.unwrapKey().map(key ->
+         "biomeswevegone".equals(key.location().getNamespace())
+            && "lush_stacks".equals(key.location().getPath())
+      ).orElse(false);
    }
 
    /** BOP 21.1's primary EarthShape family, independent of incomplete common tags. */

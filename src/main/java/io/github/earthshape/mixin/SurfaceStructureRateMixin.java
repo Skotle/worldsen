@@ -1,6 +1,7 @@
 package io.github.earthshape.mixin;
 
 import io.github.earthshape.EarthShapeServerConfig;
+import io.github.earthshape.worldgen.StructureLayerCompatibility;
 import java.util.function.Predicate;
 import net.minecraft.core.Holder;
 import net.minecraft.core.RegistryAccess;
@@ -30,6 +31,12 @@ public abstract class SurfaceStructureRateMixin {
       CallbackInfoReturnable<StructureStart> callback
    ) {
       Structure structure = (Structure)(Object)this;
+      if (structure.step() == GenerationStep.Decoration.SURFACE_STRUCTURES
+         && !StructureLayerCompatibility.isAllowed(registryAccess, structure, chunkPos)) {
+         callback.setReturnValue(StructureStart.INVALID_START);
+         return;
+      }
+
       double rate = (Double)EarthShapeServerConfig.SURFACE_STRUCTURE_RATE.get();
       if (rate >= 1.0 || structure.step() != GenerationStep.Decoration.SURFACE_STRUCTURES) return;
 

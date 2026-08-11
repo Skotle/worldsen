@@ -100,7 +100,8 @@
 
 - 열린 바다는 중심에서 동서남북 180블록 지점이 모두 해양값 `< 0.25`일 때다.
 - 추가 바이옴 후보 태그: `is_ocean`.
-- 현재 BYG 후보: `biomeswevegone:dead_sea`, `biomeswevegone:lush_stacks`.
+- 현재 BYG 후보 중 `biomeswevegone:dead_sea`는 해양 후보로 사용할 수 있다.
+- `biomeswevegone:lush_stacks`는 해양 태그가 있어도 해수면 위에 큰 암석 지형을 직접 생성하므로 제외한다. 원본 육지/해양 마스크 밖에 반복적인 막대 섬이 생기는 것을 방지하기 위한 예외다.
 - 추운 바다는 `is_snowy` 후보가 있으면 이를 우선하지만, 현재 BYG의 두 해양 후보는 snowy 태그가 아니다.
 - 하구는 강이 바다를 찌르는 대신 해양 후보군으로 처리된다.
 

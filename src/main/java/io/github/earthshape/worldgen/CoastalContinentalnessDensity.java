@@ -66,7 +66,10 @@ public record CoastalContinentalnessDensity(DensityFunction argument) implements
       ClimateLayers.TerrainKind terrainKind = ClimateLayers.INSTANCE.terrainKind(context.blockX(), context.blockZ());
       boolean riverBank = RiversMask.INSTANCE.isInlandRiverBank(context.blockX(), context.blockZ());
       double surfaceBankDistance = RiversMask.INSTANCE.surfaceBankDistanceBlocks(context.blockX(), context.blockZ());
-      boolean lowSurfaceBank = surfaceBankDistance > 0.0 && surfaceBankDistance <= 3.0;
+      int surfaceBankWidth = surfaceBankDistance > 0.0
+         ? RiversMask.INSTANCE.surfaceBankWidthBlocks(context.blockX(), context.blockZ())
+         : 0;
+      boolean lowSurfaceBank = surfaceBankDistance > 0.0 && surfaceBankDistance <= (double)surfaceBankWidth;
       // Do not cut a three-block shelf through an existing hill or mountain.
       // Only already-low terrain receives the climbable water-level profile.
       boolean waterLevelBank = lowSurfaceBank && guided <= 0.16;
@@ -85,7 +88,9 @@ public record CoastalContinentalnessDensity(DensityFunction argument) implements
          // Begin with a water-level landing edge and recover over only three
          // blocks. The final value meets the ordinary land floor gradually,
          // avoiding both an un-climbable wall and a wide shoreline terrace.
-         double recovery = smoothstep((surfaceBankDistance - 1.0) / 2.0);
+         double recovery = smoothstep(
+            (surfaceBankDistance - 1.0) / Math.max(1.0, (double)surfaceBankWidth - 1.0)
+         );
          double bankTarget = lerp(-0.08, 0.02, recovery);
          guided = Math.min(guided, bankTarget);
       }

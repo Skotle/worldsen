@@ -24,14 +24,12 @@ public final class SurfaceAquiferGuardMixin {
       int y = context.blockY();
       // Vanilla sea_level=63 means water blocks end at Y62 and their top face is
       // Y63. Filling Y63 itself raised only mapped rivers one metre above oceans.
-      int riverDepth = Math.min(6, (Integer)EarthShapeServerConfig.RIVER_MAXIMUM_DEPTH_BLOCKS.get());
-      int riverWaterFloorY = 63 - riverDepth;
       // Fill every open cell from the configured channel floor through the
       // highest underwater block Y62. Previously only Y61..63 was guaranteed,
       // which both left deeper carved parts dry and raised the surface by one.
-      boolean forceRiverWater = substance < 0.0
+      boolean potentialRiverWater = substance < 0.0
          && (result == null || result.isAir())
-         && y >= riverWaterFloorY
+         && y >= 57
          && y <= 62;
       boolean removeSurfaceWater = (Boolean)EarthShapeServerConfig.DESERT_WATER_REDUCTION_ENABLED.get()
          && result != null
@@ -42,12 +40,15 @@ public final class SurfaceAquiferGuardMixin {
       // candidate surface-water removal; the per-column cache then shares the
       // exact result between all Y levels of that column.
       boolean layerRiver = (Boolean)EarthShapeServerConfig.RIVER_BIOMES_ENABLED.get()
-         && (forceRiverWater || removeSurfaceWater)
+         && (potentialRiverWater || removeSurfaceWater)
          && RiversMask.INSTANCE.isInlandRiverColumn(context.blockX(), context.blockZ());
+      boolean forceRiverWater = layerRiver
+         && potentialRiverWater
+         && y >= 63 - RiversMask.INSTANCE.riverBedDepthBlocks(context.blockX(), context.blockZ());
       // Aquifer noise is especially likely to return dry air in hot biomes.  Once the
       // density router has opened a painted river at sea level, guarantee its water
       // column instead of letting the desert-water guard erase it again.
-      if (layerRiver && forceRiverWater) {
+      if (forceRiverWater) {
          callback.setReturnValue(Blocks.WATER.defaultBlockState());
          return;
       }
