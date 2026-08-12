@@ -1,0 +1,4 @@
+.gradle/
+build/
+# A local accidental copy is ignored; the wrapper uses gradle/wrapper/gradle-wrapper.jar.
+gradle-wrapper.jar

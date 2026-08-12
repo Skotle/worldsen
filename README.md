@@ -46,3 +46,16 @@ Use a JDK 21 installation (Minecraft 1.21.1 requirement), then run:
 ```
 
 The artifact is written to `build/libs/`.
+
+### Forge 1.20.1
+
+The Forge 47.x port is maintained as a separate build in
+[`forge-1.20.1`](forge-1.20.1). It targets Java 17 and keeps its loader/API
+adaptations in that build so the NeoForge 1.21.1 artifact remains unchanged.
+
+```powershell
+cd forge-1.20.1
+.\gradlew.bat build
+```
+
+Its artifact is written to `forge-1.20.1/build/libs/`.

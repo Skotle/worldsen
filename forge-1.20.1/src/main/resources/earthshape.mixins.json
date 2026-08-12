@@ -1,0 +1,9 @@
+{
+  "required": true,
+  "package": "io.github.earthshape.mixin",
+  "compatibilityLevel": "JAVA_17",
+  "mixins": [
+    "TfcCoastlineMixin"
+  ],
+  "injectors": { "defaultRequire": 1 }
+}

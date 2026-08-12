@@ -1,0 +1,69 @@
+plugins {
+    id 'java'
+    id 'net.minecraftforge.gradle' version '[6.0,6.2)'
+}
+
+group = mod_group_id
+version = mod_version
+
+base {
+    archivesName = "${mod_id}-forge-${minecraft_version}"
+}
+
+java.toolchain.languageVersion = JavaLanguageVersion.of(17)
+
+minecraft {
+    mappings channel: 'official', version: minecraft_version
+
+    runs {
+        configureEach {
+            workingDirectory project.file("run/${name}")
+            property 'forge.logging.markers', 'REGISTRIES'
+            property 'forge.logging.console.level', 'debug'
+            mods {
+                earthshape {
+                    source sourceSets.main
+                }
+            }
+        }
+        client {}
+        server { args '--nogui' }
+    }
+}
+
+sourceSets {
+    main {
+        // The C build deliberately contains only the TFC coastline adapter and
+        // the raster mask it needs. The 1.21.1 vanilla biome/density sources use
+        // APIs that do not exist on Forge 1.20.1 and are not part of this port.
+        java.srcDirs = ['src/main/java', '../src/main/java/io/github/earthshape/map']
+        java.include 'RiversMask.java'
+        java.include 'io/github/earthshape/**'
+        resources.srcDirs = ['src/main/resources', '../src/main/resources']
+        resources.exclude 'META-INF/neoforge.mods.toml', 'pack.mcmeta'
+    }
+}
+
+tasks.named('processResources').configure {
+    duplicatesStrategy = DuplicatesStrategy.EXCLUDE
+    from('../map') {
+        include 'terrain.bmp', 'rivers.bmp', 'trees.bmp', 'world_normal.bmp', 'earth_temperature.png', 'worldmap_full.png', 'world_rivers_full.png', 'worldmap_river.png'
+        into 'earthshape/hoi4'
+    }
+}
+
+dependencies {
+    minecraft "net.minecraftforge:forge:${minecraft_version}-${forge_version}"
+}
+
+tasks.withType(JavaCompile).configureEach {
+    options.release = 17
+}
+
+tasks.withType(Jar).configureEach {
+    exclude 'terrablender/**'
+    manifest.attributes([
+        'MixinConfigs': 'earthshape.mixins.json',
+        'Implementation-Version': project.version
+    ])
+}
