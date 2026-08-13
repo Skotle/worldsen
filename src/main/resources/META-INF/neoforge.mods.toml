@@ -43,3 +43,14 @@ versionRange="[1,)"
 ordering="AFTER"
 side="BOTH"
 
+# When TFC is installed, EarthShape supplies an experimental replacement for
+# the tfc:overworld preset. Loading after TFC lets that resource override the
+# preset's custom generator with Minecraft's noise generator, which is the
+# generator EarthShape's density and biome layers target.
+[[dependencies.${mod_id}]]
+modId="tfc"
+type="optional"
+versionRange="[4.2.7,)"
+ordering="AFTER"
+side="BOTH"
+

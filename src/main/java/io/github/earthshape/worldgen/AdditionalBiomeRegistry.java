@@ -56,6 +56,7 @@ public final class AdditionalBiomeRegistry {
    private static volatile Map<TagKey<Biome>, CandidatePool> pools = Map.of();
    private static volatile List<Holder<Biome>> allBiomes = List.of();
    private static final ConcurrentHashMap<LayerKey, LayerCandidatePool> layerPools = new ConcurrentHashMap<>();
+   private static final ConcurrentHashMap<LayerKey, List<Holder<Biome>>> tfcLayerPools = new ConcurrentHashMap<>();
 
    public enum Hydrology {
       LAND,
@@ -128,6 +129,35 @@ public final class AdditionalBiomeRegistry {
       return candidates.get(Math.floorMod(saltedVariant, candidates.size()));
    }
 
+   /**
+    * Selects only a TFC biome. This is used by the TFC preset replacement so
+    * the map decides hydrology and terrain class instead of TFC's independent
+    * continent generator.
+    */
+   public static Holder<Biome> selectTfc(LayerKey key, int variant) {
+      List<Holder<Biome>> candidates = tfcLayerPools.computeIfAbsent(key, AdditionalBiomeRegistry::buildTfcLayerPool);
+      if (candidates.isEmpty()) return null;
+      int saltedVariant = variant ^ key.hashCode() * 0x45d9f3b;
+      return candidates.get(Math.floorMod(saltedVariant, candidates.size()));
+   }
+
+   private static List<Holder<Biome>> buildTfcLayerPool(LayerKey key) {
+      List<Holder<Biome>> exact = allBiomes.stream()
+         .filter(TfcBiomeLayers::isTfc)
+         .filter(candidate -> TfcBiomeLayers.matches(key, candidate))
+         .toList();
+      return exact.isEmpty()
+         ? allBiomes.stream()
+            .filter(TfcBiomeLayers::isTfc)
+            .filter(candidate -> TfcBiomeLayers.matchesFallback(key, candidate))
+            .toList()
+         : exact;
+   }
+
+   public static boolean hasTfcBiomes() {
+      return allBiomes.stream().anyMatch(TfcBiomeLayers::isTfc);
+   }
+
    private static LayerCandidatePool buildLayerPool(LayerKey key) {
       List<Holder<Biome>> all = allBiomes.stream()
          .filter(candidate -> matchesLayerCombination(key, candidate))
@@ -140,6 +170,9 @@ public final class AdditionalBiomeRegistry {
    }
 
    private static boolean matchesLayerCombination(LayerKey key, Holder<Biome> biome) {
+      if (TfcBiomeLayers.isTfc(biome)) {
+         return TfcBiomeLayers.matches(key, biome);
+      }
       if (!matchesTemperature(key, biome)) return false;
       if (!matchesBopTagConstraints(key, biome)) return false;
       return switch (key.hydrology()) {
@@ -345,7 +378,7 @@ public final class AdditionalBiomeRegistry {
          boolean modded = holder.unwrapKey()
             .map(key -> !"minecraft".equals(key.location().getNamespace()))
             .orElse(false);
-         if (modded && holder.is(Tags.Biomes.IS_OVERWORLD)) {
+         if (modded && (holder.is(Tags.Biomes.IS_OVERWORLD) || TfcBiomeLayers.isTfc(holder))) {
             found.add(holder);
          }
       });
@@ -363,15 +396,16 @@ public final class AdditionalBiomeRegistry {
       pools = Map.copyOf(built);
       allBiomes = List.copyOf(found);
       layerPools.clear();
+      tfcLayerPools.clear();
       appendToOverworldBiomeSource(event, found);
 
       long uncategorized = found.stream()
          .filter(holder -> holder.unwrapKey().map(key -> !categorized.contains(key)).orElse(true))
          .count();
+      long tfcCount = found.stream().filter(TfcBiomeLayers::isTfc).count();
       EarthShape.LOGGER.info(
-         "[EarthShape] indexed {} additional overworld biomes for layer selection; uncategorized={}",
-         found.size(),
-         uncategorized
+         "[EarthShape] indexed {} additional overworld biomes for layer selection; tfc={}, uncategorized={}",
+         found.size(), tfcCount, uncategorized
       );
    }
 
@@ -398,6 +432,7 @@ public final class AdditionalBiomeRegistry {
       pools = Map.of();
       allBiomes = List.of();
       layerPools.clear();
+      tfcLayerPools.clear();
    }
 
    private record CandidatePool(

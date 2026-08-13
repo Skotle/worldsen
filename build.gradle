@@ -26,7 +26,9 @@ sourceSets.main.resources {
 }
 
 repositories {
-    // Add here additional repositories if required by some of the dependencies below.
+    // Compile-only APIs for optional integrations.
+    maven { url = 'https://maven.minecraftforge.net/' }
+    maven { url = 'https://repo.codemc.io/repository/maven-public/' }
 }
 
 base {
@@ -95,12 +97,6 @@ configurations {
     runtimeClasspath.extendsFrom localRuntime
 }
 
-// TerraBlender remains a compile-time API only. Packs commonly receive the real
-// mod transitively (for example from Gardens of the Dead); EarthShape disables
-// its biome/surface intervention at runtime instead of publishing a second copy
-// of the same mod id.
-def terraBlenderCompatJar = file('C:/Users/Administrator/Downloads/neoforge/neoforge-launcher/mods452/TerraBlender-neoforge-1.21.1-4.1.0.8.jar.disabled')
-
 dependencies {
     // Specify the version of Minecraft to use.
     // Depending on the plugin applied there are several options. We will assume you applied the userdev plugin as shown above.
@@ -110,10 +106,10 @@ dependencies {
     // For all intends and purposes: You can treat this dependency as if it is a normal library you would use.
     implementation "net.neoforged:neoforge:${neo_version}"
 
-    // Chunky is optional at runtime.  Its public shape API lets EarthShape
-    // exclude ocean-only chunks from a pregeneration selection.
-    compileOnly files("C:/Users/Administrator/Downloads/neoforge/neoforge-launcher/mods452/Chunky-NeoForge-1.4.23.jar")
-    compileOnly files(terraBlenderCompatJar)
+    // Optional runtime integrations. Both are Maven API dependencies so local
+    // user-directory paths are never required to build the project.
+    compileOnly "org.popcraft:chunky-common:1.4.23"
+    compileOnly "com.github.glitchfiend:TerraBlender-neoforge:1.21.1-4.1.0.8"
 
     // Example optional mod dependency with JEI
     // The JEI API is declared for compile time use, while the full JEI artifact is used at runtime

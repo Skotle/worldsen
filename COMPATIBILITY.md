@@ -2,6 +2,62 @@
 
 EarthShape owns Overworld continentalness, density relief, source-river placement, and final biome selection.
 
+## TerraFirmaCraft 4.2.7 experimental preset override
+
+When TFC 4.2.7 is present, EarthShape overrides the `tfc:overworld` world
+preset so its Overworld uses `minecraft:noise` terrain and its normal
+multi-noise source solely as a transport layer. This deliberately prevents
+TFC's `TFCChunkGenerator` and independent `RegionBiomeSource` continent noise
+from selecting terrain or biomes.
+
+When TFC is installed, EarthShape's final resolver returns only `tfc:*`
+biomes. The EarthShape map decides ocean, river, coast, terrain class, tree
+cover, and temperature; TFC's public biome tags choose the matching TFC biome.
+No vanilla biome is returned, including below the surface. If a narrow TFC tag
+family is absent, EarthShape falls back only to another TFC biome with the same
+hydrology, never to a vanilla biome. EarthShape's density-function terrain
+layers remain active through the vanilla noise-generator base class.
+
+The `terrain.bmp` desert class is authoritative even where the temperature
+layer is cold: it selects TFC dry/badlands candidates and applies a TFC yellow
+sand surface rule. This prevents a cold map desert from silently falling back
+to TFC plains and vanilla grass.
+
+This is a generator replacement, not a complete TFC world-generation bridge.
+TFC terrain, regional biomes, rock strata, climate/groundwater `ChunkData`,
+rivers, and surface processing are therefore absent. Use it only for newly
+created experimental worlds; it must not be enabled for an existing TFC world.
+
+TFC placed features which directly consume `ChunkData` or cast the active
+generator to `ChunkGeneratorExtension` cannot run with the replacement vanilla
+generator: boulders, dynamic patches, erosion, fissures, hot springs, loose
+rocks, noisy-multiple features, sea stacks, soil forests, springs, tide pools,
+cave columns/spikes/ice caves, and forests. EarthShape skips exactly this set
+when its replacement generator is active, preventing feature-generation crashes
+while leaving them untouched in a normal TFC world. Remaining TFC features can
+run, but receive fallback climate data instead of TFC-generated strata and
+groundwater.
+
+For reference, the TFC-only map selection uses this tag mapping:
+
+| TFC tag family | EarthShape layer |
+| --- | --- |
+| `c:is_ocean`, `c:is_deep_ocean`, `c:is_shallow_ocean`, `tfc:is_isolated_island` | ocean |
+| `c:is_beach`, `c:is_stony_shores`, `tfc:is_coastal_cliffs` | coast |
+| `c:is_river`, `tfc:is_river` | river |
+| `c:is_cave_lake` | cave |
+| `c:is_badlands`, `c:is_dry`, `c:is_sandy`, `tfc:is_burren` | desert |
+| `c:is_swamp`, `c:is_wet/overworld`, lake tags, `tfc:is_salt_marsh` | wetland |
+| `c:is_hill`, `c:is_plateau`, `c:is_windswept`, karst/cenote/doline/rift tags | hills |
+| `c:is_mountain`, continental/oceanic/non-volcanic/volcanic mountain tags | mountains |
+| `c:is_plains` and unclassified neutral TFC landforms | plains, forest, or jungle according to tree cover and temperature |
+| `c:is_cold/overworld`, `c:is_hot/overworld`, `c:is_snowy`, `c:is_icy`, glaciated/ice-sheet tags | temperature and snow eligibility filters |
+
+Feature-capability tags such as `tfc:has_atolls`, `tfc:has_cinder_cones`,
+`tfc:has_stratovolcanoes`, `tfc:has_tuff_cones`, `tfc:has_tuyas`, and
+`tfc:has_predictable_winds` remain attached to the selected biome; they do not
+describe a separate EarthShape placement layer.
+
 External selectors are allowed to initialize and finish their calculation so dependent mods keep their normal startup path. At every Overworld `MultiNoiseBiomeSource#getNoiseBiome` return, EarthShape discards that completed holder and performs the final selection itself. Candidates injected into the climate table are excluded; additional mod biomes can be placed only through EarthShape's layer/tag registry.
 
 ## Compatible without an EarthShape code patch

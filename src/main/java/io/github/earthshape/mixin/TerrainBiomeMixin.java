@@ -114,6 +114,15 @@ public abstract class TerrainBiomeMixin implements EarthShapeFinalBiomeResolver 
       long layerPoint = warpedLayerPoint(blockX, blockZ);
       int layerX = unpackX(layerPoint);
       int layerZ = unpackZ(layerPoint);
+      if (AdditionalBiomeRegistry.hasTfcBiomes()) {
+         Holder<Biome> tfcBiome = this.selectTfcMapBiome(layers, blockX, blockY, blockZ);
+         if (tfcBiome != null) {
+            if (FINAL_OVERRIDE_LOGGED.compareAndSet(false, true)) {
+               io.github.earthshape.EarthShape.LOGGER.info("[EarthShape] TFC-only biome resolver active; map layers select all Overworld biomes.");
+            }
+            return tfcBiome;
+         }
+      }
       Holder<Biome> selected;
       if (blockY < 48) {
          Holder<Biome> baseVanilla = EarthShapeCompatibility.isTerralithLoaded()
@@ -149,6 +158,35 @@ public abstract class TerrainBiomeMixin implements EarthShapeFinalBiomeResolver 
          io.github.earthshape.EarthShape.LOGGER.info("[EarthShape] outermost Overworld biome resolver active; discarded external holder and stored EarthShape's final result.");
       }
       return selected;
+   }
+
+   /** Uses EarthShape's masks as the sole source of TFC hydrology and terrain. */
+   private Holder<Biome> selectTfcMapBiome(ClimateLayers layers, int blockX, int blockY, int blockZ) {
+      ClimateLayers.TerrainKind terrain = this.surfaceTerrain(layers, blockX, blockZ);
+      // ClimateLayers already performs its own boundary-safe terrain warp.
+      // Passing an already warped point here made tree.bmp receive that warp a
+      // second time, weakening and offsetting the source-layer boundary.
+      ClimateLayers.TreeCover trees = layers.treeCover(blockX, blockZ);
+      double temperature = layers.temperature(blockX, blockZ);
+      boolean snowAllowed = allowsSnow(terrain, blockY, temperature);
+      boolean frozenPeaksAllowed = terrain == ClimateLayers.TerrainKind.MOUNTAIN
+         && layers.mountainRegionHeightScale(blockX, blockZ) >= 0.55
+         && (layers.isUltraMountain(blockX, blockZ) || layers.isPolarTemperatureZone(blockX, blockZ));
+      Hydrology hydrology;
+      if ((Boolean)EarthShapeServerConfig.RIVER_BIOMES_ENABLED.get() && RiversMask.INSTANCE.isInlandRiverBiome(blockX, blockZ)) {
+         hydrology = Hydrology.RIVER;
+      } else if (RiversMask.INSTANCE.sampleLayerLand(blockX, blockZ) < 0.5 || terrain == ClimateLayers.TerrainKind.WATER) {
+         hydrology = Hydrology.OCEAN;
+      } else if (isCoastalLand(blockX, blockZ)) {
+         hydrology = Hydrology.COAST;
+      } else {
+         hydrology = Hydrology.LAND;
+      }
+      return AdditionalBiomeRegistry.selectTfc(
+         LayerKey.of(terrain, trees, temperature, hydrology, snowAllowed, frozenPeaksAllowed,
+            terrain == ClimateLayers.TerrainKind.DESERT && layers.isMesaRegion(blockX, blockZ)),
+         regionalVariant(blockX, blockZ)
+      );
    }
 
    /**
