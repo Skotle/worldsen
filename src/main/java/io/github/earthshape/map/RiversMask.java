@@ -205,6 +205,35 @@ public final class RiversMask {
    }
 
    /**
+    * Coherent, seed-stable multiplier for the offshore continental shelf.
+    * It changes only over broad coastal reaches, rather than per block, so a
+    * shelf remains a single smooth slope while different coasts receive
+    * naturally different run-out lengths.
+    */
+   public double coastShelfFadeScale(int blockX, int blockZ) {
+      if (!(Boolean)EarthShapeServerConfig.COAST_SHELF_VARIATION_ENABLED.get()) return 1.0;
+      double minimum = (Double)EarthShapeServerConfig.COAST_SHELF_VARIATION_MIN_SCALE.get();
+      double maximum = (Double)EarthShapeServerConfig.COAST_SHELF_VARIATION_MAX_SCALE.get();
+      if (maximum < minimum) {
+         double swap = minimum;
+         minimum = maximum;
+         maximum = swap;
+      }
+      // A 768-block wavelength keeps the selector coherent across a shore
+      // reach; smooth interpolation prevents visible square selector cells.
+      int cellSize = 768;
+      int cellX = Math.floorDiv(blockX, cellSize);
+      int cellZ = Math.floorDiv(blockZ, cellSize);
+      double tx = smoothstep((double)Math.floorMod(blockX, cellSize) / (double)cellSize);
+      double tz = smoothstep((double)Math.floorMod(blockZ, cellSize) / (double)cellSize);
+      long salt = 0xD1B54A32D192ED03L ^ this.mapCenterSeed;
+      double top = lerp(axialValue(cellX, cellZ, salt), axialValue(cellX + 1, cellZ, salt), tx);
+      double bottom = lerp(axialValue(cellX, cellZ + 1, salt), axialValue(cellX + 1, cellZ + 1, salt), tx);
+      double normalized = (lerp(top, bottom, tz) + 1.0) * 0.5;
+      return lerp(minimum, maximum, normalized);
+   }
+
+   /**
     * Variable visible river depth. The centre meanders between three and six
     * blocks while the submerged shoulder rises toward one block at the bank.
     */

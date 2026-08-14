@@ -151,6 +151,7 @@ public abstract class CoastalShelfFloorMixin {
       double shelfEnd = Math.max(
          nearshoreEnd,
          (double)EarthShapeServerConfig.COAST_HEIGHT_FADE_BLOCKS.get()
+            * RiversMask.INSTANCE.coastShelfFadeScale(blockX, blockZ)
       );
       if (distance > shelfEnd) return;
 

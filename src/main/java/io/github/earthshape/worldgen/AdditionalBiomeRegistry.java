@@ -129,6 +129,13 @@ public final class AdditionalBiomeRegistry {
       return candidates.get(Math.floorMod(saltedVariant, candidates.size()));
    }
 
+   /** True for a non-vanilla candidate tagged as an intentionally rare biome. */
+   public static boolean isRareCandidate(Holder<Biome> biome) {
+      return biome.unwrapKey()
+         .map(key -> !"minecraft".equals(key.location().getNamespace()) && biome.is(Tags.Biomes.IS_RARE))
+         .orElse(false);
+   }
+
    /**
     * Selects only a TFC biome. This is used by the TFC preset replacement so
     * the map decides hydrology and terrain class instead of TFC's independent

@@ -21,8 +21,12 @@ public final class ClimateLayers {
       ThreadLocal.withInitial(ClimateLayers.TerrainScalarCache::new);
    private static final ThreadLocal<ClimateLayers.TerrainScalarCache> DESERT_CACHE =
       ThreadLocal.withInitial(ClimateLayers.TerrainScalarCache::new);
-   /** Small-scale mountain clusters below this size factor merge into their surroundings. */
-   private static final double MINIMUM_MOUNTAIN_REGION_SCALE = 0.10;
+   /**
+    * Area determines a mountain region's maximum height, not whether a mapped
+    * mountain exists. Small connected ranges must remain raised foothills rather
+    * than being silently replaced by the surrounding plains class.
+    */
+   private static final double MINIMUM_MOUNTAIN_REGION_SCALE = 0.0;
    /**
     * terrain.bmp contains province-colour crumbs that are too small to represent
     * a stable biome even when an older server config retained the former, very
@@ -31,6 +35,9 @@ public final class ClimateLayers {
     */
    private static final int MINIMUM_TERRAIN_FRAGMENT_PIXELS = 12;
    private static final int MINIMUM_ISOLATED_TERRAIN_FRAGMENT_PIXELS = 24;
+   // At 4 blocks/pixel a 16x16 chunk contains 4x4 source pixels.  A fixed
+   // 12-pixel threshold therefore lets sub-chunk biome crumbs survive. Keep
+   // ordinary terrain/climate regions at least this many generated chunks.
    public static final ClimateLayers INSTANCE = new ClimateLayers();
    private volatile ClimateLayers.Data temperature;
    private volatile ClimateLayers.Data trees;
@@ -99,13 +106,9 @@ public final class ClimateLayers {
          int index = imageZ * layer.width + imageX;
          int code = layer.values[index] & 255;
          ClimateLayers.TerrainKind kind = isMountainElevationCode(code) ? ClimateLayers.TerrainKind.MOUNTAIN : ClimateLayers.TerrainKind.byCode(code);
-         // A detailed alpine patch can contain several peak colours while still
-         // being only a few blocks wide at a small world scale. Do not expose it
-         // as a mountain biome until its connected-region size is large enough.
-         if (kind == ClimateLayers.TerrainKind.MOUNTAIN
-            && (layer.mountainScale == null || (double)(layer.mountainScale[index] & 255) / 255.0 < MINIMUM_MOUNTAIN_REGION_SCALE)) {
-            return surroundingLandKind(layer, imageX, imageZ);
-         }
+         // Connected-region size controls elevation magnitude only. It must not
+         // erase a source mountain classification and turn a real small range
+         // into an ordinary plains biome.
          return kind != ClimateLayers.TerrainKind.CITY && kind != ClimateLayers.TerrainKind.SURROUNDING ? kind : surroundingLandKind(layer, imageX, imageZ);
       }
    }
@@ -509,11 +512,17 @@ public final class ClimateLayers {
                values = smoothTerrainClasses(values, width, height);
                int isolatedMinimum = Math.max(
                   MINIMUM_ISOLATED_TERRAIN_FRAGMENT_PIXELS,
-                  (Integer)EarthShapeServerConfig.TERRAIN_BIOME_ISOLATED_MINIMUM_REGION_PIXELS.get()
+                  Math.max(
+                     (Integer)EarthShapeServerConfig.TERRAIN_BIOME_ISOLATED_MINIMUM_REGION_PIXELS.get(),
+                     minimumPixelsForChunks((Integer)EarthShapeServerConfig.BIOME_ISOLATED_MINIMUM_REGION_CHUNKS.get())
+                  )
                );
                int generalMinimum = Math.max(
                   MINIMUM_TERRAIN_FRAGMENT_PIXELS,
-                  (Integer)EarthShapeServerConfig.TERRAIN_BIOME_MINIMUM_REGION_PIXELS.get()
+                  Math.max(
+                     (Integer)EarthShapeServerConfig.TERRAIN_BIOME_MINIMUM_REGION_PIXELS.get(),
+                     minimumPixelsForChunks((Integer)EarthShapeServerConfig.BIOME_MINIMUM_REGION_CHUNKS.get())
+                  )
                );
                values = removeSmallTerrainRegions(
                   values, width, height, isolatedMinimum, true
@@ -536,7 +545,10 @@ public final class ClimateLayers {
                // interpolation can expose them as independent biomes.
                values = removeSmallCategoricalRegions(
                   values, coverage, width, height,
-                  (Integer)EarthShapeServerConfig.BIOME_MINIMUM_REGION_PIXELS.get()
+                  Math.max(
+                     (Integer)EarthShapeServerConfig.BIOME_MINIMUM_REGION_PIXELS.get(),
+                     minimumPixelsForChunks((Integer)EarthShapeServerConfig.BIOME_MINIMUM_REGION_CHUNKS.get())
+                  )
                );
             } else if (kind == ClimateLayers.Kind.VEGETATION) {
                // Several source colours intentionally map to the same effective
@@ -545,7 +557,10 @@ public final class ClimateLayers {
                values = normalizeTreeCoverClasses(values);
                values = removeSmallCategoricalRegions(
                   values, coverage, width, height,
-                  (Integer)EarthShapeServerConfig.BIOME_MINIMUM_REGION_PIXELS.get()
+                  Math.max(
+                     (Integer)EarthShapeServerConfig.BIOME_MINIMUM_REGION_PIXELS.get(),
+                     minimumPixelsForChunks((Integer)EarthShapeServerConfig.BIOME_MINIMUM_REGION_CHUNKS.get())
+                  )
                );
             }
 
@@ -563,6 +578,11 @@ public final class ClimateLayers {
       return a + (b - a) * t;
    }
 
+   private static int minimumPixelsForChunks(int chunks) {
+      int blocksPerPixel = Math.max(1, RiversMask.INSTANCE.blocksPerPixel());
+      return Math.max(1, (int)Math.ceil((double)chunks * 256.0 / (double)(blocksPerPixel * blocksPerPixel)));
+   }
+
    private static long warpedTerrainPoint(int blockX, int blockZ) {
       if (!(Boolean)EarthShapeServerConfig.BIOME_BOUNDARY_WARP_ENABLED.get()) {
          return packPoint(blockX, blockZ);
@@ -570,7 +590,11 @@ public final class ClimateLayers {
 
       int configured = (Integer)EarthShapeServerConfig.BIOME_BOUNDARY_WARP_BLOCKS.get();
       int blocksPerPixel = RiversMask.INSTANCE.blocksPerPixel();
-      int strength = Math.min(configured, Math.max(4, blocksPerPixel * 3 / 2));
+      // A sub-pixel offset cannot bend a long cardinal raster edge: at the
+      // common 4-block scale the former six-block cap still left multi-kilometre
+      // straight biome seams.  Keep the displacement below the configured
+      // limit, but guarantee enough amplitude to visibly curve a layer edge.
+      int strength = Math.min(configured, Math.max(12, blocksPerPixel * 4));
       long transformVersion = RiversMask.INSTANCE.mapTransformVersion();
       ClimateLayers.WarpedPointCache cache = WARPED_POINT_CACHE.get();
       if (cache.transformVersion != transformVersion || cache.strength != strength) {
@@ -591,10 +615,15 @@ public final class ClimateLayers {
          return packPoint(blockX, blockZ);
       }
 
-      double warpX = smoothNoise(blockX, blockZ, 160, 0x6A09E667F3BCC909L) * 0.68
-         + smoothNoise(blockX, blockZ, 64, 0xBB67AE8584CAA73BL) * 0.32;
-      double warpZ = smoothNoise(blockX, blockZ, 160, 0x3C6EF372FE94F82BL) * 0.68
-         + smoothNoise(blockX, blockZ, 64, 0xA54FF53A5F1D36F1L) * 0.32;
+      // Two long wavelengths bend broad map lines, while the short octave
+      // prevents their boundary from resolving as a second, gentler straight
+      // segment. All terms are continuous, so this cannot make pixel teeth.
+      double warpX = smoothNoise(blockX, blockZ, 224, 0x6A09E667F3BCC909L) * 0.54
+         + smoothNoise(blockX, blockZ, 80, 0xBB67AE8584CAA73BL) * 0.31
+         + smoothNoise(blockX, blockZ, 32, 0x510E527FADE682D1L) * 0.15;
+      double warpZ = smoothNoise(blockX, blockZ, 224, 0x3C6EF372FE94F82BL) * 0.54
+         + smoothNoise(blockX, blockZ, 80, 0xA54FF53A5F1D36F1L) * 0.31
+         + smoothNoise(blockX, blockZ, 32, 0x9B05688C2B3E6C1FL) * 0.15;
       int warpedX = blockX + (int)Math.round(warpX * (double)strength);
       int warpedZ = blockZ + (int)Math.round(warpZ * (double)strength);
 
@@ -799,7 +828,13 @@ public final class ClimateLayers {
                if (surrounding < 0 || neighbours[kind] > neighbours[surrounding]) surrounding = kind;
             }
          }
-         if (region.size() < minimumArea && surrounding >= 0 && (!isolatedOnly || surroundingKinds == 1)) {
+         // Preserve connected mountain ranges under the general biome cleanup.
+         // Their own low-but-nonzero relief rule keeps them as foothills; merging
+         // them here would recreate the plains-with-random-mountain-fragments bug.
+         int requiredArea = terrain == TerrainKind.MOUNTAIN.code
+            ? Math.min(minimumArea, MINIMUM_TERRAIN_FRAGMENT_PIXELS)
+            : minimumArea;
+         if (region.size() < requiredArea && surrounding >= 0 && (!isolatedOnly || surroundingKinds == 1)) {
             for (int cursor = 0; cursor < region.size(); cursor++) result[region.get(cursor)] = (byte)surrounding;
          }
       }
@@ -913,14 +948,11 @@ public final class ClimateLayers {
          double edgeValue = radius > 0
             ? Math.exp(-0.5 * ((double)radius / sigma) * ((double)radius / sigma))
             : 0.0;
-         // Regions below the biome threshold still disappear continuously, but
-         // once a region is large enough to remain a MOUNTAIN biome it must also
-         // carry enough physical relief to rise above its surroundings. Using
-         // maximumRelief=scale allowed scale~=0.10 regions to keep the mountain
-         // biome while contributing almost no E/PV terrain signal.
-         double maximumRelief = scale < MINIMUM_MOUNTAIN_REGION_SCALE
-            ? 0.0
-            : 0.45 + 0.55 * scale;
+         // Every connected mountain region receives enough terrain guidance to
+         // rise above adjacent plains. Scale only controls how close it can get
+         // to full mountain relief, so small ranges become foothills instead of
+         // disappearing while continent-sized ranges retain their tall peaks.
+         double maximumRelief = 0.34 + 0.66 * scale;
          for (int cursor = 0; cursor < region.size(); cursor++) {
             int index = region.get(cursor);
             scales[index] = encoded;

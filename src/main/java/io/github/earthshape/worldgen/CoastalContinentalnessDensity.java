@@ -33,11 +33,13 @@ public record CoastalContinentalnessDensity(DensityFunction argument) implements
       // become ocean. Keep that same mouth physically open in the C-noise field.
       double mouthOpening = RiversMask.INSTANCE.riverMouthOpening(context.blockX(), context.blockZ());
       t *= 1.0 - mouthOpening;
-      // Keep a portion of the original continental noise. Clamping every
-      // water pixel to one C value made an unnaturally level coastal shelf;
-      // this only steers the noise toward ocean/land domains instead.
+      // The mask establishes continental domain, while vanilla C keeps the
+      // ordinary lowland variation. Keep a strong mask near the shore, then
+      // progressively return control to vanilla inland instead of imposing a
+      // separate EarthShape height-noise field.
       double maskTarget = -0.85 + 1.20 * t;
-      double guided = vanilla * 0.20 + maskTarget * 0.80;
+      double inlandVanillaWeight = mappedLand ? lerp(0.20, 0.55, smootherstep((t - 0.55) / 0.35)) : 0.20;
+      double guided = vanilla * inlandVanillaWeight + maskTarget * (1.0 - inlandVanillaWeight);
       // Keep the exact source mask authoritative without the old 0.95/0.05
       // t-clamp. Those values jumped C by 0.864 in one column. A narrow pair of
       // side limits preserves land/ocean classification while limiting the C
@@ -57,7 +59,9 @@ public record CoastalContinentalnessDensity(DensityFunction argument) implements
       double desertInfluence = ClimateLayers.INSTANCE.desertInfluence(context.blockX(), context.blockZ());
       double inlandFactor = smoothstep((t - 0.82) / 0.16);
       if (desertInfluence > 0.0 && riverInfluence <= 0.0) {
-         guided = lerp(guided, 0.10, 0.85 * desertInfluence * inlandFactor);
+         // Desert remains a terrain family selection; do not flatten its whole
+         // mapped area to one continentalness value.
+         guided = lerp(guided, 0.10, 0.55 * desertInfluence * inlandFactor);
       }
       // Every mapped land column outside the physical riverbank starts at the
       // normal overworld Y=64 baseline. The channel, its direct bank and a
@@ -147,6 +151,7 @@ public record CoastalContinentalnessDensity(DensityFunction argument) implements
       double fullTransition = Math.max(
          shallowWidth + initialTransition,
          (double)EarthShapeServerConfig.COAST_HEIGHT_FADE_BLOCKS.get()
+            * RiversMask.INSTANCE.coastShelfFadeScale(blockX, blockZ)
       );
 
       // C=-0.20 is already on the ocean side of vanilla's coast threshold.
@@ -261,6 +266,7 @@ public record CoastalContinentalnessDensity(DensityFunction argument) implements
    private static double lerp(double from, double to, double amount) {
       return from + (to - from) * amount;
    }
+
 
    @Override public void fillArray(double[] values, ContextProvider provider) { provider.fillAllDirectly(values, this); }
    @Override public DensityFunction mapAll(Visitor visitor) { return visitor.apply(new CoastalContinentalnessDensity(this.argument.mapAll(visitor))); }

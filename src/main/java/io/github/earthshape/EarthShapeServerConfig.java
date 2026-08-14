@@ -20,6 +20,9 @@ public final class EarthShapeServerConfig {
    public static final IntValue TERRAIN_BIOME_MINIMUM_REGION_PIXELS;
    public static final IntValue TERRAIN_BIOME_ISOLATED_MINIMUM_REGION_PIXELS;
    public static final IntValue BIOME_MINIMUM_REGION_PIXELS;
+   public static final IntValue BIOME_MINIMUM_REGION_CHUNKS;
+   public static final IntValue BIOME_ISOLATED_MINIMUM_REGION_CHUNKS;
+   public static final IntValue RARE_BIOME_MINIMUM_REGION_CHUNKS;
    public static final BooleanValue OCEAN_TEMPERATURE_ENABLED;
    public static final BooleanValue TUNDRA_TEMPERATURE_ENABLED;
    public static final DoubleValue TUNDRA_TEMPERATURE_THRESHOLD;
@@ -30,6 +33,9 @@ public final class EarthShapeServerConfig {
    public static final BooleanValue BIOME_BOUNDARY_WARP_ENABLED;
    public static final IntValue BIOME_BOUNDARY_WARP_BLOCKS;
    public static final IntValue COAST_HEIGHT_FADE_BLOCKS;
+   public static final BooleanValue COAST_SHELF_VARIATION_ENABLED;
+   public static final DoubleValue COAST_SHELF_VARIATION_MIN_SCALE;
+   public static final DoubleValue COAST_SHELF_VARIATION_MAX_SCALE;
    public static final IntValue COAST_SHALLOW_SHELF_WIDTH_BLOCKS;
    public static final IntValue COAST_SHELF_TRANSITION_BLOCKS;
    public static final IntValue COAST_SHELF_DEEP_FLOOR_Y;
@@ -96,6 +102,12 @@ public final class EarthShapeServerConfig {
                       "온도 및 수목 레이어에서 독립된 바이옴 분류가 유지되기 위한 최소 연결 원본 픽셀 수. 작은 조각은 가장 넓게 접한 주변 분류로 병합됩니다."
               )
               .defineInRange("biomeMinimumRegionPixels", 16, 1, 4096);
+      BIOME_MINIMUM_REGION_CHUNKS = builder.comment("생성된 청크에서 연결된 육지 레이어 생물군계 조각의 최소 면적입니다. 이는 크기를 고려하며 기존 소스 픽셀 제한보다 우선합니다.")
+              .defineInRange("biomeMinimumRegionChunks", 32, 1, 4096);
+      BIOME_ISOLATED_MINIMUM_REGION_CHUNKS = builder.comment("다른 생물군계로 둘러싸인 육지층 조각에 대해 생성되는 최소 청크 면적.")
+              .defineInRange("biomeIsolatedMinimumRegionChunks", 48, 1, 4096);
+      RARE_BIOME_MINIMUM_REGION_CHUNKS = builder.comment("희귀한 변형 지형을 선택하기 위한 최소 지원 지형 면적입니다. 강, 해안, 산, 바다는 제외됩니다.")
+              .defineInRange("rareBiomeMinimumRegionChunks", 64, 0, 4096);
       OCEAN_TEMPERATURE_ENABLED = builder.comment("해양 바이옴의 온도를 선택할 때만 earth_temperature.png를 사용합니다.").define("oceanTemperatureEnabled", true);
       TUNDRA_TEMPERATURE_ENABLED = builder.comment("충분히 추운 육지에서 툰드라, 타이가, 설산 바이옴을 선택할 때 earth_temperature.png를 사용합니다.")
               .define("tundraTemperatureEnabled", true);
@@ -112,7 +124,7 @@ public final class EarthShapeServerConfig {
       TEMPERATURE_VERTICAL_SCALE = builder.comment(
                       "적도 부근에서 earth_temperature.png를 수직으로 확장하는 비율. 1.12는 확장된 6000x3400 월드 맵을 사용할 때 남아프리카가 의도된 온난대에 유지되도록 합니다."
               )
-              .defineInRange("temperatureVerticalScale", 1.12, 0.75, 1.5);
+              .defineInRange("temperatureVerticalScale", 1.0, 0.75, 1.5);
       RIVER_BIOMES_ENABLED = builder.comment("rivers.bmp의 파란 선을 실제 강 바이옴으로 사용하고, 그 외 모든 강 바이옴은 억제합니다.")
               .define("riverBiomesEnabled", true);
       BIOME_BOUNDARY_WARP_ENABLED = builder.comment(
@@ -127,6 +139,12 @@ public final class EarthShapeServerConfig {
       builder.push("terrain_shaping");
       COAST_HEIGHT_FADE_BLOCKS = builder.comment("해안선 대륙붕 경사가 완만하게 이어지는 해안으로부터의 거리.")
               .defineInRange("coastHeightFadeBlocks", 320, 20, 1024);
+      COAST_SHELF_VARIATION_ENABLED = builder.comment("Use a deterministic per-coast-segment variation for the offshore shelf slope. The same world seed always produces the same slope lengths.")
+              .define("coastShelfVariationEnabled", true);
+      COAST_SHELF_VARIATION_MIN_SCALE = builder.comment("Minimum multiplier for coastHeightFadeBlocks on an individual coastal segment.")
+              .defineInRange("coastShelfVariationMinScale", 0.65, 0.25, 1.0);
+      COAST_SHELF_VARIATION_MAX_SCALE = builder.comment("Maximum multiplier for coastHeightFadeBlocks on an individual coastal segment.")
+              .defineInRange("coastShelfVariationMaxScale", 1.35, 1.0, 2.0);
       COAST_SHALLOW_SHELF_WIDTH_BLOCKS = builder.comment("해안 직후 Y=61(수심 1블록)으로 고정되는 얕은 대륙붕 폭.")
               .defineInRange("coastShallowShelfWidthBlocks", 6, 4, 8);
       COAST_SHELF_TRANSITION_BLOCKS = builder.comment("얕은 대륙붕 끝에서 깊은 해저로 완만히 내려가는 거리.")

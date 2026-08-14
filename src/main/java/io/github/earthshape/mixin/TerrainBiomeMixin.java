@@ -198,13 +198,22 @@ public abstract class TerrainBiomeMixin implements EarthShapeFinalBiomeResolver 
       long layerPoint = warpedLayerPoint(blockX, blockZ);
       int layerX = unpackX(layerPoint);
       int layerZ = unpackZ(layerPoint);
-      ClimateLayers.TerrainKind terrain = layers.terrainKind(layerX, layerZ);
+      boolean mappedOcean = RiversMask.INSTANCE.sampleLayerLand(blockX, blockZ) < 0.5;
+      // Ocean temperature must use the exact coastline-map coordinate. Layer
+      // domain warp is intentionally land-only guidance; applying it to water
+      // displaced isotherms away from the coast that defines the same map.
+      ClimateLayers.TerrainKind terrain = mappedOcean
+         ? ClimateLayers.TerrainKind.WATER
+         : layers.terrainKind(layerX, layerZ);
       boolean sourceRiver = (Boolean)EarthShapeServerConfig.RIVER_BIOMES_ENABLED.get() && RiversMask.INSTANCE.isInlandRiverBiome(blockX, blockZ);
       if (!sourceRiver) {
          terrain = layers.terrainKindAtRiverbank(blockX, blockZ, terrain);
       }
       ClimateLayers.TreeCover trees = layers.treeCover(layerX, layerZ);
-      double layerTemperature = layers.temperature(layerX, layerZ);
+      double layerTemperature = layers.temperature(
+         mappedOcean ? blockX : layerX,
+         mappedOcean ? blockZ : layerZ
+      );
       float temperature = (float)layerTemperature;
       float humidity = -0.08F;
       float continentalness = RiversMask.INSTANCE.sampleLayerLand(blockX, blockZ) >= 0.5 ? 0.14F : -0.50F;
@@ -881,17 +890,28 @@ public abstract class TerrainBiomeMixin implements EarthShapeFinalBiomeResolver 
       if (!(Boolean)EarthShapeServerConfig.BIOME_BOUNDARY_WARP_ENABLED.get()) {
          return packPoint(blockX, blockZ);
       } else {
-         int strength = Math.min((Integer)EarthShapeServerConfig.BIOME_BOUNDARY_WARP_BLOCKS.get(), Math.max(4, RiversMask.INSTANCE.blocksPerPixel() * 3 / 4));
-         // Only boundary samples need displacement. Applying noise in the
-         // interior changes nothing, while skipping the boundary preserved the
-         // source bitmap's exact horizontal and vertical pixel edges.
-         if (strength == 0 || !ClimateLayers.INSTANCE.isTerrainBoundary(blockX, blockZ, Math.max(8, strength * 2))) {
-            return packPoint(blockX, blockZ);
-         } else {
-            int warpedX = blockX + (int)Math.round(smoothNoise(blockX, blockZ, 7640891576956012809L) * (double)strength);
-            int warpedZ = blockZ + (int)Math.round(smoothNoise(blockX, blockZ, -4942790177534073029L) * (double)strength);
-            return packPoint(warpedX, warpedZ);
-         }
+         int strength = Math.min(
+            (Integer)EarthShapeServerConfig.BIOME_BOUNDARY_WARP_BLOCKS.get(),
+            Math.max(12, RiversMask.INSTANCE.blocksPerPixel() * 4)
+         );
+         if (strength == 0) return packPoint(blockX, blockZ);
+
+         // Always domain-warp map-layer lookup coordinates. Previously this
+         // was conditional on a four-way boundary probe; a long straight edge
+         // could miss that probe and therefore bypass the only noise guide.
+         // The land-side check keeps the coastline authoritative, while river
+         // selection continues to use its independent unwarped mask.
+         int warpedX = blockX + (int)Math.round(
+            (smoothNoise(blockX, blockZ, 7640891576956012809L) * 0.72
+               + smoothNoise(blockX, blockZ, 6983438078262162901L) * 0.28) * (double)strength
+         );
+         int warpedZ = blockZ + (int)Math.round(
+            (smoothNoise(blockX, blockZ, -4942790177534073029L) * 0.72
+               + smoothNoise(blockX, blockZ, -7581763189423831141L) * 0.28) * (double)strength
+         );
+         boolean originalLand = RiversMask.INSTANCE.sampleLayerLand(blockX, blockZ) >= 0.5;
+         boolean warpedLand = RiversMask.INSTANCE.sampleLayerLand(warpedX, warpedZ) >= 0.5;
+         return originalLand == warpedLand ? packPoint(warpedX, warpedZ) : packPoint(blockX, blockZ);
       }
    }
 
@@ -980,10 +1000,36 @@ public abstract class TerrainBiomeMixin implements EarthShapeFinalBiomeResolver 
       int blockX,
       int blockZ
    ) {
-      return AdditionalBiomeRegistry.select(
+      Holder<Biome> candidate = AdditionalBiomeRegistry.select(
          LayerKey.of(terrain, trees, temperature, hydrology, snowAllowed, fullMountainPeak, mesa),
          regionalVariant(blockX, blockZ)
       );
+      if (candidate != null
+         && hydrology == Hydrology.LAND
+         && terrain != ClimateLayers.TerrainKind.HILLS
+         && terrain != ClimateLayers.TerrainKind.MOUNTAIN
+         && AdditionalBiomeRegistry.isRareCandidate(candidate)
+         && !supportsRareBiomeArea(terrain, blockX, blockZ)) {
+         return null;
+      }
+      return candidate;
+   }
+
+   /**
+    * Rare variants are allowed only where their source terrain family has room
+    * for the configured footprint. A four-direction support test is constant
+    * time and prevents an isolated narrow remnant from becoming a rare biome
+    * without doing a connected-component search during chunk generation.
+    */
+   private static boolean supportsRareBiomeArea(ClimateLayers.TerrainKind terrain, int blockX, int blockZ) {
+      int chunks = (Integer)EarthShapeServerConfig.RARE_BIOME_MINIMUM_REGION_CHUNKS.get();
+      if (chunks <= 0) return true;
+      int radius = Math.max(16, (int)Math.ceil(Math.sqrt((double)chunks)) * 8);
+      ClimateLayers layers = ClimateLayers.INSTANCE;
+      return layers.terrainKind(blockX - radius, blockZ) == terrain
+         && layers.terrainKind(blockX + radius, blockZ) == terrain
+         && layers.terrainKind(blockX, blockZ - radius) == terrain
+         && layers.terrainKind(blockX, blockZ + radius) == terrain;
    }
 
    @Unique
