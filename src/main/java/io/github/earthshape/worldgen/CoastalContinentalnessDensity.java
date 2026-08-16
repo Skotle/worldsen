@@ -158,9 +158,11 @@ public record CoastalContinentalnessDensity(DensityFunction argument) implements
       // Start just below it, then descend toward a configurable deep-ocean
       // target.  The zero-slope smoothstep removes the cut face at both ends.
       double progress = smoothstep((distance - shallowWidth) / Math.max(1.0, fullTransition - shallowWidth));
+      int initialDepth = RiversMask.INSTANCE.coastShelfInitialDepthBlocks(blockX, blockZ);
       int deepFloorY = (Integer)EarthShapeServerConfig.COAST_SHELF_DEEP_FLOOR_Y.get();
       double deepTarget = Math.max(-0.85, Math.min(-0.30, -0.30 - (61.0 - (double)deepFloorY) * 0.025));
-      double shelfTarget = lerp(-0.21, deepTarget, progress);
+      double nearshoreTarget = -0.21 - (double)(initialDepth - 1) * 0.025;
+      double shelfTarget = lerp(nearshoreTarget, deepTarget, progress);
 
       // Reintroduce only a small, gradually increasing share of vanilla noise
       // offshore.  It breaks up a perfectly level seabed, while the final cap

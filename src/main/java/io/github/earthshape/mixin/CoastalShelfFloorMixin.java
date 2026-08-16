@@ -60,11 +60,17 @@ public abstract class CoastalShelfFloorMixin {
          return;
       }
       if (mode == 3L) {
-         // Close the channel at the configured lower limit. The aquifer mixin
-         // fills only naturally open cells above it, retaining a variable bed
-         // while making water deeper than six blocks impossible.
+         // Give the channel a compact solid bed instead of closing only one Y
+         // layer. A one-block lid allowed a cave/aquifer immediately below the
+         // river to read as a second, roofed underground river. Keep the repair
+         // shallow so ordinary caves below the channel are still available.
          if (y == floorY) {
             callback.setReturnValue(Blocks.STONE.defaultBlockState());
+         } else if (y >= (int)column[5] && y < floorY) {
+            BlockState result = callback.getReturnValue();
+            if (result != null && (result.isAir() || result.is(Blocks.WATER))) {
+               callback.setReturnValue(Blocks.STONE.defaultBlockState());
+            }
          }
          return;
       }
@@ -124,6 +130,7 @@ public abstract class CoastalShelfFloorMixin {
             int depth = RiversMask.INSTANCE.riverBedDepthBlocks(blockX, blockZ);
             column[3] = 3L;
             column[4] = 62L - depth;
+            column[5] = Math.max(-64L, column[4] - 8L);
             return;
          }
 
@@ -140,13 +147,9 @@ public abstract class CoastalShelfFloorMixin {
          return;
       }
 
-      if (mouthOpening > 0.001) {
-         return;
-      }
-
       double distance = RiversMask.INSTANCE.oceanDistanceBlocks(blockX, blockZ);
-      double oneMetreWidth = (double)EarthShapeServerConfig.COAST_SHALLOW_SHELF_WIDTH_BLOCKS.get();
-      double nearshoreEnd = oneMetreWidth
+      double shallowWidth = (double)EarthShapeServerConfig.COAST_SHALLOW_SHELF_WIDTH_BLOCKS.get();
+      double nearshoreEnd = shallowWidth
          + (double)EarthShapeServerConfig.COAST_SHELF_TRANSITION_BLOCKS.get();
       double shelfEnd = Math.max(
          nearshoreEnd,
@@ -155,15 +158,15 @@ public abstract class CoastalShelfFloorMixin {
       );
       if (distance > shelfEnd) return;
 
+      double initialDepth = (double)RiversMask.INSTANCE.coastShelfInitialDepthBlocks(blockX, blockZ);
       double depth;
-      if (distance <= oneMetreWidth) {
-         depth = 1.0;
+      if (distance <= shallowWidth) {
+         depth = initialDepth;
       } else if (distance <= nearshoreEnd) {
-         // The land-connected nearshore is always between one and five
-         // metres deep. Both ends have zero slope, avoiding a ledge where
-         // the one-metre water first begins and where open shelf takes over.
-         double progress = smootherstep((distance - oneMetreWidth) / Math.max(1.0, nearshoreEnd - oneMetreWidth));
-         depth = 1.0 + 4.0 * progress;
+         // Each broad coastal reach begins at one, two, or three metres, then
+         // joins the common five-metre shelf with zero slope at both ends.
+         double progress = smootherstep((distance - shallowWidth) / Math.max(1.0, nearshoreEnd - shallowWidth));
+         depth = initialDepth + (5.0 - initialDepth) * progress;
       } else {
          int deepFloorY = (Integer)EarthShapeServerConfig.COAST_SHELF_DEEP_FLOOR_Y.get();
          double deepDepth = Math.max(5.0, 62.0 - (double)deepFloorY);

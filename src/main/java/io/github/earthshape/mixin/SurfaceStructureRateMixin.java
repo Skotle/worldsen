@@ -5,6 +5,8 @@ import io.github.earthshape.worldgen.StructureLayerCompatibility;
 import java.util.function.Predicate;
 import net.minecraft.core.Holder;
 import net.minecraft.core.RegistryAccess;
+import net.minecraft.core.registries.Registries;
+import net.minecraft.resources.ResourceLocation;
 import net.minecraft.world.level.ChunkPos;
 import net.minecraft.world.level.LevelHeightAccessor;
 import net.minecraft.world.level.biome.Biome;
@@ -31,21 +33,32 @@ public abstract class SurfaceStructureRateMixin {
       CallbackInfoReturnable<StructureStart> callback
    ) {
       Structure structure = (Structure)(Object)this;
+      ResourceLocation structureId = registryAccess.registryOrThrow(Registries.STRUCTURE).getKey(structure);
+      boolean deadSeaArch = isDeadSeaArch(structureId);
       if (structure.step() == GenerationStep.Decoration.SURFACE_STRUCTURES
          && !StructureLayerCompatibility.isAllowed(registryAccess, structure, chunkPos)) {
          callback.setReturnValue(StructureStart.INVALID_START);
          return;
       }
 
-      double rate = (Double)EarthShapeServerConfig.SURFACE_STRUCTURE_RATE.get();
-      if (rate >= 1.0 || structure.step() != GenerationStep.Decoration.SURFACE_STRUCTURES) return;
+      // BWG's enormous Dead Sea arches run during RAW_GENERATION rather than
+      // SURFACE_STRUCTURES, so the ordinary surface-structure limiter never
+      // sees them. Retain the rare landmark at one percent of BWG's candidates.
+      double rate = deadSeaArch ? 0.01 : (Double)EarthShapeServerConfig.SURFACE_STRUCTURE_RATE.get();
+      if (rate >= 1.0 || (!deadSeaArch && structure.step() != GenerationStep.Decoration.SURFACE_STRUCTURES)) return;
 
       long value = seed ^ ((long)chunkPos.x * 341873128712L) ^ ((long)chunkPos.z * 132897987541L)
-         ^ (long)structure.getClass().getName().hashCode() * 42317861L;
+         ^ (long)(structureId == null ? structure.getClass().getName().hashCode() : structureId.hashCode()) * 42317861L;
       value ^= value >>> 33;
       value *= -49064778989728563L;
       value ^= value >>> 33;
       double roll = (double)(value >>> 11) * 0x1.0p-53;
       if (roll >= rate) callback.setReturnValue(StructureStart.INVALID_START);
+   }
+
+   private static boolean isDeadSeaArch(ResourceLocation id) {
+      if (id == null) return false;
+      return "biomeswevegone".equals(id.getNamespace()) && "dripstone_arch".equals(id.getPath())
+         || "byg".equals(id.getNamespace()) && "stone_arch".equals(id.getPath());
    }
 }

@@ -28,7 +28,6 @@ public final class EarthShapeServerConfig {
    public static final DoubleValue TUNDRA_TEMPERATURE_THRESHOLD;
    public static final IntValue SNOW_ALTITUDE_BLOCKS;
    public static final DoubleValue SNOW_TEMPERATURE_THRESHOLD;
-   public static final DoubleValue TEMPERATURE_VERTICAL_SCALE;
    public static final BooleanValue RIVER_BIOMES_ENABLED;
    public static final BooleanValue BIOME_BOUNDARY_WARP_ENABLED;
    public static final IntValue BIOME_BOUNDARY_WARP_BLOCKS;
@@ -121,10 +120,6 @@ public final class EarthShapeServerConfig {
                       "고지대 설선 아래에서 눈이 내리는 온도 맵 기준값. -0.625는 보라색과 파란색의 영하 구간에 해당합니다."
               )
               .defineInRange("snowTemperatureThreshold", -0.625, -1.0, 0.0);
-      TEMPERATURE_VERTICAL_SCALE = builder.comment(
-                      "적도 부근에서 earth_temperature.png를 수직으로 확장하는 비율. 1.12는 확장된 6000x3400 월드 맵을 사용할 때 남아프리카가 의도된 온난대에 유지되도록 합니다."
-              )
-              .defineInRange("temperatureVerticalScale", 1.0, 0.75, 1.5);
       RIVER_BIOMES_ENABLED = builder.comment("rivers.bmp의 파란 선을 실제 강 바이옴으로 사용하고, 그 외 모든 강 바이옴은 억제합니다.")
               .define("riverBiomesEnabled", true);
       BIOME_BOUNDARY_WARP_ENABLED = builder.comment(
@@ -142,9 +137,9 @@ public final class EarthShapeServerConfig {
       COAST_SHELF_VARIATION_ENABLED = builder.comment("Use a deterministic per-coast-segment variation for the offshore shelf slope. The same world seed always produces the same slope lengths.")
               .define("coastShelfVariationEnabled", true);
       COAST_SHELF_VARIATION_MIN_SCALE = builder.comment("Minimum multiplier for coastHeightFadeBlocks on an individual coastal segment.")
-              .defineInRange("coastShelfVariationMinScale", 0.65, 0.25, 1.0);
+              .defineInRange("coastShelfVariationMinScale", 0.55, 0.25, 1.0);
       COAST_SHELF_VARIATION_MAX_SCALE = builder.comment("Maximum multiplier for coastHeightFadeBlocks on an individual coastal segment.")
-              .defineInRange("coastShelfVariationMaxScale", 1.35, 1.0, 2.0);
+              .defineInRange("coastShelfVariationMaxScale", 2.0, 1.0, 2.0);
       COAST_SHALLOW_SHELF_WIDTH_BLOCKS = builder.comment("해안 직후 Y=61(수심 1블록)으로 고정되는 얕은 대륙붕 폭.")
               .defineInRange("coastShallowShelfWidthBlocks", 6, 4, 8);
       COAST_SHELF_TRANSITION_BLOCKS = builder.comment("얕은 대륙붕 끝에서 깊은 해저로 완만히 내려가는 거리.")

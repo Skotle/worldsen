@@ -5,6 +5,7 @@ import io.github.earthshape.EarthShapeServerConfig;
 import java.awt.image.BufferedImage;
 import java.io.IOException;
 import java.io.InputStream;
+import java.util.BitSet;
 import javax.imageio.ImageIO;
 
 public final class ClimateLayers {
@@ -360,11 +361,6 @@ public final class ClimateLayers {
       double mapWidth = (double)RiversMask.INSTANCE.width();
       double mapHeight = (double)RiversMask.INSTANCE.height();
 
-      // Apply the configured north/south expansion around the equator. This
-      // option previously existed only in the config and was never consumed.
-      double verticalScale = (Double)EarthShapeServerConfig.TEMPERATURE_VERTICAL_SCALE.get();
-      worldZ = (worldZ - mapHeight * 0.5) / verticalScale + mapHeight * 0.5;
-
       // Continue the equirectangular temperature field across either pole
       // instead of dropping to a latitude-only fallback at Z=0/3400. Crossing
       // a pole reflects latitude and moves longitude by 180 degrees, so mapped
@@ -383,8 +379,16 @@ public final class ClimateLayers {
       int z = (int)imageZ;
       double tx = imageX - (double)x;
       double tz = imageZ - (double)z;
-      double value = lerp(lerp(layer.value(x, z), layer.value(x + 1, z), tx), lerp(layer.value(x, z + 1), layer.value(x + 1, z + 1), tx), tz);
-      double coverage = lerp(lerp(layer.coverage(x, z), layer.coverage(x + 1, z), tx), lerp(layer.coverage(x, z + 1), layer.coverage(x + 1, z + 1), tx), tz);
+      boolean mappedOcean = RiversMask.INSTANCE.sampleLayerLand(blockX, blockZ) < 0.5;
+      double w00 = (1.0 - tx) * (1.0 - tz) * layer.hydrologyCoverage(x, z, mappedOcean);
+      double w10 = tx * (1.0 - tz) * layer.hydrologyCoverage(x + 1, z, mappedOcean);
+      double w01 = (1.0 - tx) * tz * layer.hydrologyCoverage(x, z + 1, mappedOcean);
+      double w11 = tx * tz * layer.hydrologyCoverage(x + 1, z + 1, mappedOcean);
+      double coverage = w00 + w10 + w01 + w11;
+      double value = coverage > 0.0
+         ? (layer.value(x, z) * w00 + layer.value(x + 1, z) * w10
+            + layer.value(x, z + 1) * w01 + layer.value(x + 1, z + 1) * w11) / coverage
+         : 0.5;
       return new ClimateLayers.TemperatureSample(value, coverage);
    }
 
@@ -489,14 +493,19 @@ public final class ClimateLayers {
             int height = image.getHeight();
             byte[] values = new byte[width * height];
             byte[] coverage = new byte[width * height];
+            BitSet temperatureOcean = kind == ClimateLayers.Kind.TEMPERATURE ? new BitSet(width * height) : null;
             int[] row = new int[width];
 
             for (int z = 0; z < height; z++) {
                image.getRGB(0, z, width, 1, row, 0, width);
 
                for (int x = 0; x < width; x++) {
-                  values[z * width + x] = (byte)kind.value(row[x]);
-                  coverage[z * width + x] = (byte)kind.coverage(row[x]);
+                  int index = z * width + x;
+                  values[index] = (byte)kind.value(row[x]);
+                  coverage[index] = (byte)kind.coverage(row[x]);
+                  if (temperatureOcean != null && ClimateLayers.Kind.isOceanTemperatureColor(row[x])) {
+                     temperatureOcean.set(index);
+                  }
                }
             }
 
@@ -565,7 +574,7 @@ public final class ClimateLayers {
             }
 
             EarthShape.LOGGER.info("[EarthShape] {} climate layer loaded: {}x{}.", new Object[]{name, width, height});
-            var14x = new ClimateLayers.Data(width, height, values, coverage, relief, mountainScale, desertBlend);
+            var14x = new ClimateLayers.Data(width, height, values, coverage, relief, mountainScale, desertBlend, temperatureOcean);
          }
 
          return var14x;
@@ -1179,7 +1188,8 @@ public final class ClimateLayers {
       byte[] coverage,
       byte[] relief,
       byte[] mountainScale,
-      byte[] desertBlend
+      byte[] desertBlend,
+      BitSet temperatureOcean
    ) {
       double value(int x, int z) {
          return (double)(this.values[z * this.width + x] & 255) / 255.0;
@@ -1187,6 +1197,13 @@ public final class ClimateLayers {
 
       double coverage(int x, int z) {
          return (double)(this.coverage[z * this.width + x] & 255) / 255.0;
+      }
+
+      double hydrologyCoverage(int x, int z, boolean ocean) {
+         int index = z * this.width + x;
+         return this.temperatureOcean != null && this.temperatureOcean.get(index) != ocean
+            ? 0.0
+            : (double)(this.coverage[index] & 255) / 255.0;
       }
    }
 
@@ -1234,6 +1251,25 @@ public final class ClimateLayers {
 
       int coverage(int color) {
          return 255;
+      }
+
+      private static boolean isOceanTemperatureColor(int color) {
+         int rgb = color & 16777215;
+         int oceanDistance = Math.min(
+            colourDistance(rgb, 129),
+            Math.min(colourDistance(rgb, 190), colourDistance(rgb, 33470))
+         );
+         int landDistance = Math.min(
+            Math.min(colourDistance(rgb, 9787603), colourDistance(rgb, 4694770)),
+            Math.min(
+               Math.min(colourDistance(rgb, 4772041), colourDistance(rgb, 10341200)),
+               Math.min(
+                  Math.min(colourDistance(rgb, 16373540), colourDistance(rgb, 16491568)),
+                  Math.min(colourDistance(rgb, 16540464), colourDistance(rgb, 14954539))
+               )
+            )
+         );
+         return oceanDistance < landDistance;
       }
 
       private static int temperatureBand(int color) {

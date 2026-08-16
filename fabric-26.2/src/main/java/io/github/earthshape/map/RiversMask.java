@@ -204,6 +204,41 @@ public final class RiversMask {
       return noise < -0.28 ? 1 : (noise > 0.28 ? 3 : 2);
    }
 
+   /** Coherent one-, two-, or three-block starting depth for each coastal reach. */
+   public int coastShelfInitialDepthBlocks(int blockX, int blockZ) {
+      int cellSize = 768;
+      int cellX = Math.floorDiv(blockX, cellSize);
+      int cellZ = Math.floorDiv(blockZ, cellSize);
+      double tx = smoothstep((double)Math.floorMod(blockX, cellSize) / (double)cellSize);
+      double tz = smoothstep((double)Math.floorMod(blockZ, cellSize) / (double)cellSize);
+      long salt = 0x94D049BB133111EBL ^ Long.rotateLeft(this.mapCenterSeed, 17);
+      double top = lerp(axialValue(cellX, cellZ, salt), axialValue(cellX + 1, cellZ, salt), tx);
+      double bottom = lerp(axialValue(cellX, cellZ + 1, salt), axialValue(cellX + 1, cellZ + 1, salt), tx);
+      double noise = lerp(top, bottom, tz);
+      return noise < -0.28 ? 1 : (noise > 0.28 ? 3 : 2);
+   }
+
+   /** Seed-stable shelf run-out multiplier shared by each broad coastal reach. */
+   public double coastShelfFadeScale(int blockX, int blockZ) {
+      if (!(Boolean)EarthShapeServerConfig.COAST_SHELF_VARIATION_ENABLED.get()) return 1.0;
+      double minimum = (Double)EarthShapeServerConfig.COAST_SHELF_VARIATION_MIN_SCALE.get();
+      double maximum = (Double)EarthShapeServerConfig.COAST_SHELF_VARIATION_MAX_SCALE.get();
+      if (maximum < minimum) {
+         double swap = minimum;
+         minimum = maximum;
+         maximum = swap;
+      }
+      int cellSize = 1536;
+      int cellX = Math.floorDiv(blockX, cellSize);
+      int cellZ = Math.floorDiv(blockZ, cellSize);
+      double tx = smoothstep((double)Math.floorMod(blockX, cellSize) / (double)cellSize);
+      double tz = smoothstep((double)Math.floorMod(blockZ, cellSize) / (double)cellSize);
+      long salt = 0xD1B54A32D192ED03L ^ this.mapCenterSeed;
+      double top = lerp(axialValue(cellX, cellZ, salt), axialValue(cellX + 1, cellZ, salt), tx);
+      double bottom = lerp(axialValue(cellX, cellZ + 1, salt), axialValue(cellX + 1, cellZ + 1, salt), tx);
+      return lerp(minimum, maximum, (lerp(top, bottom, tz) + 1.0) * 0.5);
+   }
+
    /**
     * Variable visible river depth. The centre meanders between three and six
     * blocks while the submerged shoulder rises toward one block at the bank.
@@ -724,11 +759,11 @@ public final class RiversMask {
          && x < loaded.width
          && z < loaded.height
          && loaded.riverInfluence.get(z * loaded.width + x)
-         // Source river ink is not white, so a centreline pixel can remain
-         // absent from the land mask in narrow corridors. Do not drop that
-         // valid centreline; only the explicitly detected mouth belongs to sea.
+         // Only the centreline reached from a genuine inland seed may own a
+         // channel. Using every painted river pixel here let a line through a
+         // narrow strait, or its continuation beyond a mouth, become RIVER.
          && (loaded.land.get(z * loaded.width + x)
-            || loaded.rivers.get(z * loaded.width + x) && !loaded.riverMouths.get(z * loaded.width + x));
+            || loaded.inlandRivers.get(z * loaded.width + x));
    }
 
    public int riverWidthBlocks(int blockX, int blockZ) {
@@ -1003,10 +1038,13 @@ public final class RiversMask {
             restoreOnlyInlandRiverPixels(width, height, land, sourceRivers);
             RiversMask.OceanProximity openOcean = RiversMask.OceanProximity.create(width, height, land);
             BitSet riverMouths = createRiverMouths(width, height, land, riverCentrelines, sourceRivers, openOcean);
-            BitSet inlandRivers = createInlandRiverCentrelines(width, height, land, riverCentrelines, riverMouths);
+            BitSet inlandRivers = createInlandRiverCentrelines(width, height, land, riverCentrelines, riverMouths, openOcean);
             BitSet frozenRivers = createFrozenRiverComponents(width, height, riverCentrelines);
             byte[] riverCorners = createRiverCornerMasks(width, height, riverCentrelines);
-            BitSet riverInfluence = createRiverInfluence(width, height, land, riverCentrelines, riverWidths);
+            // Build channel reach only from the inland-connected part. Source
+            // ink beyond a mouth must not keep carving or painting river biomes
+            // into the sea.
+            BitSet riverInfluence = createRiverInfluence(width, height, land, inlandRivers, riverWidths);
             int coastRadiusPixels = Math.max(2, Math.min(12, (Integer)EarthShapeServerConfig.COAST_HEIGHT_FADE_BLOCKS.get() / Math.max(1, (Integer)EarthShapeServerConfig.BLOCKS_PER_PIXEL.get() * 6)));
             byte[] coastalLandness = createCoastalLandness(width, height, land, coastRadiusPixels);
             byte[] oceanDistance = createOceanDistance(width, height, land);
@@ -1240,12 +1278,18 @@ public final class RiversMask {
     * A blue line lying only in a narrow strait has no inland seed and is excluded.
     */
    private static BitSet createInlandRiverCentrelines(
-      int width, int height, BitSet land, BitSet rivers, BitSet riverMouths
+      int width, int height, BitSet land, BitSet rivers, BitSet riverMouths,
+      RiversMask.OceanProximity openOcean
    ) {
       BitSet inland = new BitSet(width * height);
       IntQueue queue = new IntQueue();
       for (int index = rivers.nextSetBit(0); index >= 0; index = rivers.nextSetBit(index + 1)) {
-         if (land.get(index)) {
+         int x = index % width;
+         int z = index / width;
+         // A painted line in a strait can be surrounded by enough coast pixels
+         // to look land-supported. It must not bootstrap an inland-river flood
+         // when the same location is already adjacent to the edge-connected sea.
+         if (land.get(index) && !openOcean.isNearOpenOcean(x, z)) {
             inland.set(index);
             queue.add(index);
          }
@@ -1262,7 +1306,11 @@ public final class RiversMask {
                int nz = z + dz;
                if (!inside(nx, nz, width, height)) continue;
                int neighbour = nz * width + nx;
-               if (rivers.get(neighbour) && !inland.get(neighbour)) {
+               // Stop at the first coarse cell positively connected to the open
+               // ocean. This bounds the mouth transition and rejects a river
+               // stroke running lengthwise through a narrow sea passage.
+               if (rivers.get(neighbour) && !inland.get(neighbour)
+                  && !openOcean.isOpenOcean(nx, nz)) {
                   inland.set(neighbour);
                   queue.add(neighbour);
                }
@@ -2095,6 +2143,12 @@ public final class RiversMask {
          int x = Math.max(0, Math.min(this.width - 1, sourceX / 4));
          int z = Math.max(0, Math.min(this.height - 1, sourceZ / 4));
          return (this.distance[z * this.width + x] & 255) <= 3;
+      }
+
+      boolean isOpenOcean(int sourceX, int sourceZ) {
+         int x = Math.max(0, Math.min(this.width - 1, sourceX / 4));
+         int z = Math.max(0, Math.min(this.height - 1, sourceZ / 4));
+         return (this.distance[z * this.width + x] & 255) == 0;
       }
 
       private static int floodWater(int index, BitSet water, BitSet openOcean, int[] queue, int tail) {
