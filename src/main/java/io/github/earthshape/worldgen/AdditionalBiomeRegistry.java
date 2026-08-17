@@ -198,6 +198,10 @@ public final class AdditionalBiomeRegistry {
    }
 
    private static boolean matchesLandFamily(LayerKey key, Holder<Biome> biome) {
+      // Meadows are open mid-elevation slopes even when a compatibility tag also
+      // classifies them as plains. Keep vanilla and modded meadow variants out of
+      // lowland plains/forest selection.
+      if (isMeadowLike(biome)) return key.terrain() == ClimateLayers.TerrainKind.HILLS;
       BopFamily bop = bopFamily(biome);
       if (bop != BopFamily.NONE) {
          return switch (key.terrain()) {
@@ -346,6 +350,10 @@ public final class AdditionalBiomeRegistry {
             default -> BopFamily.NONE;
          };
       }).orElse(BopFamily.NONE);
+   }
+
+   private static boolean isMeadowLike(Holder<Biome> biome) {
+      return biome.unwrapKey().map(key -> key.location().getPath().contains("meadow")).orElse(false);
    }
 
    private enum BopFamily {

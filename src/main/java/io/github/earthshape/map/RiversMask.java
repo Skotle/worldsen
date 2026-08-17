@@ -599,7 +599,10 @@ public final class RiversMask {
       // Biome ownership is stricter than physical channel guidance. Painted
       // river ink may continue past the detected mouth into a sea pixel; that
       // extension must remain ocean even though the channel density stays open.
-      if (this.riverMouthOpening(blockX, blockZ) > 0.0) return cache.set(loaded, blockX, blockZ, 0);
+      // Keep the complete river width until the actual mouth cell. Using any
+      // non-zero opening value removed the biome across the mouth fade radius,
+      // making the river converge to a point before it reached the sea.
+      if (this.isRiverMouth(blockX, blockZ)) return cache.set(loaded, blockX, blockZ, 0);
 
       int imageX = (int)Math.floor(this.mapImageX(blockX, loaded));
       int imageZ = (int)Math.floor(this.mapImageZ(blockZ, loaded));
@@ -722,13 +725,26 @@ public final class RiversMask {
             if (width <= 0) continue;
             double dx = (imageX - ((double)x + 0.5)) * (double)this.blocksPerPixel();
             double dz = (imageZ - ((double)z + 0.5)) * (double)this.blocksPerPixel();
-            double radius = (double)width * 0.5
-               + Math.max(2.0, (double)EarthShapeServerConfig.RIVER_CHANNEL_EDGE_FADE_BLOCKS.get());
+            double edgeFade = Math.max(2.0, (double)EarthShapeServerConfig.RIVER_CHANNEL_EDGE_FADE_BLOCKS.get());
             double distance = Math.sqrt(dx * dx + dz * dz);
-            if (distance >= radius) continue;
-            double t = 1.0 - distance / radius;
-            t = t * t * (3.0 - 2.0 * t);
-            strongest = Math.max(strongest, t);
+            double fullReach = Math.max((double)width, (double)this.blocksPerPixel() * 1.5);
+            double longitudinalEnd = fullReach + edgeFade;
+            if (distance >= longitudinalEnd) continue;
+
+            // Measure the cross-section against the continued painted path, not
+            // against the mouth point. This produces a constant-width slot at
+            // the coastline instead of the former circular, pointed opening.
+            double crossDistance = this.riverCentrelineDistance(blockX, blockZ)
+               * (double)this.blocksPerPixel();
+            double halfWidth = (double)width * 0.5;
+            if (crossDistance >= halfWidth + edgeFade) continue;
+            double crossOpening = crossDistance <= halfWidth
+               ? 1.0
+               : 1.0 - smoothstep((crossDistance - halfWidth) / edgeFade);
+            double longitudinalOpening = distance <= fullReach
+               ? 1.0
+               : 1.0 - smoothstep((distance - fullReach) / edgeFade);
+            strongest = Math.max(strongest, crossOpening * longitudinalOpening);
          }
       }
       return strongest;
@@ -1051,12 +1067,13 @@ public final class RiversMask {
             RiversMask.OceanProximity openOcean = RiversMask.OceanProximity.create(width, height, land);
             BitSet riverMouths = createRiverMouths(width, height, land, riverCentrelines, sourceRivers, openOcean);
             BitSet inlandRivers = createInlandRiverCentrelines(width, height, land, riverCentrelines, riverMouths, openOcean);
+            BitSet mouthReachRivers = extendRiverMouthCentrelines(width, height, inlandRivers, riverCentrelines, riverMouths);
             BitSet frozenRivers = createFrozenRiverComponents(width, height, riverCentrelines);
             byte[] riverCorners = createRiverCornerMasks(width, height, riverCentrelines);
-            // Build channel reach only from the inland-connected part. Source
-            // ink beyond a mouth must not keep carving or painting river biomes
-            // into the sea.
-            BitSet riverInfluence = createRiverInfluence(width, height, land, inlandRivers, riverWidths);
+            // Continue the distance/width tube only two source cells past a real
+            // mouth. It prevents a pointed end without allowing the painted line
+            // to carve or paint a river deep into the ocean.
+            BitSet riverInfluence = createRiverInfluence(width, height, land, mouthReachRivers, riverWidths);
             int coastRadiusPixels = Math.max(2, Math.min(12, (Integer)EarthShapeServerConfig.COAST_HEIGHT_FADE_BLOCKS.get() / Math.max(1, (Integer)EarthShapeServerConfig.BLOCKS_PER_PIXEL.get() * 6)));
             byte[] coastalLandness = createCoastalLandness(width, height, land, coastRadiusPixels);
             byte[] oceanDistance = createOceanDistance(width, height, land);
@@ -1346,6 +1363,36 @@ public final class RiversMask {
          }
       }
       return false;
+   }
+
+   /** Extends only the physical width/distance guide a bounded distance beyond each mouth. */
+   private static BitSet extendRiverMouthCentrelines(
+      int width, int height, BitSet inlandRivers, BitSet allRivers, BitSet riverMouths
+   ) {
+      BitSet reach = (BitSet)inlandRivers.clone();
+      BitSet frontier = (BitSet)riverMouths.clone();
+      frontier.and(allRivers);
+      reach.or(frontier);
+      for (int step = 0; step < 2 && !frontier.isEmpty(); step++) {
+         BitSet next = new BitSet(width * height);
+         for (int index = frontier.nextSetBit(0); index >= 0; index = frontier.nextSetBit(index + 1)) {
+            int x = index % width;
+            int z = index / width;
+            for (int dz = -1; dz <= 1; dz++) {
+               for (int dx = -1; dx <= 1; dx++) {
+                  if (dx == 0 && dz == 0) continue;
+                  int nx = x + dx;
+                  int nz = z + dz;
+                  if (!inside(nx, nz, width, height)) continue;
+                  int neighbour = nz * width + nx;
+                  if (allRivers.get(neighbour) && !reach.get(neighbour)) next.set(neighbour);
+               }
+            }
+         }
+         reach.or(next);
+         frontier = next;
+      }
+      return reach;
    }
 
    private static BitSet createRiverInfluence(int width, int height, BitSet land, BitSet rivers, byte[] riverWidths) {

@@ -61,6 +61,8 @@ public abstract class TerrainBiomeMixin implements EarthShapeFinalBiomeResolver 
    @Unique
    private static final ConcurrentHashMap<Climate.ParameterList<Holder<Biome>>, Map<ResourceKey<Biome>, Holder<Biome>>> earthshape$exactBiomes = new ConcurrentHashMap<>();
    @Unique
+   private static final ConcurrentHashMap<Climate.ParameterList<Holder<Biome>>, ConcurrentHashMap<Integer, Climate.ParameterList<ExactNoiseEntry>>> earthshape$exactNoiseLandIndexes = new ConcurrentHashMap<>();
+   @Unique
    private static final Set<ResourceKey<Biome>> earthshape$baseVanillaBiomes = discoverBaseVanillaBiomes();
    @Unique
    private static final ResourceKey<Biome> earthshape$bopGlowingGrotto = ResourceKey.create(
@@ -201,7 +203,9 @@ public abstract class TerrainBiomeMixin implements EarthShapeFinalBiomeResolver 
             erosion = 0.46F;
          }
          case HILLS -> {
-            continentalness = 0.24F;
+            // HILLS may guide the physical density, but its biome must follow
+            // the resulting C/E/W sample instead of a terrain-layer constant.
+            continentalness = Climate.unquantizeCoord(source.continentalness());
             erosion = sourceErosion;
             weirdness = sourceWeirdness;
          }
@@ -290,6 +294,17 @@ public abstract class TerrainBiomeMixin implements EarthShapeFinalBiomeResolver 
       if (surfaceClimateAllowed && RiversMask.INSTANCE.isPermanentSouthernSnowLand(blockX, blockZ)) {
          return this.findBiome(Biomes.SNOWY_PLAINS, this.fallbackBiome());
       }
+      boolean riverMouth = RiversMask.INSTANCE.isRiverMouth(blockX, blockZ);
+      if (surfaceClimateAllowed
+         && terrain == ClimateLayers.TerrainKind.HILLS
+         && !riverMouth
+         && !isCoastalLand(blockX, blockZ)) {
+         // terrain.bmp supplies only the hill-shaped density guide. Resolve the
+         // biome from the already guided sampler axes, allowing plains, forest,
+         // taiga, savanna or windswept families according to the actual noise.
+         Climate.ParameterList<Holder<Biome>> allNoiseBiomes = this.parameters();
+         return this.exactNoiseLandBiome(allNoiseBiomes, point, allNoiseBiomes.findValue(point), terrain);
+      }
       // Temperate forest directly below a mapped mountain otherwise repeatedly
       // resolves to the same lush/cherry-like forest candidates.  Convert only a
       // stable subset of this foothill band to plains candidates, yielding broad
@@ -301,7 +316,6 @@ public abstract class TerrainBiomeMixin implements EarthShapeFinalBiomeResolver 
          terrain = ClimateLayers.TerrainKind.PLAINS;
       }
       final ClimateLayers.TerrainKind selectedTerrain = terrain;
-      boolean riverMouth = RiversMask.INSTANCE.isRiverMouth(blockX, blockZ);
       // Use broad deterministic patches, rather than a per-quart random roll, so
       // only parts of a suitable coastline become beach biomes without speckling
       // the shoreline. River mouths retain their ocean/river transition.
@@ -349,7 +363,10 @@ public abstract class TerrainBiomeMixin implements EarthShapeFinalBiomeResolver 
                blockX,
                blockZ
             );
-         if (additional != null) {
+         boolean authoritativeWater = riverMouth || selectedTerrain == ClimateLayers.TerrainKind.WATER;
+         if (additional != null
+            && (authoritativeWater
+               || additional.equals(this.findExactNoiseLandBiome(this.parameters(), point, selectedTerrain)))) {
             return additional;
          }
       }
@@ -390,7 +407,112 @@ public abstract class TerrainBiomeMixin implements EarthShapeFinalBiomeResolver 
          lookup.cacheCandidates(parameters, cacheGroup, candidates);
          filtered.trim(cacheGroup, MAX_FILTERED_PARAMETER_LISTS);
       }
-      return candidates.findValue(point);
+      Holder<Biome> nearest = candidates.findValue(point);
+      // Ocean and mouth candidate lists intentionally contain no land entries.
+      // Sending them through the land-only exact index produces an empty index.
+      return riverMouth || selectedTerrain == ClimateLayers.TerrainKind.WATER
+         ? nearest
+         : this.exactNoiseLandBiome(candidates, point, nearest, selectedTerrain);
+   }
+
+   /**
+    * A climate RTree always returns the nearest entry, even if one or more axes
+    * lie outside that biome's published ranges. Prefer an entry containing all
+    * six current values; if the mapped terrain family has none, transition
+    * immediately to an exact land entry from the complete registered table.
+    */
+   private Holder<Biome> exactNoiseLandBiome(
+      Climate.ParameterList<Holder<Biome>> preferred,
+      Climate.TargetPoint point,
+      Holder<Biome> nearestFallback,
+      ClimateLayers.TerrainKind terrain
+   ) {
+      Climate.ParameterList<Holder<Biome>> all = this.parameters();
+      boolean preferredIsFullTable = preferred == all;
+      Holder<Biome> exact = this.findExactNoiseLandBiome(
+         preferred, point, preferredIsFullTable ? terrain : null
+      );
+      if (exact != null) return exact;
+      if (!preferredIsFullTable) {
+         exact = this.findExactNoiseLandBiome(all, point, terrain);
+         if (exact != null) return exact;
+      }
+      return nearestFallback;
+   }
+
+   private Holder<Biome> findExactNoiseLandBiome(
+      Climate.ParameterList<Holder<Biome>> candidates,
+      Climate.TargetPoint point,
+      ClimateLayers.TerrainKind transitionTerrain
+   ) {
+      int group = transitionTerrain == null ? -1 : transitionTerrain.ordinal();
+      ConcurrentHashMap<Integer, Climate.ParameterList<ExactNoiseEntry>> indexes =
+         earthshape$exactNoiseLandIndexes.computeIfAbsent(candidates, ignored -> new ConcurrentHashMap<>());
+      Climate.ParameterList<ExactNoiseEntry> index = indexes.computeIfAbsent(
+         group, ignored -> createExactNoiseLandIndex(candidates, transitionTerrain)
+      );
+      ExactNoiseEntry closest = index.findValue(point);
+      return containsAllNoiseAxes(closest.ranges(), point) ? closest.biome() : null;
+   }
+
+   private static Climate.ParameterList<ExactNoiseEntry> createExactNoiseLandIndex(
+      Climate.ParameterList<Holder<Biome>> source,
+      ClimateLayers.TerrainKind transitionTerrain
+   ) {
+      List<com.mojang.datafixers.util.Pair<Climate.ParameterPoint, ExactNoiseEntry>> values = new ArrayList<>();
+      for (var entry : source.values()) {
+         Holder<Biome> biome = entry.getSecond();
+         if (biome.is(Tags.Biomes.IS_OCEAN) || isInlandWaterBiome(biome)
+            || !isAllowedNoiseTransition(transitionTerrain, biome)) continue;
+         Climate.ParameterPoint ranges = entry.getFirst();
+         Climate.ParameterPoint zeroOffset = new Climate.ParameterPoint(
+            ranges.temperature(), ranges.humidity(), ranges.continentalness(),
+            ranges.erosion(), ranges.depth(), ranges.weirdness(), 0L
+         );
+         values.add(com.mojang.datafixers.util.Pair.of(zeroOffset, new ExactNoiseEntry(biome, ranges)));
+      }
+      if (values.isEmpty()) {
+         throw new IllegalStateException("EarthShape exact-noise land index has no candidates");
+      }
+      return new Climate.ParameterList<>(List.copyOf(values));
+   }
+
+   private static boolean isAllowedNoiseTransition(
+      ClimateLayers.TerrainKind terrain, Holder<Biome> biome
+   ) {
+      if (terrain == null) return true;
+      return switch (terrain) {
+         case WATER -> false;
+         case WETLAND -> biome.is(Tags.Biomes.IS_SWAMP);
+         case JUNGLE -> biome.is(Tags.Biomes.IS_JUNGLE);
+         case DESERT -> isStrictDesertCandidate(biome);
+         case FOREST -> biome.is(Tags.Biomes.IS_FOREST)
+            || biome.is(Tags.Biomes.IS_TAIGA)
+            || (biome.is(Tags.Biomes.IS_PLAINS) && !isMeadowLike(biome));
+         case PLAINS, CITY, SURROUNDING -> (biome.is(Tags.Biomes.IS_PLAINS) && !isMeadowLike(biome))
+            || biome.is(Tags.Biomes.IS_SAVANNA)
+            || (biome.is(Tags.Biomes.IS_FOREST) && !biome.is(Tags.Biomes.IS_SWAMP));
+         case HILLS -> isMeadowLike(biome)
+            || biome.is(Tags.Biomes.IS_HILL)
+            || biome.is(Tags.Biomes.IS_MOUNTAIN_SLOPE)
+            || biome.is(Tags.Biomes.IS_PLAINS)
+            || biome.is(Tags.Biomes.IS_SAVANNA)
+            || (biome.is(Tags.Biomes.IS_FOREST) && !biome.is(Tags.Biomes.IS_SWAMP));
+         case MOUNTAIN -> biome.is(Tags.Biomes.IS_MOUNTAIN_PEAK)
+            || biome.is(Tags.Biomes.IS_MOUNTAIN_SLOPE)
+            || biome.is(Tags.Biomes.IS_HILL);
+      };
+   }
+
+   private record ExactNoiseEntry(Holder<Biome> biome, Climate.ParameterPoint ranges) {}
+
+   private static boolean containsAllNoiseAxes(Climate.ParameterPoint ranges, Climate.TargetPoint point) {
+      return ranges.temperature().distance(point.temperature()) == 0L
+         && ranges.humidity().distance(point.humidity()) == 0L
+         && ranges.continentalness().distance(point.continentalness()) == 0L
+         && ranges.erosion().distance(point.erosion()) == 0L
+         && ranges.depth().distance(point.depth()) == 0L
+         && ranges.weirdness().distance(point.weirdness()) == 0L;
    }
 
    /** Applies full-map temperature and coastline C without inventing a terrain class. */
@@ -480,11 +602,11 @@ public abstract class TerrainBiomeMixin implements EarthShapeFinalBiomeResolver 
             ? biome.is(Biomes.SNOWY_TAIGA)
             : (borealAllowed
                ? biome.is(Tags.Biomes.IS_TAIGA) && !isSnowBiome(biome)
-               : biome.is(Tags.Biomes.IS_FOREST) && !biome.is(Tags.Biomes.IS_TAIGA) && !isSnowBiome(biome));
+                : biome.is(Tags.Biomes.IS_FOREST) && !biome.is(Tags.Biomes.IS_TAIGA) && !isSnowBiome(biome) && !isMeadowLike(biome));
          case JUNGLE -> biome.is(Tags.Biomes.IS_JUNGLE);
          case HILLS -> snowBiomeAllowed
             ? biome.is(Biomes.GROVE) || biome.is(Biomes.SNOWY_SLOPES)
-            : (biome.is(Tags.Biomes.IS_HILL) || biome.is(Tags.Biomes.IS_MOUNTAIN_SLOPE)) && !isSnowBiome(biome);
+            : (isMeadowLike(biome) || biome.is(Tags.Biomes.IS_HILL) || biome.is(Tags.Biomes.IS_MOUNTAIN_SLOPE)) && !isSnowBiome(biome);
          // A normal terrain-layer mountain must not become a snowy peak merely because
          // vanilla's altitude noise picked a peak entry. Only white ultra-mountains or
          // the mapped polar temperature band are allowed to select Frozen Peaks.
@@ -493,7 +615,7 @@ public abstract class TerrainBiomeMixin implements EarthShapeFinalBiomeResolver 
             || (frozenPeaksAllowed ? biome.is(Tags.Biomes.IS_MOUNTAIN_PEAK) : biome.is(Biomes.STONY_PEAKS));
          case PLAINS, CITY, SURROUNDING -> snowBiomeAllowed
             ? biome.is(Biomes.SNOWY_PLAINS) || biome.is(Biomes.ICE_SPIKES)
-            : (biome.is(Tags.Biomes.IS_PLAINS) || biome.is(Biomes.SAVANNA) || biome.is(Biomes.SAVANNA_PLATEAU))
+            : ((biome.is(Tags.Biomes.IS_PLAINS) && !isMeadowLike(biome)) || biome.is(Biomes.SAVANNA) || biome.is(Biomes.SAVANNA_PLATEAU))
                && !isSnowBiome(biome);
          case WATER -> false;
       };
@@ -725,9 +847,9 @@ public abstract class TerrainBiomeMixin implements EarthShapeFinalBiomeResolver 
          case WETLAND -> this.findBiome(temperature > 0.3 ? Biomes.MANGROVE_SWAMP : Biomes.SWAMP, fallback);
          case FOREST -> this.forestBiome(temperature, snowAllowed, region, fallback);
          case JUNGLE -> this.findBiome(region % 12 == 0 ? Biomes.BAMBOO_JUNGLE : (region % 6 == 0 ? Biomes.SPARSE_JUNGLE : Biomes.JUNGLE), fallback);
-         case HILLS -> snowAllowed
-         ? this.findBiome(temperature < -0.55 ? Biomes.SNOWY_SLOPES : Biomes.GROVE, fallback)
-         : this.findBiome(temperature > 0.45 ? Biomes.WINDSWEPT_SAVANNA : (region % 5 == 0 ? Biomes.WINDSWEPT_FOREST : Biomes.WINDSWEPT_HILLS), fallback);
+         // The original holder is the climate-noise result. HILLS is only a
+         // physical density guide and must not force a windswept biome here.
+         case HILLS -> fallback;
          case MOUNTAIN -> this.findBiome(frozenPeaksAllowed ? Biomes.FROZEN_PEAKS : Biomes.STONY_PEAKS, fallback);
          case PLAINS, CITY, SURROUNDING -> this.plainsBiome(temperature, snowAllowed, region, fallback);
          case WATER -> this.oceanBiome(temperature, blockX, blockZ, fallback);
@@ -838,6 +960,7 @@ public abstract class TerrainBiomeMixin implements EarthShapeFinalBiomeResolver 
          && blockY >= (Integer)EarthShapeServerConfig.SNOW_ALTITUDE_BLOCKS.get();
       return climateSnow || highReliefSnow;
    }
+
 
    private static long warpedLayerPoint(int blockX, int blockZ) {
       if (!(Boolean)EarthShapeServerConfig.BIOME_BOUNDARY_WARP_ENABLED.get()) {
@@ -1038,5 +1161,9 @@ public abstract class TerrainBiomeMixin implements EarthShapeFinalBiomeResolver 
          String path = key.location().getPath();
          return path.contains("river") || path.contains("lake");
       }).orElse(false);
+   }
+
+   private static boolean isMeadowLike(Holder<Biome> biome) {
+      return biome.unwrapKey().map(key -> key.location().getPath().contains("meadow")).orElse(false);
    }
 }

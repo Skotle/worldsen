@@ -74,13 +74,16 @@ public record CoastalContinentalnessDensity(DensityFunction argument) implements
       // Only already-low terrain receives the climbable water-level profile.
       boolean waterLevelBank = lowSurfaceBank && guided <= 0.16;
       boolean smallIsland = RiversMask.INSTANCE.isSmallIsland(context.blockX(), context.blockZ());
-      // Hills and mountains start at least one terrain band above the ordinary
-      // Y=64 floor. C=0.12 supplies roughly five blocks of vanilla spline lift
-      // without writing a fixed surface Y or bypassing erosion/PV variation.
-      double minimumLandContinentalness =
-         !smallIsland && (terrainKind == ClimateLayers.TerrainKind.HILLS || terrainKind == ClimateLayers.TerrainKind.MOUNTAIN)
-            ? 0.12
-            : 0.06;
+      // A mapped hill must first create relief; its biome must not be discarded
+      // merely because the unmodified noise would have remained at plains level.
+      // Give hills and mountains distinct C floors, while E/W retain the natural
+      // local shape and prevent these values from becoming fixed-height plateaus.
+      double minimumLandContinentalness = 0.06;
+      if (!smallIsland && terrainKind == ClimateLayers.TerrainKind.HILLS) {
+         minimumLandContinentalness = 0.20;
+      } else if (!smallIsland && terrainKind == ClimateLayers.TerrainKind.MOUNTAIN) {
+         minimumLandContinentalness = 0.26;
+      }
       if (mappedLand && !riverBank && !riverWater && !waterLevelBank && mouthOpening <= 0.001) {
          guided = Math.max(minimumLandContinentalness, guided);
       }
@@ -132,9 +135,10 @@ public record CoastalContinentalnessDensity(DensityFunction argument) implements
       if (EarthShapeCompatibility.isTerralithLoaded()
          && mappedLand && !riverWater && mouthOpening <= 0.001) {
          double relief = ClimateLayers.INSTANCE.terrainRelief(context.blockX(), context.blockZ());
-         // Remain below Terralith's C=0.20 amplified factor branch even at the
-         // centre of a mapped mountain. E/W still supply ordinary relief.
-         double terralithCap = 0.10 + 0.06 * smoothstep(relief);
+         // Remain below Terralith's C=0.20 amplified factor branch. The previous
+         // 0.13 hill cap was too low to lift some mapped HILLS regions at all;
+         // E/W now receive matching hill guidance below.
+         double terralithCap = 0.15 + 0.04 * smoothstep(relief);
          guided = Math.min(terralithCap, guided);
       }
       return guided;

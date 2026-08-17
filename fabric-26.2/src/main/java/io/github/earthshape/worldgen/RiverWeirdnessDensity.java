@@ -39,14 +39,18 @@ public record RiverWeirdnessDensity(DensityFunction argument) implements Density
          weirdness *= coastalPeakRecovery;
       }
 
-      // A mountain layer cannot rely on E alone: with an unlucky vanilla W/PV
-      // sample it receives the mountain biome but remains a flat lowland. Guide
-      // W toward the centre of vanilla's Peaks fold (|W| ~= 0.67) in proportion
-      // to the region's smooth relief. Vanilla terrain splines still decide Y.
+      // Hills and mountains cannot rely on E alone: an unlucky vanilla W/PV
+      // sample can leave their mapped region at plains height. Guide HILLS into
+      // the moderate-slope part of the fold and MOUNTAIN toward its peak centre.
+      // Vanilla/Terralith terrain splines still form the surface rather than a
+      // fixed-Y fill, so both families retain natural local variation.
+      ClimateLayers.TerrainKind terrainKind = ClimateLayers.INSTANCE.terrainKind(
+         context.blockX(), context.blockZ()
+      );
       if ((Boolean)EarthShapeServerConfig.TERRAIN_BIOMES_ENABLED.get()
          && mappedLand
-         && ClimateLayers.INSTANCE.terrainKind(context.blockX(), context.blockZ())
-            == ClimateLayers.TerrainKind.MOUNTAIN) {
+         && (terrainKind == ClimateLayers.TerrainKind.HILLS
+            || terrainKind == ClimateLayers.TerrainKind.MOUNTAIN)) {
          double relief = ClimateLayers.INSTANCE.terrainRelief(context.blockX(), context.blockZ())
             * coastalPeakRecovery;
          if (relief > 0.0) {
@@ -55,10 +59,16 @@ public record RiverWeirdnessDensity(DensityFunction argument) implements Density
             // to W/PV. Its full peak centre combined with EarthShape's broad
             // mountain mask resembles amplified world generation, so retain a
             // high-slope PV value without forcing every centre to PV~=1.
-            double peakTarget = terralith ? 0.45 : 0.67;
-            double maximumGuidance = terralith ? 0.32 : 0.72;
+            boolean hills = terrainKind == ClimateLayers.TerrainKind.HILLS;
+            double peakTarget = hills
+               ? (terralith ? 0.36 : 0.46)
+               : (terralith ? 0.45 : 0.67);
+            double maximumGuidance = hills
+               ? (terralith ? 0.34 : 0.62)
+               : (terralith ? 0.32 : 0.72);
             double target = weirdness < 0.0 ? -peakTarget : peakTarget;
-            weirdness = lerp(weirdness, target, Math.min(maximumGuidance, relief * maximumGuidance));
+            double guidanceCoverage = hills ? smootherstep(Math.min(1.0, relief * 2.0)) : relief;
+            weirdness = lerp(weirdness, target, Math.min(maximumGuidance, guidanceCoverage * maximumGuidance));
             if (terralith) {
                weirdness = Math.max(-0.60, Math.min(0.60, weirdness));
             }
