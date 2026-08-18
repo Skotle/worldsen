@@ -863,6 +863,16 @@ public final class RiversMask {
                      for (int dz = -1; dz <= 1; dz++) {
                         for (int dx = -1; dx <= 1; dx++) {
                            if ((dx > 0 || dx == 0 && dz > 0) && loaded.river(x + dx, z + dz)) {
+                              // A raster diagonal normally appears as a two-step
+                              // cardinal staircase. Joining its end pixels as well
+                              // creates a triangular centreline loop; after scaling,
+                              // the dry interior of every loop becomes a dotted row
+                              // of river islands. Keep the diagonal edge only when
+                              // it is the sole connection between the two pixels.
+                              if (dx != 0 && dz != 0
+                                 && (loaded.river(x + dx, z) || loaded.river(x, z + dz))) {
+                                 continue;
+                              }
                               int neighbourCornerMask = loaded.riverCornerMask(x + dx, z + dz);
                               double startX = riverPathX(loaded, x, z) + ((cornerMask & neighbourBit(dx, dz)) != 0 ? (double)dx * 0.32 : 0.0);
                               double startZ = riverPathZ(loaded, x, z) + ((cornerMask & neighbourBit(dx, dz)) != 0 ? (double)dz * 0.32 : 0.0);
@@ -904,7 +914,10 @@ public final class RiversMask {
    }
 
    private static double axialNoise(int coordinate, int line, long salt) {
-      int cellSize = Math.max(1, Math.min(8, 96 / Math.max(1, RiversMask.INSTANCE.blocksPerPixel())));
+      // Never let an enlarged map reduce the bend wavelength to one source
+      // pixel. Independent offsets at every pixel make a straight raster river
+      // zig-zag from bank to bank and leave alternating triangular land wedges.
+      int cellSize = Math.max(4, Math.min(8, 96 / Math.max(1, RiversMask.INSTANCE.blocksPerPixel())));
       int cell = Math.floorDiv(coordinate, cellSize);
       double t = (double)Math.floorMod(coordinate, cellSize) / (double)cellSize;
       t = t * t * (3.0 - 2.0 * t);
@@ -917,7 +930,12 @@ public final class RiversMask {
     * retains gentle bends instead of turning each source segment into a ruler line.
     */
    private static double meanderAmplitude() {
-      return Math.min(0.38, 0.18 + (double)RiversMask.INSTANCE.blocksPerPixel() / 1024.0);
+      int blocksPerPixel = Math.max(1, RiversMask.INSTANCE.blocksPerPixel());
+      double sourcePixelAmplitude = Math.min(0.38, 0.18 + (double)blocksPerPixel / 1024.0);
+      // Keep the visible lateral displacement scale-independent. Without this
+      // cap, increasing blocksPerPixel also magnified a sub-pixel offset into a
+      // many-dozen-block sawtooth that could be wider than the river itself.
+      return Math.min(sourcePixelAmplitude, 12.0 / (double)blocksPerPixel);
    }
 
    private static double axialValue(int cell, int line, long salt) {
@@ -1506,7 +1524,10 @@ public final class RiversMask {
 
          for (int dz = -1; dz <= 1; dz++) {
             for (int dx = -1; dx <= 1; dx++) {
-               if ((dx != 0 || dz != 0) && inside(x + dx, z + dz, width, height) && rivers.get((z + dz) * width + x + dx)) {
+               if ((dx != 0 || dz != 0)
+                  && inside(x + dx, z + dz, width, height)
+                  && rivers.get((z + dz) * width + x + dx)
+                  && !redundantDiagonalConnection(x, z, dx, dz, width, height, rivers)) {
                   mask |= neighbourBit(dx, dz);
                   count++;
                }
@@ -1524,6 +1545,16 @@ public final class RiversMask {
       }
 
       return corners;
+   }
+
+   private static boolean redundantDiagonalConnection(
+      int x, int z, int dx, int dz, int width, int height, BitSet rivers
+   ) {
+      if (dx == 0 || dz == 0) return false;
+      int horizontalX = x + dx;
+      int verticalZ = z + dz;
+      return inside(horizontalX, z, width, height) && rivers.get(z * width + horizontalX)
+         || inside(x, verticalZ, width, height) && rivers.get(verticalZ * width + x);
    }
 
    private static byte[] createCoastDistance(int width, int height, BitSet land, BitSet rivers) {

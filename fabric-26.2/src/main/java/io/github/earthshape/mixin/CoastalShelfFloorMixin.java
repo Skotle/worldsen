@@ -64,6 +64,11 @@ public abstract class CoastalShelfFloorMixin {
          // layer. A one-block lid allowed a cave/aquifer immediately below the
          // river to read as a second, roofed underground river. Keep the repair
          // shallow so ordinary caves below the channel are still available.
+         //
+         // Do not leave the channel interior to the aquifer/density result.
+         // At large map scales some positive-density samples used to survive at
+         // regular interpolation intervals, producing a dotted line of dry
+         // blocks down an otherwise continuous mapped river.
          if (y == floorY) {
             callback.setReturnValue(Blocks.STONE.defaultBlockState());
          } else if (y >= (int)column[5] && y < floorY) {
@@ -71,6 +76,10 @@ public abstract class CoastalShelfFloorMixin {
             if (result != null && (result.isAir() || result.is(Blocks.WATER))) {
                callback.setReturnValue(Blocks.STONE.defaultBlockState());
             }
+         } else if (y > floorY && y <= 62) {
+            callback.setReturnValue(Blocks.WATER.defaultBlockState());
+         } else if (y >= 63) {
+            callback.setReturnValue(Blocks.AIR.defaultBlockState());
          }
          return;
       }
