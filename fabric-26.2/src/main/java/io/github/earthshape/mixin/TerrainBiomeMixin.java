@@ -14,7 +14,7 @@ import io.github.earthshape.worldgen.ExternalBiomeCapture;
 import net.minecraft.core.Holder;
 import net.minecraft.core.registries.Registries;
 import net.minecraft.resources.ResourceKey;
-import net.minecraft.resources.ResourceLocation;
+import net.minecraft.resources.Identifier;
 import net.minecraft.tags.TagKey;
 import net.minecraft.world.level.biome.Biome;
 import net.minecraft.world.level.biome.Biomes;
@@ -66,11 +66,11 @@ public abstract class TerrainBiomeMixin implements EarthShapeFinalBiomeResolver 
    private static final Set<ResourceKey<Biome>> earthshape$baseVanillaBiomes = discoverBaseVanillaBiomes();
    @Unique
    private static final ResourceKey<Biome> earthshape$bopGlowingGrotto = ResourceKey.create(
-      Registries.BIOME, ResourceLocation.fromNamespaceAndPath("biomesoplenty", "glowing_grotto")
+      Registries.BIOME, Identifier.fromNamespaceAndPath("biomesoplenty", "glowing_grotto")
    );
    @Unique
    private static final ResourceKey<Biome> earthshape$bopSpiderNest = ResourceKey.create(
-      Registries.BIOME, ResourceLocation.fromNamespaceAndPath("biomesoplenty", "spider_nest")
+      Registries.BIOME, Identifier.fromNamespaceAndPath("biomesoplenty", "spider_nest")
    );
    @Unique
    private static final ThreadLocal<BiomeLookupCache> earthshape$lookupCache = ThreadLocal.withInitial(BiomeLookupCache::new);
@@ -116,6 +116,15 @@ public abstract class TerrainBiomeMixin implements EarthShapeFinalBiomeResolver 
       long layerPoint = warpedLayerPoint(blockX, blockZ);
       int layerX = unpackX(layerPoint);
       int layerZ = unpackZ(layerPoint);
+      if (AdditionalBiomeRegistry.hasTfcBiomes()) {
+         Holder<Biome> tfcBiome = this.selectTfcMapBiome(layers, blockX, blockY, blockZ);
+         if (tfcBiome != null) {
+            if (FINAL_OVERRIDE_LOGGED.compareAndSet(false, true)) {
+               io.github.earthshape.EarthShape.LOGGER.info("[EarthShape] TFC-only biome resolver active; map layers select all Overworld biomes.");
+            }
+            return tfcBiome;
+         }
+      }
       Holder<Biome> selected;
       if (blockY < 48) {
          Holder<Biome> baseVanilla = EarthShapeCompatibility.isTerralithLoaded()
@@ -153,6 +162,32 @@ public abstract class TerrainBiomeMixin implements EarthShapeFinalBiomeResolver 
       return selected;
    }
 
+   /** Uses EarthShape's masks as the sole source of TFC hydrology and terrain. */
+   private Holder<Biome> selectTfcMapBiome(ClimateLayers layers, int blockX, int blockY, int blockZ) {
+      ClimateLayers.TerrainKind terrain = this.surfaceTerrain(layers, blockX, blockZ);
+      ClimateLayers.TreeCover trees = layers.treeCover(blockX, blockZ);
+      double temperature = layers.temperature(blockX, blockZ);
+      boolean snowAllowed = allowsSnow(terrain, blockY, temperature);
+      boolean frozenPeaksAllowed = terrain == ClimateLayers.TerrainKind.MOUNTAIN
+         && layers.mountainRegionHeightScale(blockX, blockZ) >= 0.55
+         && (layers.isUltraMountain(blockX, blockZ) || layers.isPolarTemperatureZone(blockX, blockZ));
+      Hydrology hydrology;
+      if ((Boolean)EarthShapeServerConfig.RIVER_BIOMES_ENABLED.get() && RiversMask.INSTANCE.isInlandRiverBiome(blockX, blockZ)) {
+         hydrology = Hydrology.RIVER;
+      } else if (RiversMask.INSTANCE.sampleLayerLand(blockX, blockZ) < 0.5 || terrain == ClimateLayers.TerrainKind.WATER) {
+         hydrology = Hydrology.OCEAN;
+      } else if (isCoastalLand(blockX, blockZ)) {
+         hydrology = Hydrology.COAST;
+      } else {
+         hydrology = Hydrology.LAND;
+      }
+      return AdditionalBiomeRegistry.selectTfc(
+         LayerKey.of(terrain, trees, temperature, hydrology, snowAllowed, frozenPeaksAllowed,
+            terrain == ClimateLayers.TerrainKind.DESERT && layers.isMesaRegion(blockX, blockZ)),
+         regionalVariant(blockX, blockZ)
+      );
+   }
+
    /**
     * Converts map layers into the axes used by vanilla's ParameterList.  The layers
     * are guidance, not a post-generation biome paint: the final holder is still the
@@ -162,13 +197,16 @@ public abstract class TerrainBiomeMixin implements EarthShapeFinalBiomeResolver 
       long layerPoint = warpedLayerPoint(blockX, blockZ);
       int layerX = unpackX(layerPoint);
       int layerZ = unpackZ(layerPoint);
-      ClimateLayers.TerrainKind terrain = layers.terrainKind(layerX, layerZ);
+      boolean mappedOcean = RiversMask.INSTANCE.sampleLayerLand(blockX, blockZ) < 0.5;
+      ClimateLayers.TerrainKind terrain = mappedOcean
+         ? ClimateLayers.TerrainKind.WATER
+         : layers.terrainKind(layerX, layerZ);
       boolean sourceRiver = (Boolean)EarthShapeServerConfig.RIVER_BIOMES_ENABLED.get() && RiversMask.INSTANCE.isInlandRiverBiome(blockX, blockZ);
       if (!sourceRiver) {
          terrain = layers.terrainKindAtRiverbank(blockX, blockZ, terrain);
       }
       ClimateLayers.TreeCover trees = layers.treeCover(layerX, layerZ);
-      double layerTemperature = layers.temperature(layerX, layerZ);
+      double layerTemperature = layers.temperature(mappedOcean ? blockX : layerX, mappedOcean ? blockZ : layerZ);
       float temperature = (float)layerTemperature;
       float humidity = -0.08F;
       float continentalness = RiversMask.INSTANCE.sampleLayerLand(blockX, blockZ) >= 0.5 ? 0.14F : -0.50F;
@@ -691,13 +729,13 @@ public abstract class TerrainBiomeMixin implements EarthShapeFinalBiomeResolver 
          // Terralith's reference/desert_all and badlands_all sets are curated,
          // mutually exclusive climate families. Trust those tags even for names
          // such as ancient_sands which a generic name heuristic cannot classify.
-         if ("terralith".equals(key.location().getNamespace())) {
+         if ("terralith".equals(key.identifier().getNamespace())) {
             return true;
          }
          // Common tags alone are not reliable enough for modded packs: several
          // lush/outback biomes advertise IS_DESERT for structure spawning. Only
          // explicitly desert-shaped identities may occupy a terrain.bmp desert.
-         String path = key.location().getPath();
+         String path = key.identifier().getPath();
          return path.contains("desert")
             || path.contains("badland")
             || path.contains("mesa")
@@ -966,17 +1004,15 @@ public abstract class TerrainBiomeMixin implements EarthShapeFinalBiomeResolver 
       if (!(Boolean)EarthShapeServerConfig.BIOME_BOUNDARY_WARP_ENABLED.get()) {
          return packPoint(blockX, blockZ);
       } else {
-         int strength = Math.min((Integer)EarthShapeServerConfig.BIOME_BOUNDARY_WARP_BLOCKS.get(), Math.max(4, RiversMask.INSTANCE.blocksPerPixel() * 3 / 4));
-         // Only boundary samples need displacement. Applying noise in the
-         // interior changes nothing, while skipping the boundary preserved the
-         // source bitmap's exact horizontal and vertical pixel edges.
-         if (strength == 0 || !ClimateLayers.INSTANCE.isTerrainBoundary(blockX, blockZ, Math.max(8, strength * 2))) {
-            return packPoint(blockX, blockZ);
-         } else {
-            int warpedX = blockX + (int)Math.round(smoothNoise(blockX, blockZ, 7640891576956012809L) * (double)strength);
-            int warpedZ = blockZ + (int)Math.round(smoothNoise(blockX, blockZ, -4942790177534073029L) * (double)strength);
-            return packPoint(warpedX, warpedZ);
-         }
+         int strength = Math.min((Integer)EarthShapeServerConfig.BIOME_BOUNDARY_WARP_BLOCKS.get(), Math.max(12, RiversMask.INSTANCE.blocksPerPixel() * 4));
+         if (strength == 0) return packPoint(blockX, blockZ);
+         int warpedX = blockX + (int)Math.round((smoothNoise(blockX, blockZ, 7640891576956012809L) * 0.72
+            + smoothNoise(blockX, blockZ, 6983438078262162901L) * 0.28) * strength);
+         int warpedZ = blockZ + (int)Math.round((smoothNoise(blockX, blockZ, -4942790177534073029L) * 0.72
+            + smoothNoise(blockX, blockZ, -7581763189423831141L) * 0.28) * strength);
+         boolean originalLand = RiversMask.INSTANCE.sampleLayerLand(blockX, blockZ) >= 0.5;
+         boolean warpedLand = RiversMask.INSTANCE.sampleLayerLand(warpedX, warpedZ) >= 0.5;
+         return originalLand == warpedLand ? packPoint(warpedX, warpedZ) : packPoint(blockX, blockZ);
       }
    }
 
@@ -1065,10 +1101,27 @@ public abstract class TerrainBiomeMixin implements EarthShapeFinalBiomeResolver 
       int blockX,
       int blockZ
    ) {
-      return AdditionalBiomeRegistry.select(
+      Holder<Biome> candidate = AdditionalBiomeRegistry.select(
          LayerKey.of(terrain, trees, temperature, hydrology, snowAllowed, fullMountainPeak, mesa),
          regionalVariant(blockX, blockZ)
       );
+      if (candidate != null && hydrology == Hydrology.LAND
+         && terrain != ClimateLayers.TerrainKind.HILLS && terrain != ClimateLayers.TerrainKind.MOUNTAIN
+         && AdditionalBiomeRegistry.isRareCandidate(candidate) && !supportsRareBiomeArea(terrain, blockX, blockZ)) {
+         return null;
+      }
+      return candidate;
+   }
+
+   private static boolean supportsRareBiomeArea(ClimateLayers.TerrainKind terrain, int blockX, int blockZ) {
+      int chunks = (Integer)EarthShapeServerConfig.RARE_BIOME_MINIMUM_REGION_CHUNKS.get();
+      if (chunks <= 0) return true;
+      int radius = Math.max(16, (int)Math.ceil(Math.sqrt((double)chunks)) * 8);
+      ClimateLayers layers = ClimateLayers.INSTANCE;
+      return layers.terrainKind(blockX - radius, blockZ) == terrain
+         && layers.terrainKind(blockX + radius, blockZ) == terrain
+         && layers.terrainKind(blockX, blockZ - radius) == terrain
+         && layers.terrainKind(blockX, blockZ + radius) == terrain;
    }
 
    @Unique
@@ -1101,7 +1154,7 @@ public abstract class TerrainBiomeMixin implements EarthShapeFinalBiomeResolver 
                if (isVanillaBiome(biome)) {
                   return true;
                }
-               return biome.unwrapKey().map(key -> "terralith".equals(key.location().getNamespace())).orElse(false)
+               return biome.unwrapKey().map(key -> "terralith".equals(key.identifier().getNamespace())).orElse(false)
                   && (biome.is(Tags.Biomes.IS_CAVE) || biome.is(Tags.Biomes.IS_UNDERGROUND));
             })
             .toList();
@@ -1158,12 +1211,12 @@ public abstract class TerrainBiomeMixin implements EarthShapeFinalBiomeResolver 
 
    private static boolean isInlandWaterBiome(Holder<Biome> biome) {
       return biome.is(net.neoforged.neoforge.common.Tags.Biomes.IS_RIVER) ? true : biome.unwrapKey().map(key -> {
-         String path = key.location().getPath();
+         String path = key.identifier().getPath();
          return path.contains("river") || path.contains("lake");
       }).orElse(false);
    }
 
    private static boolean isMeadowLike(Holder<Biome> biome) {
-      return biome.unwrapKey().map(key -> key.location().getPath().contains("meadow")).orElse(false);
+      return biome.unwrapKey().map(key -> key.identifier().getPath().contains("meadow")).orElse(false);
    }
 }

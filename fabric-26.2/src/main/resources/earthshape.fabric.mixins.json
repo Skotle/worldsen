@@ -2,6 +2,22 @@
   "required": true,
   "package": "io.github.earthshape.mixin",
   "compatibilityLevel": "JAVA_25",
-  "mixins": [],
+  "mixins": [
+    "BiomeSourceAccessor",
+    "TerrainBiomeMixin",
+    "TerraBlenderChunkBiomeSourceMixin",
+    "AdditionalBiomeFeatureMixin",
+    "TerraBlenderEndBiomeSourceMixin",
+    "TerraBlenderSurfaceRuleMixin",
+    "TfcSurfaceRuleMixin",
+    "DesertLakeMixin",
+    "OceanIcebergMixin",
+    "SurfaceAquiferGuardMixin",
+    "CoastalShelfFloorMixin",
+    "LayerRiverAquaticVegetationMixin",
+    "SurfaceStructureRateMixin",
+    "TfcGeneratorFeatureGuardMixin",
+    "TfcPlacementGuardMixin"
+  ],
   "injectors": { "defaultRequire": 1 }
 }

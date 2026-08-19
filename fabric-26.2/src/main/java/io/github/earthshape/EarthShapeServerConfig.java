@@ -2,8 +2,8 @@ package io.github.earthshape;
 
 /**
  * Fabric replacement for the NeoForge config facade. Defaults intentionally
- * match the NeoForge 1.21.1 port; TOML persistence is added after the 26.2
- * world-generation hooks have been migrated.
+ * match the NeoForge port. Values are exposed through the same get() facade
+ * so shared world-generation algorithms retain their exact defaults.
  */
 public final class EarthShapeServerConfig {
     public record Value<T>(T value) { public T get() { return value; } }
@@ -17,6 +17,7 @@ public final class EarthShapeServerConfig {
     public static final Value<Boolean> CONTINENTS_ENABLED = b(true), CONTINENT_HEIGHT_LIMIT_ENABLED = b(true), TERRAIN_BIOMES_ENABLED = b(true);
     public static final Value<Boolean> COAST_SHELF_VARIATION_ENABLED = b(true);
     public static final Value<Integer> TERRAIN_BIOME_MINIMUM_REGION_PIXELS = i(4), TERRAIN_BIOME_ISOLATED_MINIMUM_REGION_PIXELS = i(12), BIOME_MINIMUM_REGION_PIXELS = i(16);
+    public static final Value<Integer> BIOME_MINIMUM_REGION_CHUNKS = i(32), BIOME_ISOLATED_MINIMUM_REGION_CHUNKS = i(48), RARE_BIOME_MINIMUM_REGION_CHUNKS = i(64);
     public static final Value<Boolean> OCEAN_TEMPERATURE_ENABLED = b(true), TUNDRA_TEMPERATURE_ENABLED = b(true), RIVER_BIOMES_ENABLED = b(true), BIOME_BOUNDARY_WARP_ENABLED = b(true);
     public static final Value<Double> TUNDRA_TEMPERATURE_THRESHOLD = d(-0.25), SNOW_TEMPERATURE_THRESHOLD = d(-0.625);
     public static final Value<Double> COAST_SHELF_VARIATION_MIN_SCALE = d(0.55), COAST_SHELF_VARIATION_MAX_SCALE = d(2.0);

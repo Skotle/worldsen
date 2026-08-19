@@ -200,6 +200,6 @@ public final class TemperatureSurfaceBiomeMixin {
    }
 
    private static boolean isVanilla(Holder<Biome> biome) {
-      return biome.unwrapKey().map(key -> "minecraft".equals(key.location().getNamespace())).orElse(false);
+      return biome.unwrapKey().map(key -> "minecraft".equals(key.identifier().getNamespace())).orElse(false);
    }
 }

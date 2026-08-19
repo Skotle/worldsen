@@ -1,6 +1,7 @@
 package io.github.earthshape.worldgen;
 
 import io.github.earthshape.EarthShape;
+import io.github.earthshape.mixin.BiomeSourceAccessor;
 import io.github.earthshape.map.ClimateLayers;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -15,15 +16,14 @@ import net.minecraft.core.Holder;
 import net.minecraft.core.Registry;
 import net.minecraft.core.registries.Registries;
 import net.minecraft.resources.ResourceKey;
-import net.minecraft.resources.ResourceLocation;
+import net.minecraft.resources.Identifier;
 import net.minecraft.tags.TagKey;
 import net.minecraft.world.level.biome.Biome;
 import net.minecraft.world.level.biome.BiomeSource;
 import net.minecraft.world.level.dimension.LevelStem;
-import net.neoforged.neoforge.common.NeoForge;
+import net.fabricmc.fabric.api.event.lifecycle.v1.ServerLifecycleEvents;
 import net.neoforged.neoforge.common.Tags;
-import net.neoforged.neoforge.event.server.ServerAboutToStartEvent;
-import net.neoforged.neoforge.event.server.ServerStoppingEvent;
+import net.minecraft.server.MinecraftServer;
 
 /**
  * Makes registered modded overworld biomes available to EarthShape without
@@ -32,7 +32,7 @@ import net.neoforged.neoforge.event.server.ServerStoppingEvent;
  */
 public final class AdditionalBiomeRegistry {
    private static final TagKey<Biome> IS_CONIFEROUS = TagKey.create(
-      Registries.BIOME, ResourceLocation.fromNamespaceAndPath("c", "is_tree/coniferous")
+      Registries.BIOME, Identifier.fromNamespaceAndPath("c", "is_tree/coniferous")
    );
    private static final List<TagKey<Biome>> CLASSIFICATION_TAGS = List.of(
       Tags.Biomes.IS_DESERT,
@@ -56,6 +56,7 @@ public final class AdditionalBiomeRegistry {
    private static volatile Map<TagKey<Biome>, CandidatePool> pools = Map.of();
    private static volatile List<Holder<Biome>> allBiomes = List.of();
    private static final ConcurrentHashMap<LayerKey, LayerCandidatePool> layerPools = new ConcurrentHashMap<>();
+   private static final ConcurrentHashMap<LayerKey, List<Holder<Biome>>> tfcLayerPools = new ConcurrentHashMap<>();
 
    public enum Hydrology {
       LAND,
@@ -103,8 +104,8 @@ public final class AdditionalBiomeRegistry {
    }
 
    public static void register() {
-      NeoForge.EVENT_BUS.addListener(AdditionalBiomeRegistry::onServerAboutToStart);
-      NeoForge.EVENT_BUS.addListener(AdditionalBiomeRegistry::onServerStopping);
+      ServerLifecycleEvents.SERVER_STARTING.register(AdditionalBiomeRegistry::onServerStarting);
+      ServerLifecycleEvents.SERVER_STOPPING.register(AdditionalBiomeRegistry::onServerStopping);
    }
 
    public static Holder<Biome> select(LayerKey key, int variant) {
@@ -128,6 +129,36 @@ public final class AdditionalBiomeRegistry {
       return candidates.get(Math.floorMod(saltedVariant, candidates.size()));
    }
 
+   /** True for a non-vanilla candidate tagged as intentionally rare. */
+   public static boolean isRareCandidate(Holder<Biome> biome) {
+      return biome.unwrapKey()
+         .map(key -> !"minecraft".equals(key.identifier().getNamespace()) && biome.is(Tags.Biomes.IS_RARE))
+         .orElse(false);
+   }
+
+   /** Selects a TFC biome from the same map-controlled terrain and hydrology layers. */
+   public static Holder<Biome> selectTfc(LayerKey key, int variant) {
+      List<Holder<Biome>> candidates = tfcLayerPools.computeIfAbsent(key, AdditionalBiomeRegistry::buildTfcLayerPool);
+      if (candidates.isEmpty()) return null;
+      int saltedVariant = variant ^ key.hashCode() * 0x45d9f3b;
+      return candidates.get(Math.floorMod(saltedVariant, candidates.size()));
+   }
+
+   private static List<Holder<Biome>> buildTfcLayerPool(LayerKey key) {
+      List<Holder<Biome>> exact = allBiomes.stream()
+         .filter(TfcBiomeLayers::isTfc)
+         .filter(candidate -> TfcBiomeLayers.matches(key, candidate))
+         .toList();
+      return exact.isEmpty()
+         ? allBiomes.stream().filter(TfcBiomeLayers::isTfc)
+            .filter(candidate -> TfcBiomeLayers.matchesFallback(key, candidate)).toList()
+         : exact;
+   }
+
+   public static boolean hasTfcBiomes() {
+      return allBiomes.stream().anyMatch(TfcBiomeLayers::isTfc);
+   }
+
    private static LayerCandidatePool buildLayerPool(LayerKey key) {
       List<Holder<Biome>> all = allBiomes.stream()
          .filter(candidate -> matchesLayerCombination(key, candidate))
@@ -140,6 +171,7 @@ public final class AdditionalBiomeRegistry {
    }
 
    private static boolean matchesLayerCombination(LayerKey key, Holder<Biome> biome) {
+      if (TfcBiomeLayers.isTfc(biome)) return TfcBiomeLayers.matches(key, biome);
       if (!matchesTemperature(key, biome)) return false;
       if (!matchesBopTagConstraints(key, biome)) return false;
       return switch (key.hydrology()) {
@@ -214,8 +246,8 @@ public final class AdditionalBiomeRegistry {
       if (band <= 1 && key.snowAllowed() && key.hydrology() == Hydrology.LAND
          && !biome.is(Tags.Biomes.IS_SNOWY) && !biome.is(Tags.Biomes.IS_COLD)) return false;
       boolean coldBopDesert = biome.unwrapKey().map(candidate ->
-         "biomesoplenty".equals(candidate.location().getNamespace())
-            && "cold_desert".equals(candidate.location().getPath())
+         "biomesoplenty".equals(candidate.identifier().getNamespace())
+            && "cold_desert".equals(candidate.identifier().getPath())
       ).orElse(false);
       if ((key.terrain() == ClimateLayers.TerrainKind.DESERT || key.terrain() == ClimateLayers.TerrainKind.JUNGLE)
          && band < 4 && !coldBopDesert) return false;
@@ -267,7 +299,7 @@ public final class AdditionalBiomeRegistry {
    }
 
    private static boolean isBop(Holder<Biome> biome) {
-      return biome.unwrapKey().map(key -> "biomesoplenty".equals(key.location().getNamespace())).orElse(false);
+      return biome.unwrapKey().map(key -> "biomesoplenty".equals(key.identifier().getNamespace())).orElse(false);
    }
 
    private static boolean isBopRare(Holder<Biome> biome) {
@@ -282,16 +314,16 @@ public final class AdditionalBiomeRegistry {
     */
    private static boolean createsUnmappedOceanLand(Holder<Biome> biome) {
       return biome.unwrapKey().map(key ->
-         "biomeswevegone".equals(key.location().getNamespace())
-            && "lush_stacks".equals(key.location().getPath())
+         "biomeswevegone".equals(key.identifier().getNamespace())
+            && "lush_stacks".equals(key.identifier().getPath())
       ).orElse(false);
    }
 
    /** BOP 21.1's primary EarthShape family, independent of incomplete common tags. */
    private static BopFamily bopFamily(Holder<Biome> biome) {
       return biome.unwrapKey().map(key -> {
-         if (!"biomesoplenty".equals(key.location().getNamespace())) return BopFamily.NONE;
-         return switch (key.location().getPath()) {
+         if (!"biomesoplenty".equals(key.identifier().getNamespace())) return BopFamily.NONE;
+         return switch (key.identifier().getPath()) {
             case "cold_desert", "dryland", "lush_desert", "wasteland", "wasteland_steppe" -> BopFamily.DESERT;
             case "bayou", "bog", "floodplain", "marsh", "moor", "muskeg", "wetland" -> BopFamily.WETLAND;
             case "fungal_jungle", "rainforest", "tropics" -> BopFamily.JUNGLE;
@@ -313,7 +345,7 @@ public final class AdditionalBiomeRegistry {
    }
 
    private static boolean isMeadowLike(Holder<Biome> biome) {
-      return biome.unwrapKey().map(key -> key.location().getPath().contains("meadow")).orElse(false);
+      return biome.unwrapKey().map(key -> key.identifier().getPath().contains("meadow")).orElse(false);
    }
 
    private enum BopFamily {
@@ -346,14 +378,14 @@ public final class AdditionalBiomeRegistry {
       return !allBiomes.isEmpty();
    }
 
-   private static void onServerAboutToStart(ServerAboutToStartEvent event) {
-      Registry<Biome> registry = event.getServer().registryAccess().registryOrThrow(Registries.BIOME);
+   private static void onServerStarting(MinecraftServer server) {
+      Registry<Biome> registry = server.registryAccess().lookupOrThrow(Registries.BIOME);
       List<Holder<Biome>> found = new ArrayList<>();
-      registry.holders().forEach(holder -> {
+      registry.listElements().forEach(holder -> {
          boolean modded = holder.unwrapKey()
-            .map(key -> !"minecraft".equals(key.location().getNamespace()))
+            .map(key -> !"minecraft".equals(key.identifier().getNamespace()))
             .orElse(false);
-         if (modded && holder.is(Tags.Biomes.IS_OVERWORLD)) {
+         if (modded && (holder.is(Tags.Biomes.IS_OVERWORLD) || TfcBiomeLayers.isTfc(holder))) {
             found.add(holder);
          }
       });
@@ -371,24 +403,23 @@ public final class AdditionalBiomeRegistry {
       pools = Map.copyOf(built);
       allBiomes = List.copyOf(found);
       layerPools.clear();
-      appendToOverworldBiomeSource(event, found);
+      tfcLayerPools.clear();
+      appendToOverworldBiomeSource(server, found);
 
       long uncategorized = found.stream()
          .filter(holder -> holder.unwrapKey().map(key -> !categorized.contains(key)).orElse(true))
          .count();
-      EarthShape.LOGGER.info(
-         "[EarthShape] indexed {} additional overworld biomes for layer selection; uncategorized={}",
-         found.size(),
-         uncategorized
-      );
+      long tfcCount = found.stream().filter(TfcBiomeLayers::isTfc).count();
+      EarthShape.LOGGER.info("[EarthShape] indexed {} additional overworld biomes for layer selection; tfc={}, uncategorized={}",
+         found.size(), tfcCount, uncategorized);
    }
 
-   private static void appendToOverworldBiomeSource(ServerAboutToStartEvent event, List<Holder<Biome>> found) {
+   private static void appendToOverworldBiomeSource(MinecraftServer server, List<Holder<Biome>> found) {
       if (found.isEmpty()) {
          return;
       }
 
-      Registry<LevelStem> stems = event.getServer().registryAccess().registryOrThrow(Registries.LEVEL_STEM);
+      Registry<LevelStem> stems = server.registryAccess().lookupOrThrow(Registries.LEVEL_STEM);
       for (Map.Entry<ResourceKey<LevelStem>, LevelStem> entry : stems.entrySet()) {
          if (!entry.getKey().equals(LevelStem.OVERWORLD)) {
             continue;
@@ -398,14 +429,15 @@ public final class AdditionalBiomeRegistry {
          LinkedHashSet<Holder<Biome>> merged = new LinkedHashSet<>(source.possibleBiomes());
          merged.addAll(found);
          Set<Holder<Biome>> immutable = Collections.unmodifiableSet(merged);
-         source.possibleBiomes = () -> immutable;
+         ((BiomeSourceAccessor) source).earthshape$setPossibleBiomes(() -> immutable);
       }
    }
 
-   private static void onServerStopping(ServerStoppingEvent ignored) {
+   private static void onServerStopping(MinecraftServer ignored) {
       pools = Map.of();
       allBiomes = List.of();
       layerPools.clear();
+      tfcLayerPools.clear();
    }
 
    private record CandidatePool(

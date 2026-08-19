@@ -33,8 +33,9 @@ dependencies {
 
 java {
     withSourcesJar()
-    sourceCompatibility = JavaVersion.VERSION_25
-    targetCompatibility = JavaVersion.VERSION_25
+    toolchain {
+        languageVersion = JavaLanguageVersion.of(25)
+    }
 }
 
 sourceSets {
@@ -42,6 +43,11 @@ sourceSets {
         java {
             setSrcDirs(['src/main/java'])
             exclude 'terrablender/**'
+            // The Fabric entrypoint performs the equivalent direct codec registration.
+            exclude 'io/github/earthshape/worldgen/EarthShapeDensityFunctions.java'
+            // Fabric registers these codecs during mod initialization; the
+            // common implementation is tied to NeoForge's DeferredRegister.
+            exclude 'io/github/earthshape/worldgen/EarthShapeDensityFunctions.java'
         }
         resources.srcDir('../src/main/resources')
     }
@@ -50,6 +56,9 @@ sourceSets {
 processResources {
     exclude 'META-INF/**'
     exclude 'pack.mcmeta'
+    exclude 'earthshape.mixins.json'
+    // This is the NeoForge mixin descriptor inherited with common resources.
+    exclude 'earthshape.mixins.json'
     from('../map') {
         include 'terrain.bmp', 'rivers.bmp', 'trees.bmp', 'world_normal.bmp', 'earth_temperature.png', 'worldmap_full.png', 'world_rivers_full.png', 'worldmap_river.png'
         into 'earthshape/hoi4'

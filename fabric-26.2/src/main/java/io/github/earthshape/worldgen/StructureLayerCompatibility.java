@@ -6,7 +6,7 @@ import io.github.earthshape.map.ClimateLayers;
 import io.github.earthshape.map.RiversMask;
 import net.minecraft.core.RegistryAccess;
 import net.minecraft.core.registries.Registries;
-import net.minecraft.resources.ResourceLocation;
+import net.minecraft.resources.Identifier;
 import net.minecraft.world.level.ChunkPos;
 import net.minecraft.world.level.levelgen.structure.Structure;
 
@@ -21,13 +21,13 @@ public final class StructureLayerCompatibility {
          return true;
       }
 
-      ResourceLocation id = registryAccess.registryOrThrow(Registries.STRUCTURE).getKey(structure);
+      Identifier id = registryAccess.lookupOrThrow(Registries.STRUCTURE).getKey(structure);
       if (id == null) return true;
       StructureClimate climate = StructureClimate.fromPath(id.getPath());
       if (climate == StructureClimate.ANY) return true;
 
-      int blockX = (chunkPos.x << 4) + 8;
-      int blockZ = (chunkPos.z << 4) + 8;
+      int blockX = (chunkPos.x() << 4) + 8;
+      int blockZ = (chunkPos.z() << 4) + 8;
       boolean land = RiversMask.INSTANCE.sampleLayerLand(blockX, blockZ) >= 0.5;
       ClimateLayers layers = ClimateLayers.INSTANCE;
       ClimateLayers.TerrainKind terrain = layers.terrainKind(blockX, blockZ);

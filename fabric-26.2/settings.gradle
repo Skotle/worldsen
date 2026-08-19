@@ -5,4 +5,10 @@ pluginManagement {
     }
 }
 
+// Minecraft 26.2 compiles and runs on Java 25. Provision it when the local
+// development machine has no matching JDK installed.
+plugins {
+    id 'org.gradle.toolchains.foojay-resolver-convention' version '1.0.0'
+}
+
 rootProject.name = 'earthshape-fabric-26.2'
