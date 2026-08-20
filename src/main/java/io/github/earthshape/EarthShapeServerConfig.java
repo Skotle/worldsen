@@ -70,8 +70,8 @@ public final class EarthShapeServerConfig {
    static {
       Builder builder = new Builder();
       builder.push("map_scale");
-      BLOCKS_PER_PIXEL = builder.comment("rivers.bmp 픽셀 하나에 해당하는 마인크래프트 블록 수. 20으로 설정하면 기본 제공 맵의 283840 x 141920 블록 크기가 유지됩니다.")
-              .defineInRange("blocksPerPixel", 20, 1, 4096);
+      BLOCKS_PER_PIXEL = builder.comment("rivers.bmp 픽셀 하나에 해당하는 마인크래프트 블록 수. 10으로 설정하면 기본 제공 맵의 60000 x 34000 (약 1:700) 축적이 유지됩니다.")
+              .defineInRange("blocksPerPixel", 10, 1, 4096);
       RANDOM_MAP_CENTER_ENABLED = builder.comment(
                       "활성화하면 월드 시드로 아래 레이어 좌표 범위에서 지도 중심축을 선택합니다. 비활성화하면 기존처럼 레이어 정중앙이 월드 0,0입니다. 월드 스폰 좌표는 변경하지 않습니다."
               )
@@ -115,7 +115,7 @@ public final class EarthShapeServerConfig {
               )
               .defineInRange("tundraTemperatureThreshold", -0.25, -1.0, 1.0);
       SNOW_ALTITUDE_BLOCKS = builder.comment("온도 맵과 무관하게 고지대 바이옴에 눈이 내릴 수 있는 지표면 Y 레벨.")
-              .defineInRange("snowAltitudeBlocks", 160, 64, 320);
+              .defineInRange("snowAltitudeBlocks", 160, 160, 320);
       SNOW_TEMPERATURE_THRESHOLD = builder.comment(
                       "고지대 설선 아래에서 눈이 내리는 온도 맵 기준값. -0.625는 보라색과 파란색의 영하 구간에 해당합니다."
               )
@@ -164,13 +164,13 @@ public final class EarthShapeServerConfig {
               .defineInRange("riverMaximumDepthBlocks", 6, 6, 6);
       builder.pop();
       builder.push("river_widths");
-      RIVER_WIDTH_000064 = builder.comment("rivers.bmp 색상 #000064의 강 너비(블록 단위).").defineInRange("color_000064", 27, 1, 256);
+      RIVER_WIDTH_000064 = builder.comment("rivers.bmp 색상 #000064의 강 너비(블록 단위).").defineInRange("color_000064", 24, 1, 256);
       RIVER_WIDTH_000096 = builder.comment("rivers.bmp 색상 #000096의 강 너비(블록 단위).").defineInRange("color_000096", 22, 1, 256);
-      RIVER_WIDTH_0000C8 = builder.comment("rivers.bmp 색상 #0000C8의 강 너비(블록 단위).").defineInRange("color_0000C8", 17, 1, 256);
-      RIVER_WIDTH_0000FF = builder.comment("rivers.bmp 색상 #0000FF의 강 너비(블록 단위).").defineInRange("color_0000FF", 13, 1, 256);
-      RIVER_WIDTH_0064FF = builder.comment("rivers.bmp 색상 #0064FF의 강 너비(블록 단위).").defineInRange("color_0064FF", 10, 1, 256);
-      RIVER_WIDTH_00C8FF = builder.comment("rivers.bmp 색상 #00C8FF의 강 너비(블록 단위).").defineInRange("color_00C8FF", 7, 1, 256);
-      RIVER_WIDTH_00E1FF = builder.comment("rivers.bmp 색상 #00E1FF의 강 너비(블록 단위).").defineInRange("color_00E1FF", 5, 1, 256);
+      RIVER_WIDTH_0000C8 = builder.comment("rivers.bmp 색상 #0000C8의 강 너비(블록 단위).").defineInRange("color_0000C8", 20, 1, 256);
+      RIVER_WIDTH_0000FF = builder.comment("rivers.bmp 색상 #0000FF의 강 너비(블록 단위).").defineInRange("color_0000FF", 18, 1, 256);
+      RIVER_WIDTH_0064FF = builder.comment("rivers.bmp 색상 #0064FF의 강 너비(블록 단위).").defineInRange("color_0064FF", 16, 1, 256);
+      RIVER_WIDTH_00C8FF = builder.comment("rivers.bmp 색상 #00C8FF의 강 너비(블록 단위).").defineInRange("color_00C8FF", 14, 1, 256);
+      RIVER_WIDTH_00E1FF = builder.comment("rivers.bmp 색상 #00E1FF의 강 너비(블록 단위).").defineInRange("color_00E1FF", 12, 1, 256);
       RIVER_WIDTH_SCALE = builder.comment("모든 원본 강 너비에 적용되는 전역 배율. 0.5는 이미 여러 픽셀을 차지하는 원본 선을 보정합니다.")
               .defineInRange("widthScale", 0.5, 0.05, 4.0);
       RIVER_MINIMUM_WIDTH_BLOCKS = builder.comment(
