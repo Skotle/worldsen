@@ -46,7 +46,7 @@ public abstract class SurfaceStructureRateMixin {
       // BWG's enormous Dead Sea arches run during RAW_GENERATION rather than
       // SURFACE_STRUCTURES, so the ordinary surface-structure limiter never
       // sees them. Retain the rare landmark at one percent of BWG's candidates.
-      double rate = structureRate(structureId, deadSeaArch);
+      double rate = deadSeaArch ? 0.01 : (Double)EarthShapeServerConfig.SURFACE_STRUCTURE_RATE.get();
       if (rate >= 1.0 || (!deadSeaArch && structure.step() != GenerationStep.Decoration.SURFACE_STRUCTURES)) return;
 
       long value = seed ^ ((long)chunkPos.x() * 341873128712L) ^ ((long)chunkPos.z() * 132897987541L)
@@ -64,12 +64,4 @@ public abstract class SurfaceStructureRateMixin {
          || "byg".equals(id.getNamespace()) && "stone_arch".equals(id.getPath());
    }
 
-   private static double structureRate(Identifier id, boolean deadSeaArch) {
-      if (deadSeaArch) return 0.01;
-      if (id != null && "minecraft".equals(id.getNamespace())) {
-         if ("monument".equals(id.getPath())) return (Double)EarthShapeServerConfig.OCEAN_MONUMENT_RATE.get();
-         if ("mansion".equals(id.getPath())) return (Double)EarthShapeServerConfig.WOODLAND_MANSION_RATE.get();
-      }
-      return (Double)EarthShapeServerConfig.SURFACE_STRUCTURE_RATE.get();
-   }
 }

@@ -63,8 +63,6 @@ public final class EarthShapeServerConfig {
    public static final IntValue DESERT_MINIMUM_RIVER_WIDTH_BLOCKS;
    public static final IntValue DESERT_MAXIMUM_RIVER_WIDTH_BLOCKS;
    public static final DoubleValue SURFACE_STRUCTURE_RATE;
-   public static final DoubleValue OCEAN_MONUMENT_RATE;
-   public static final DoubleValue WOODLAND_MANSION_RATE;
 
    private EarthShapeServerConfig() {
    }
@@ -221,14 +219,6 @@ public final class EarthShapeServerConfig {
                       "지상 구조물(SURFACE_STRUCTURES) 발생 비율. 1.0은 기본 빈도이며 0.01은 기본 빈도의 1%입니다. 지하 구조물과 요새에는 적용하지 않습니다."
               )
               .defineInRange("surfaceStructureRate", 1.0, 0.01, 1.0);
-      OCEAN_MONUMENT_RATE = builder.comment(
-                      "넓은 해양 바이옴에서 바다신전 후보에 적용할 발생 비율. 기본값 0.25는 바닐라 간격을 유지하면서 평균 밀도를 1/4로 낮춥니다."
-              )
-              .defineInRange("oceanMonumentRate", 0.25, 0.01, 1.0);
-      WOODLAND_MANSION_RATE = builder.comment(
-                      "넓은 어두운 숲 바이옴에서 삼림 대저택 후보에 적용할 발생 비율. 기본값 0.25는 평균 밀도를 1/4로 낮춥니다."
-              )
-              .defineInRange("woodlandMansionRate", 0.25, 0.01, 1.0);
       builder.pop();
       SPEC = builder.build();
    }

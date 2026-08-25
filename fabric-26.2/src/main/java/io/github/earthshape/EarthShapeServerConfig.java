@@ -95,8 +95,6 @@ public final class EarthShapeServerConfig {
    public static final Value<Integer> DESERT_MINIMUM_RIVER_WIDTH_BLOCKS = i(20);
    public static final Value<Integer> DESERT_MAXIMUM_RIVER_WIDTH_BLOCKS = i(18);
    public static final Value<Double> SURFACE_STRUCTURE_RATE = d(1.0);
-   public static final Value<Double> OCEAN_MONUMENT_RATE = d(0.25);
-   public static final Value<Double> WOODLAND_MANSION_RATE = d(0.25);
 
    private EarthShapeServerConfig() {
    }
@@ -167,8 +165,6 @@ public final class EarthShapeServerConfig {
       DESERT_MINIMUM_RIVER_WIDTH_BLOCKS.set(integer(properties, "surface_water.minimumRiverWidthBlocks", DESERT_MINIMUM_RIVER_WIDTH_BLOCKS, 1, 128));
       DESERT_MAXIMUM_RIVER_WIDTH_BLOCKS.set(integer(properties, "surface_water.maximumRiverWidthBlocks", DESERT_MAXIMUM_RIVER_WIDTH_BLOCKS, 4, 64));
       SURFACE_STRUCTURE_RATE.set(decimal(properties, "structures.surfaceStructureRate", SURFACE_STRUCTURE_RATE, 0.01, 1.0));
-      OCEAN_MONUMENT_RATE.set(decimal(properties, "structures.oceanMonumentRate", OCEAN_MONUMENT_RATE, 0.01, 1.0));
-      WOODLAND_MANSION_RATE.set(decimal(properties, "structures.woodlandMansionRate", WOODLAND_MANSION_RATE, 0.01, 1.0));
 
       save(properties);
    }
@@ -265,8 +261,6 @@ public final class EarthShapeServerConfig {
       put(properties, "surface_water.minimumRiverWidthBlocks", DESERT_MINIMUM_RIVER_WIDTH_BLOCKS);
       put(properties, "surface_water.maximumRiverWidthBlocks", DESERT_MAXIMUM_RIVER_WIDTH_BLOCKS);
       put(properties, "structures.surfaceStructureRate", SURFACE_STRUCTURE_RATE);
-      put(properties, "structures.oceanMonumentRate", OCEAN_MONUMENT_RATE);
-      put(properties, "structures.woodlandMansionRate", WOODLAND_MANSION_RATE);
 
       try {
          Files.createDirectories(FILE.getParent());
