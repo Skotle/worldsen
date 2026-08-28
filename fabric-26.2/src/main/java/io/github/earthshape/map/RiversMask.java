@@ -828,8 +828,9 @@ public final class RiversMask {
 
    public int effectiveRiverWidthBlocks(int blockX, int blockZ) {
       int width = this.riverWidthBlocks(blockX, blockZ);
-      // Do not inflate narrow configured channels to a global minimum. Every river
-      // colour is interpreted as a centreline plus its exact configured block width.
+      // Preserve the source colour hierarchy exactly. A global minimum would
+      // collapse every narrow tributary to the same visible width after
+      // widthScale is applied.
       return width;
    }
 

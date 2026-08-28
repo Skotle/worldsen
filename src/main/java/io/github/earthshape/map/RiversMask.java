@@ -15,6 +15,8 @@ public final class RiversMask {
    public static final int DEFAULT_BLOCKS_PER_PIXEL = 20;
    private static final int RIVER_SEARCH_RADIUS = 4;
    private static final double RIVER_CORNER_TRIM = 0.32;
+   private static final double NARROW_RIVER_CORNER_TRIM = 0.48;
+   private static final int NARROW_RIVER_WIDTH_BLOCKS = 12;
    private volatile RiversMask.Data data;
    private volatile ThreadLocal<RiversMask.LandSampleCache> landSampleCache = ThreadLocal.withInitial(RiversMask.LandSampleCache::new);
    private volatile ThreadLocal<RiversMask.RiverWidthCache> riverWidthCache = ThreadLocal.withInitial(RiversMask.RiverWidthCache::new);
@@ -222,23 +224,21 @@ public final class RiversMask {
    }
 
    /**
-    * Coherent, seed-stable multiplier for the offshore continental shelf.
-    * It changes only over broad coastal reaches, rather than per block, so a
-    * shelf remains a single smooth slope while different coasts receive
-    * naturally different run-out lengths.
+    * Total offshore run-out in blocks for the gently descending continental
+    * shelf. The sampled value is coherent over a broad coastal reach, so the
+    * range changes between coasts without producing per-column steps.
     */
-   public double coastShelfFadeScale(int blockX, int blockZ) {
-      if (!(Boolean)EarthShapeServerConfig.COAST_SHELF_VARIATION_ENABLED.get()) return 1.0;
-      double minimum = (Double)EarthShapeServerConfig.COAST_SHELF_VARIATION_MIN_SCALE.get();
-      double maximum = (Double)EarthShapeServerConfig.COAST_SHELF_VARIATION_MAX_SCALE.get();
+   public double coastShelfRangeBlocks(int blockX, int blockZ) {
+      double minimum = (double)EarthShapeServerConfig.COAST_SHELF_MINIMUM_RANGE_BLOCKS.get();
+      double maximum = (double)EarthShapeServerConfig.COAST_SHELF_MAXIMUM_RANGE_BLOCKS.get();
       if (maximum < minimum) {
          double swap = minimum;
          minimum = maximum;
          maximum = swap;
       }
-      // One broad 1536-block cell behaves as a coastal reach. Its random value
-      // chooses whether the shelf ends relatively near shore or continues far
-      // into the ocean; interpolation hides the boundary between reaches.
+      if (!(Boolean)EarthShapeServerConfig.COAST_SHELF_VARIATION_ENABLED.get() || maximum == minimum) {
+         return (minimum + maximum) * 0.5;
+      }
       int cellSize = 1536;
       int cellX = Math.floorDiv(blockX, cellSize);
       int cellZ = Math.floorDiv(blockZ, cellSize);
@@ -840,8 +840,9 @@ public final class RiversMask {
 
    public int effectiveRiverWidthBlocks(int blockX, int blockZ) {
       int width = this.riverWidthBlocks(blockX, blockZ);
-      // Do not inflate narrow configured channels to a global minimum. Every river
-      // colour is interpreted as a centreline plus its exact configured block width.
+      // Preserve the source colour hierarchy exactly. A global minimum would
+      // collapse every narrow tributary to the same visible width after
+      // widthScale is applied.
       return width;
    }
 
@@ -869,7 +870,9 @@ public final class RiversMask {
                         double pathZ = riverPathZ(loaded, x, z);
                         best = Math.min(best, Math.sqrt(distanceSquared(imageX, imageZ, pathX, pathZ, pathX, pathZ)));
                      } else {
-                        best = Math.min(best, Math.sqrt(roundedCornerDistanceSquared(imageX, imageZ, x, z, cornerMask)));
+                        best = Math.min(best, Math.sqrt(roundedCornerDistanceSquared(
+                           imageX, imageZ, x, z, cornerMask, cornerTrim(loaded.riverWidth(x, z))
+                        )));
                      }
 
                      for (int dz = -1; dz <= 1; dz++) {
@@ -886,10 +889,12 @@ public final class RiversMask {
                                  continue;
                               }
                               int neighbourCornerMask = loaded.riverCornerMask(x + dx, z + dz);
-                              double startX = riverPathX(loaded, x, z) + ((cornerMask & neighbourBit(dx, dz)) != 0 ? (double)dx * 0.32 : 0.0);
-                              double startZ = riverPathZ(loaded, x, z) + ((cornerMask & neighbourBit(dx, dz)) != 0 ? (double)dz * 0.32 : 0.0);
-                              double endX = riverPathX(loaded, x + dx, z + dz) + ((neighbourCornerMask & neighbourBit(-dx, -dz)) != 0 ? (double)(-dx) * 0.32 : 0.0);
-                              double endZ = riverPathZ(loaded, x + dx, z + dz) + ((neighbourCornerMask & neighbourBit(-dx, -dz)) != 0 ? (double)(-dz) * 0.32 : 0.0);
+                              double startTrim = cornerTrim(loaded.riverWidth(x, z));
+                              double endTrim = cornerTrim(loaded.riverWidth(x + dx, z + dz));
+                              double startX = riverPathX(loaded, x, z) + ((cornerMask & neighbourBit(dx, dz)) != 0 ? (double)dx * startTrim : 0.0);
+                              double startZ = riverPathZ(loaded, x, z) + ((cornerMask & neighbourBit(dx, dz)) != 0 ? (double)dz * startTrim : 0.0);
+                              double endX = riverPathX(loaded, x + dx, z + dz) + ((neighbourCornerMask & neighbourBit(-dx, -dz)) != 0 ? (double)(-dx) * endTrim : 0.0);
+                              double endZ = riverPathZ(loaded, x + dx, z + dz) + ((neighbourCornerMask & neighbourBit(-dx, -dz)) != 0 ? (double)(-dz) * endTrim : 0.0);
                               best = Math.min(best, Math.sqrt(distanceSquared(imageX, imageZ, startX, startZ, endX, endZ)));
                            }
                         }
@@ -974,17 +979,25 @@ public final class RiversMask {
       }
    }
 
-   private static double roundedCornerDistanceSquared(double px, double pz, int x, int z, int cornerMask) {
+   private static double cornerTrim(int widthBlocks) {
+      if (widthBlocks >= NARROW_RIVER_WIDTH_BLOCKS) return RIVER_CORNER_TRIM;
+      double narrowness = 1.0 - Math.max(0.0, (double)widthBlocks / (double)NARROW_RIVER_WIDTH_BLOCKS);
+      return RIVER_CORNER_TRIM + (NARROW_RIVER_CORNER_TRIM - RIVER_CORNER_TRIM) * narrowness;
+   }
+
+   private static double roundedCornerDistanceSquared(
+      double px, double pz, int x, int z, int cornerMask, double trim
+   ) {
       int first = Integer.numberOfTrailingZeros(cornerMask & 0xFF);
       int second = Integer.numberOfTrailingZeros(cornerMask & 0xFF & ~(1 << first));
       int firstX = neighbourX(first);
       int firstZ = neighbourZ(first);
       int secondX = neighbourX(second);
       int secondZ = neighbourZ(second);
-      double startX = (double)x + 0.5 + (double)firstX * 0.32;
-      double startZ = (double)z + 0.5 + (double)firstZ * 0.32;
-      double endX = (double)x + 0.5 + (double)secondX * 0.32;
-      double endZ = (double)z + 0.5 + (double)secondZ * 0.32;
+      double startX = (double)x + 0.5 + (double)firstX * trim;
+      double startZ = (double)z + 0.5 + (double)firstZ * trim;
+      double endX = (double)x + 0.5 + (double)secondX * trim;
+      double endZ = (double)z + 0.5 + (double)secondZ * trim;
       double controlX = (double)x + 0.5;
       double controlZ = (double)z + 0.5;
       double best = Double.POSITIVE_INFINITY;
@@ -2116,7 +2129,12 @@ public final class RiversMask {
    }
 
    private static final class OceanProximity {
-      private static final int SCALE = 4;
+      // A 4x4 cell can contain a one- or two-pixel sea passage and still look
+      // mostly like land. At large blocksPerPixel that mistaken classification
+      // turns the passage's blue source ink into a continent-scale river.
+      // Two-pixel cells retain those narrow straits while keeping the flood-fill
+      // memory use safely below a full-resolution map pass.
+      private static final int SCALE = 2;
       private static final int SHORE_BAND_CELLS = 3;
       private final int width;
       private final int height;
@@ -2129,26 +2147,28 @@ public final class RiversMask {
       }
 
       static RiversMask.OceanProximity create(int sourceWidth, int sourceHeight, BitSet land) {
-         int width = (sourceWidth + 4 - 1) / 4;
-         int height = (sourceHeight + 4 - 1) / 4;
+         int width = (sourceWidth + SCALE - 1) / SCALE;
+         int height = (sourceHeight + SCALE - 1) / SCALE;
          int cells = width * height;
          BitSet water = new BitSet(cells);
 
          for (int z = 0; z < height; z++) {
             for (int x = 0; x < width; x++) {
                int landCount = 0;
+               int sampleCount = 0;
 
-               for (int dz = 0; dz < 4; dz++) {
-                  for (int dx = 0; dx < 4; dx++) {
-                     int px = x * 4 + dx;
-                     int pz = z * 4 + dz;
-                     if (px < sourceWidth && pz < sourceHeight && land.get(pz * sourceWidth + px)) {
-                        landCount++;
+               for (int dz = 0; dz < SCALE; dz++) {
+                  for (int dx = 0; dx < SCALE; dx++) {
+                     int px = x * SCALE + dx;
+                     int pz = z * SCALE + dz;
+                     if (px < sourceWidth && pz < sourceHeight) {
+                        sampleCount++;
+                        if (land.get(pz * sourceWidth + px)) landCount++;
                      }
                   }
                }
 
-               if (landCount <= 8) {
+               if (landCount * 2 <= sampleCount) {
                   water.set(z * width + x);
                }
             }
@@ -2230,14 +2250,14 @@ public final class RiversMask {
       }
 
       boolean isNearOpenOcean(int sourceX, int sourceZ) {
-         int x = Math.max(0, Math.min(this.width - 1, sourceX / 4));
-         int z = Math.max(0, Math.min(this.height - 1, sourceZ / 4));
+         int x = Math.max(0, Math.min(this.width - 1, sourceX / SCALE));
+         int z = Math.max(0, Math.min(this.height - 1, sourceZ / SCALE));
          return (this.distance[z * this.width + x] & 255) <= 3;
       }
 
       boolean isOpenOcean(int sourceX, int sourceZ) {
-         int x = Math.max(0, Math.min(this.width - 1, sourceX / 4));
-         int z = Math.max(0, Math.min(this.height - 1, sourceZ / 4));
+         int x = Math.max(0, Math.min(this.width - 1, sourceX / SCALE));
+         int z = Math.max(0, Math.min(this.height - 1, sourceZ / SCALE));
          return (this.distance[z * this.width + x] & 255) == 0;
       }
 

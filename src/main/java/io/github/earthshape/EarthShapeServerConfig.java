@@ -33,10 +33,10 @@ public final class EarthShapeServerConfig {
    public static final IntValue BIOME_BOUNDARY_WARP_BLOCKS;
    public static final IntValue COAST_HEIGHT_FADE_BLOCKS;
    public static final BooleanValue COAST_SHELF_VARIATION_ENABLED;
-   public static final DoubleValue COAST_SHELF_VARIATION_MIN_SCALE;
-   public static final DoubleValue COAST_SHELF_VARIATION_MAX_SCALE;
    public static final IntValue COAST_SHALLOW_SHELF_WIDTH_BLOCKS;
    public static final IntValue COAST_SHELF_TRANSITION_BLOCKS;
+   public static final IntValue COAST_SHELF_MINIMUM_RANGE_BLOCKS;
+   public static final IntValue COAST_SHELF_MAXIMUM_RANGE_BLOCKS;
    public static final IntValue COAST_SHELF_DEEP_FLOOR_Y;
    public static final IntValue ISLAND_MAXIMUM_SURFACE_Y;
    public static final IntValue REGIONAL_MAXIMUM_SURFACE_Y;
@@ -132,18 +132,22 @@ public final class EarthShapeServerConfig {
                .defineInRange("biomeBoundaryWarpBlocks", 24, 0, 64);
       builder.pop();
       builder.push("terrain_shaping");
-      COAST_HEIGHT_FADE_BLOCKS = builder.comment("해안선 대륙붕 경사가 완만하게 이어지는 해안으로부터의 거리.")
+      COAST_HEIGHT_FADE_BLOCKS = builder.comment("해안선 주변의 육지·해양 마스크를 부드럽게 샘플링하는 거리.")
               .defineInRange("coastHeightFadeBlocks", 320, 20, 1024);
-      COAST_SHELF_VARIATION_ENABLED = builder.comment("Use a deterministic per-coast-segment variation for the offshore shelf slope. The same world seed always produces the same slope lengths.")
+      COAST_SHELF_VARIATION_ENABLED = builder.comment("해안 구간마다 대륙붕 범위를 결정적으로 변화시킵니다. 같은 월드 시드에서는 같은 범위가 유지됩니다.")
               .define("coastShelfVariationEnabled", true);
-      COAST_SHELF_VARIATION_MIN_SCALE = builder.comment("Minimum multiplier for coastHeightFadeBlocks on an individual coastal segment.")
-              .defineInRange("coastShelfVariationMinScale", 0.55, 0.25, 1.0);
-      COAST_SHELF_VARIATION_MAX_SCALE = builder.comment("Maximum multiplier for coastHeightFadeBlocks on an individual coastal segment.")
-              .defineInRange("coastShelfVariationMaxScale", 2.0, 1.0, 2.0);
       COAST_SHALLOW_SHELF_WIDTH_BLOCKS = builder.comment("해안 직후 Y=61(수심 1블록)으로 고정되는 얕은 대륙붕 폭.")
               .defineInRange("coastShallowShelfWidthBlocks", 6, 4, 8);
       COAST_SHELF_TRANSITION_BLOCKS = builder.comment("얕은 대륙붕 끝에서 깊은 해저로 완만히 내려가는 거리.")
               .defineInRange("coastShelfTransitionBlocks", 16, 4, 128);
+      COAST_SHELF_MINIMUM_RANGE_BLOCKS = builder.comment(
+                      "얕은 대륙붕 이후 해저 고도가 깊은 해저까지 완만히 낮아지는 최소 거리. 해안 구간마다 이 값과 최대 범위 사이에서 결정됩니다."
+              )
+              .defineInRange("coastShelfMinimumRangeBlocks", 64, 2, 200);
+      COAST_SHELF_MAXIMUM_RANGE_BLOCKS = builder.comment(
+                      "얕은 대륙붕 이후 해저 고도가 깊은 해저까지 완만히 낮아지는 최대 거리. 최소값보다 작게 설정해도 내부에서 두 값을 교환해 처리합니다."
+              )
+              .defineInRange("coastShelfMaximumRangeBlocks", 200, 2, 200);
       COAST_SHELF_DEEP_FLOOR_Y = builder.comment("대륙붕 전이 구간이 향하는 기본 깊은 해저 바닥 Y.")
               .defineInRange("coastShelfDeepFloorY", 51, -64, 61);
       ISLAND_MAXIMUM_SURFACE_Y = builder.comment("작은 섬과 소형 육지에서 허용되는 최대 지표 Y.")
@@ -171,7 +175,7 @@ public final class EarthShapeServerConfig {
       RIVER_WIDTH_0064FF = builder.comment("rivers.bmp 색상 #0064FF의 강 너비(블록 단위).").defineInRange("color_0064FF", 16, 1, 256);
       RIVER_WIDTH_00C8FF = builder.comment("rivers.bmp 색상 #00C8FF의 강 너비(블록 단위).").defineInRange("color_00C8FF", 14, 1, 256);
       RIVER_WIDTH_00E1FF = builder.comment("rivers.bmp 색상 #00E1FF의 강 너비(블록 단위).").defineInRange("color_00E1FF", 12, 1, 256);
-      RIVER_WIDTH_SCALE = builder.comment("모든 원본 강 너비에 적용되는 전역 배율. 0.5는 이미 여러 픽셀을 차지하는 원본 선을 보정합니다.")
+      RIVER_WIDTH_SCALE = builder.comment("모든 원본 강 너비에 적용되는 전역 배율. 0.5는 픽셀 색상별로 설정됀 크기를 절반으로 줄입니다.")
               .defineInRange("widthScale", 0.5, 0.05, 4.0);
       RIVER_MINIMUM_WIDTH_BLOCKS = builder.comment(
                       "원본 강의 최소 생성 너비. 12블록으로 설정하면 4블록 단위 바이옴 샘플에서도 작은 강이 끊기지 않고 이어집니다."

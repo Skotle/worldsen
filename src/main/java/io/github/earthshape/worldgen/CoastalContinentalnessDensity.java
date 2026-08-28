@@ -152,11 +152,8 @@ public record CoastalContinentalnessDensity(DensityFunction argument) implements
       double distance = RiversMask.INSTANCE.oceanDistanceBlocks(blockX, blockZ);
       double shallowWidth = (double)EarthShapeServerConfig.COAST_SHALLOW_SHELF_WIDTH_BLOCKS.get();
       double initialTransition = (double)EarthShapeServerConfig.COAST_SHELF_TRANSITION_BLOCKS.get();
-      double fullTransition = Math.max(
-         shallowWidth + initialTransition,
-         (double)EarthShapeServerConfig.COAST_HEIGHT_FADE_BLOCKS.get()
-            * RiversMask.INSTANCE.coastShelfFadeScale(blockX, blockZ)
-      );
+      double fullTransition = shallowWidth + initialTransition
+         + RiversMask.INSTANCE.coastShelfRangeBlocks(blockX, blockZ);
 
       // C=-0.20 is already on the ocean side of vanilla's coast threshold.
       // Start just below it, then descend toward a configurable deep-ocean

@@ -160,11 +160,7 @@ public abstract class CoastalShelfFloorMixin {
       double shallowWidth = (double)EarthShapeServerConfig.COAST_SHALLOW_SHELF_WIDTH_BLOCKS.get();
       double nearshoreEnd = shallowWidth
          + (double)EarthShapeServerConfig.COAST_SHELF_TRANSITION_BLOCKS.get();
-      double shelfEnd = Math.max(
-         nearshoreEnd,
-         (double)EarthShapeServerConfig.COAST_HEIGHT_FADE_BLOCKS.get()
-            * RiversMask.INSTANCE.coastShelfFadeScale(blockX, blockZ)
-      );
+      double shelfEnd = nearshoreEnd + RiversMask.INSTANCE.coastShelfRangeBlocks(blockX, blockZ);
       if (distance > shelfEnd) return;
 
       double initialDepth = (double)RiversMask.INSTANCE.coastShelfInitialDepthBlocks(blockX, blockZ);
