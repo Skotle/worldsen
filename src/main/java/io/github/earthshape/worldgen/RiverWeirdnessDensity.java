@@ -44,13 +44,8 @@ public record RiverWeirdnessDensity(DensityFunction argument) implements Density
       // the moderate-slope part of the fold and MOUNTAIN toward its peak centre.
       // Vanilla/Terralith terrain splines still form the surface rather than a
       // fixed-Y fill, so both families retain natural local variation.
-      ClimateLayers.TerrainKind terrainKind = ClimateLayers.INSTANCE.terrainKind(
-         context.blockX(), context.blockZ()
-      );
       if ((Boolean)EarthShapeServerConfig.TERRAIN_BIOMES_ENABLED.get()
-         && mappedLand
-         && (terrainKind == ClimateLayers.TerrainKind.HILLS
-            || terrainKind == ClimateLayers.TerrainKind.MOUNTAIN)) {
+         && mappedLand) {
          double relief = ClimateLayers.INSTANCE.terrainRelief(context.blockX(), context.blockZ())
             * coastalPeakRecovery;
          if (relief > 0.0) {
@@ -59,15 +54,11 @@ public record RiverWeirdnessDensity(DensityFunction argument) implements Density
             // to W/PV. Its full peak centre combined with EarthShape's broad
             // mountain mask resembles amplified world generation, so retain a
             // high-slope PV value without forcing every centre to PV~=1.
-            boolean hills = terrainKind == ClimateLayers.TerrainKind.HILLS;
-            double peakTarget = hills
-               ? (terralith ? 0.36 : 0.46)
-               : (terralith ? 0.45 : 0.67);
-            double maximumGuidance = hills
-               ? (terralith ? 0.34 : 0.62)
-               : (terralith ? 0.32 : 0.72);
+            double mountain = smootherstep((relief - 0.5) * 2.0);
+            double peakTarget = lerp(terralith ? 0.36 : 0.46, terralith ? 0.45 : 0.67, mountain);
+            double maximumGuidance = lerp(terralith ? 0.34 : 0.62, terralith ? 0.32 : 0.72, mountain);
             double target = weirdness < 0.0 ? -peakTarget : peakTarget;
-            double guidanceCoverage = hills ? smootherstep(Math.min(1.0, relief * 2.0)) : relief;
+            double guidanceCoverage = smootherstep(Math.min(1.0, relief * 2.0));
             weirdness = lerp(weirdness, target, Math.min(maximumGuidance, guidanceCoverage * maximumGuidance));
             if (terralith) {
                weirdness = Math.max(-0.60, Math.min(0.60, weirdness));

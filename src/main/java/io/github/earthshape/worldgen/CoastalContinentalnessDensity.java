@@ -67,7 +67,6 @@ public record CoastalContinentalnessDensity(DensityFunction argument) implements
       // normal overworld Y=64 baseline. The channel, its direct bank and a
       // genuine mouth remain free to descend to their water profile.
       boolean riverWater = RiversMask.INSTANCE.isInlandRiverColumn(context.blockX(), context.blockZ());
-      ClimateLayers.TerrainKind terrainKind = ClimateLayers.INSTANCE.terrainKind(context.blockX(), context.blockZ());
       boolean riverBank = RiversMask.INSTANCE.isInlandRiverBank(context.blockX(), context.blockZ());
       double surfaceBankDistance = RiversMask.INSTANCE.surfaceBankDistanceBlocks(context.blockX(), context.blockZ());
       int surfaceBankWidth = surfaceBankDistance > 0.0
@@ -82,12 +81,11 @@ public record CoastalContinentalnessDensity(DensityFunction argument) implements
       // merely because the unmodified noise would have remained at plains level.
       // Give hills and mountains distinct C floors, while E/W retain the natural
       // local shape and prevent these values from becoming fixed-height plateaus.
-      double minimumLandContinentalness = 0.06;
-      if (!smallIsland && terrainKind == ClimateLayers.TerrainKind.HILLS) {
-         minimumLandContinentalness = 0.20;
-      } else if (!smallIsland && terrainKind == ClimateLayers.TerrainKind.MOUNTAIN) {
-         minimumLandContinentalness = 0.26;
-      }
+      double terrainRelief = (Boolean)EarthShapeServerConfig.TERRAIN_BIOMES_ENABLED.get()
+         ? ClimateLayers.INSTANCE.terrainRelief(context.blockX(), context.blockZ()) : 0.0;
+      double minimumLandContinentalness = 0.06 + (smallIsland ? 0.0
+         : 0.20 * smoothstep(Math.min(1.0, terrainRelief * 2.0))
+            * smootherstep((coastalLandness - 0.48) / 0.44));
       if (mappedLand && !riverBank && !riverWater && !waterLevelBank && mouthOpening <= 0.001) {
          guided = Math.max(minimumLandContinentalness, guided);
       }
@@ -143,7 +141,12 @@ public record CoastalContinentalnessDensity(DensityFunction argument) implements
          // 0.13 hill cap was too low to lift some mapped HILLS regions at all;
          // E/W now receive matching hill guidance below.
          double terralithCap = 0.15 + 0.04 * smoothstep(relief);
-         guided = Math.min(terralithCap, guided);
+         // Approach the cap smoothly instead of clipping every raised sample
+         // to the same C value. Preserve a continuous slope at the knee.
+         double knee = terralithCap - 0.06;
+         if (guided > knee) {
+            guided = knee + 0.06 * (1.0 - Math.exp(-(guided - knee) / 0.06));
+         }
       }
       return guided;
    }

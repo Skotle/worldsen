@@ -44,8 +44,12 @@ public record TerrainErosionDensity(DensityFunction argument) implements Density
          // them produces concentric plateaus whose centre can approach Y=200.
          // Stay inside one mountain band when Terralith owns the final density;
          // vanilla keeps the full erosion range.
-         double mountainErosionSpan = EarthShapeCompatibility.isTerralithLoaded() ? 0.03 : 0.30;
-         double target = -0.55 - mountainErosionSpan * mountain;
+         // Retain local erosion variation even where map coverage reaches one.
+         // A constant target erased the source noise across broad hill regions.
+         double localNoise = Math.max(-1.0, Math.min(1.0, vanilla));
+         double target = EarthShapeCompatibility.isTerralithLoaded()
+            ? -0.55 - 0.02 * mountain + 0.01 * (localNoise - 1.0)
+            : -0.49 - 0.30 * mountain + 0.06 * localNoise;
          terrainGuided = lerp(vanilla, Math.min(vanilla, target), coverage);
          if (EarthShapeCompatibility.isTerralithLoaded()) {
             // Math.min above deliberately preserves a more mountainous vanilla

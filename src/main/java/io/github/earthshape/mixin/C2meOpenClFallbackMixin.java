@@ -26,7 +26,9 @@ public abstract class C2meOpenClFallbackMixin {
     private static boolean earthshape$c2meFallbackConfigured;
 
     @Inject(method = "<init>", at = @At("HEAD"))
-    private void earthshape$enableOpenClFallback(CallbackInfo ci) {
+    // HEAD runs before super(); the receiver is still uninitialized here.
+    // This hook only accesses static configuration and must itself be static.
+    private static void earthshape$enableOpenClFallback(CallbackInfo ci) {
         try {
             Class<?> configClass = Class.forName("com.ishland.c2me.opts.accel.opencl.common.Config");
             Field fallbackField = configClass.getDeclaredField("allowIncompatibilityFallback");

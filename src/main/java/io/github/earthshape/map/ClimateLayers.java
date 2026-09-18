@@ -983,9 +983,19 @@ public final class ClimateLayers {
                case MOUNTAIN_ULTRA -> 1.00;
                default -> 0.70;
             };
-            relief[index] = (byte)Math.round(peakFactor * maximumRelief * elevationStrength * 255.0);
+            // A thin spur connected to a wide massif must still rise. The
+            // region-wide Gaussian alone approaches zero along that entire
+            // spur, even though its biome remains mountain. Build foothills
+            // from local distance, then reserve the Gaussian for taller peaks.
+            double localRise = 1.0 - Math.exp(-(double)(distance[index] & 255) / 9.0);
+            double foothill = 0.28 * localRise;
+            double shapedRelief = foothill + (maximumRelief - foothill) * peakFactor;
+            relief[index] = (byte)Math.round(shapedRelief * elevationStrength * 255.0);
          }
       }
+      // Smooth both hill and mountain boundaries before all three density axes
+      // sample this field; categorical C/W switches otherwise undo the slope.
+      for (int pass = 0; pass < 2; pass++) relief = boxBlur(relief, width, height, 1);
       return relief;
    }
 
