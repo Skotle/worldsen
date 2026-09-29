@@ -17,6 +17,9 @@ Configuration is written to `config/earthshape.properties`. Its 55 options use
 the current NeoForge defaults and ranges, including **10 blocks per map pixel**.
 Restart after editing. This Fabric configuration is installation-wide; it does
 not automatically import NeoForge's per-world TOML configuration.
+Each setting includes English and Korean comments, its default, and accepted
+range. The file uses UTF-8. Starting the updated mod adds these comments to an
+existing configuration while keeping its valid values and unknown entries.
 
 ## Ported behavior
 

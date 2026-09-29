@@ -2,10 +2,15 @@ package io.github.earthshape;
 
 import java.io.IOException;
 import java.io.InputStream;
-import java.io.OutputStream;
+import java.io.Reader;
+import java.io.BufferedWriter;
+import java.io.InputStreamReader;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Properties;
+import java.util.LinkedHashMap;
+import java.util.Map;
 import net.fabricmc.loader.api.FabricLoader;
 
 /**
@@ -39,6 +44,7 @@ public final class EarthShapeServerConfig {
    }
 
    private static final Path FILE = FabricLoader.getInstance().getConfigDir().resolve("earthshape.properties");
+   private static final Map<String, Value<?>> OPTIONS = new LinkedHashMap<>();
 
    public static final Value<Integer> BLOCKS_PER_PIXEL = i(10);
    public static final Value<Boolean> RANDOM_MAP_CENTER_ENABLED = b(false);
@@ -103,7 +109,7 @@ public final class EarthShapeServerConfig {
    public static synchronized void load() {
       Properties properties = new Properties();
       if (Files.isRegularFile(FILE)) {
-         try (InputStream input = Files.newInputStream(FILE)) {
+         try (Reader input = Files.newBufferedReader(FILE, StandardCharsets.UTF_8)) {
             properties.load(input);
          } catch (IOException exception) {
             EarthShape.LOGGER.warn("[EarthShape] Could not read {}; using defaults.", FILE, exception);
@@ -263,9 +269,39 @@ public final class EarthShapeServerConfig {
       put(properties, "structures.surfaceStructureRate", SURFACE_STRUCTURE_RATE);
 
       try {
+         Properties comments = new Properties();
+         try (InputStream input = EarthShapeServerConfig.class.getResourceAsStream("/earthshape-config-comments.properties")) {
+            if (input == null) throw new IOException("Missing bilingual config descriptions");
+            comments.load(new InputStreamReader(input, StandardCharsets.UTF_8));
+         }
+         for (String key : OPTIONS.keySet()) {
+            for (String suffix : new String[]{".en", ".ko", ".range"}) {
+               if (comments.getProperty(key + suffix, "").isBlank()) {
+                  throw new IOException("Missing config description: " + key + suffix);
+               }
+            }
+         }
          Files.createDirectories(FILE.getParent());
-         try (OutputStream output = Files.newOutputStream(FILE)) {
-            properties.store(output, "EarthShape Fabric server configuration. Restart after editing.");
+         try (BufferedWriter output = Files.newBufferedWriter(FILE, StandardCharsets.UTF_8)) {
+            output.write("# EarthShape Fabric 26.3 configuration / 설정\n");
+            output.write("# Restart after editing. Existing chunks are not regenerated.\n");
+            output.write("# 수정 후 재시작하세요. 이미 생성된 청크는 다시 생성되지 않습니다.\n");
+            Properties remaining = new Properties();
+            remaining.putAll(properties);
+            for (Map.Entry<String, Value<?>> option : OPTIONS.entrySet()) {
+               String key = option.getKey();
+               output.write("\n# EN: " + comments.getProperty(key + ".en") + "\n");
+               output.write("# KO: " + comments.getProperty(key + ".ko") + "\n");
+               output.write("# Default / 기본값: " + option.getValue().defaultValue
+                  + " | Range / 허용 범위: " + comments.getProperty(key + ".range") + "\n");
+               // Known values have already been validated as booleans or numbers.
+               output.write(key + "=" + properties.getProperty(key) + "\n");
+               remaining.remove(key);
+            }
+            if (!remaining.isEmpty()) {
+               output.write("\n");
+               remaining.store(output, "Unrecognized entries preserved / 인식되지 않은 기존 항목 보존");
+            }
          }
       } catch (IOException exception) {
          EarthShape.LOGGER.warn("[EarthShape] Could not write {}.", FILE, exception);
@@ -274,6 +310,7 @@ public final class EarthShapeServerConfig {
 
    private static void put(Properties properties, String key, Value<?> value) {
       properties.setProperty(key, String.valueOf(value.get()));
+      OPTIONS.put(key, value);
    }
 
    private static Value<Boolean> b(boolean value) { return new Value<>(value); }
