@@ -59,3 +59,17 @@ cd forge-1.20.1
 ```
 
 Its artifact is written to `forge-1.20.1/build/libs/`.
+
+### Fabric 26.3
+
+The Java 25 / Fabric port is maintained in [`fabric-26.3`](fabric-26.3/README.md).
+It includes the current NeoForge map algorithms and configuration defaults, plus
+Minecraft 26.3 density sampler, material rule, and world-generation adaptations.
+
+```powershell
+cd fabric-26.3
+.\gradlew.bat build
+python verify-parity.py
+```
+
+The installable artifact is written to `fabric-26.3/build/libs/`.

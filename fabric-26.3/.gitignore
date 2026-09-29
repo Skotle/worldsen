@@ -1,0 +1,3 @@
+*.log
+*-bytecode.txt
+server-threads.txt

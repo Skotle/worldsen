@@ -175,7 +175,7 @@ public final class EarthShapeServerConfig {
       RIVER_WIDTH_0064FF = builder.comment("rivers.bmp 색상 #0064FF의 강 너비(블록 단위).").defineInRange("color_0064FF", 16, 1, 256);
       RIVER_WIDTH_00C8FF = builder.comment("rivers.bmp 색상 #00C8FF의 강 너비(블록 단위).").defineInRange("color_00C8FF", 14, 1, 256);
       RIVER_WIDTH_00E1FF = builder.comment("rivers.bmp 색상 #00E1FF의 강 너비(블록 단위).").defineInRange("color_00E1FF", 12, 1, 256);
-      RIVER_WIDTH_SCALE = builder.comment("모든 원본 강 너비에 적용되는 전역 배율. 0.5는 픽셀 색상별로 설정됀 크기를 절반으로 줄입니다.")
+      RIVER_WIDTH_SCALE = builder.comment("모든 원본 강 너비에 적용되는 전역 배율. 0.5는 픽셀 색상별로 설정됀 크기를 절반 -/2.으로 줄입니다.")
               .defineInRange("widthScale", 0.5, 0.05, 4.0);
       RIVER_MINIMUM_WIDTH_BLOCKS = builder.comment(
                       "원본 강의 최소 생성 너비. 12블록으로 설정하면 4블록 단위 바이옴 샘플에서도 작은 강이 끊기지 않고 이어집니다."
